@@ -40,6 +40,41 @@ npm run build
 
 Requires Node.js 18+ and an ACP-compatible agent installed on your system.
 
+## Running agent-shell
+
+After building, you can run agent-shell in several ways:
+
+```bash
+# Using the built binary directly
+node dist/index.js --agent <agent-name>
+
+# Using npm script
+npm start -- --agent <agent-name>
+
+# Using npx (if published to npm)
+npx agent-shell --agent <agent-name>
+
+# Make the built file executable and run directly
+chmod +x dist/index.js
+./dist/index.js --agent <agent-name>
+```
+
+### Install ACP-compatible agents
+
+agent-shell requires an ACP-compatible agent. Here are some popular options:
+
+| Agent | Install Command | Notes |
+|-------|----------------|-------|
+| **pi-acp** | `npm install -g pi-acp` | ACP adapter for pi coding agent |
+| **claude-code** | See [claude-code](https://github.com/anthropics/claude-code) | Anthropic's official ACP agent |
+| **gemini-cli** | See [gemini-cli](https://github.com/google-gemini/gemini-cli) | Google's Gemini ACP agent |
+
+**Example: Installing pi-acp**
+```bash
+npm install -g pi-acp
+pi-acp --help  # Verify installation
+```
+
 ## Usage
 
 ```bash
@@ -55,6 +90,63 @@ npx agent-shell --agent claude --agent-args "--model sonnet"
 # Use a different shell
 npx agent-shell --shell /bin/zsh
 ```
+
+### Agent environment configuration
+
+Many ACP agents require environment variables for API keys and configuration. Set these before starting agent-shell:
+
+#### pi-acp configuration
+
+pi-acp uses the same environment variables as the [pi](https://github.com/mariozechner/pi-coding-agent) agent:
+
+```bash
+# Anthropic Claude
+export ANTHROPIC_API_KEY="your-anthropic-key"
+
+# OpenAI
+export OPENAI_API_KEY="your-openai-key"
+
+# Google Gemini
+export GEMINI_API_KEY="your-gemini-key"
+
+# Groq
+export GROQ_API_KEY="your-groq-key"
+
+# xAI (Grok)
+export XAI_API_KEY="your-xai-key"
+
+# OpenRouter
+export OPENROUTER_API_KEY="your-openrouter-key"
+```
+
+You can also configure pi-acp by passing arguments:
+
+```bash
+# Use a specific model
+node dist/index.js --agent pi-acp --agent-args "--provider openai --model gpt-4o"
+
+# Enable thinking mode
+node dist/index.js --agent pi-acp --agent-args "--thinking high"
+
+# Limit to read-only tools
+node dist/index.js --agent pi-acp --agent-args "--tools read,grep,find,ls"
+```
+
+For more pi-acp options, run `pi --help` (pi-acp accepts the same arguments).
+
+#### Other agent configurations
+
+Refer to each agent's documentation for their specific environment variable requirements. Common patterns:
+
+```bash
+# claude-code
+export ANTHROPIC_API_KEY="your-key"
+
+# gemini-cli  
+export GOOGLE_API_KEY="your-key"
+```
+
+**Tip:** Add these to your `~/.zshrc` or `~/.bashrc` for persistent configuration.
 
 ### Input modes
 

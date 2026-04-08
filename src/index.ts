@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { Shell } from "./shell.js";
 import { TUI } from "./tui.js";
 import { AcpClient } from "./acp-client.js";
