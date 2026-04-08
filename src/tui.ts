@@ -21,8 +21,18 @@ export class TUI {
   private spinnerFrame = 0;
   private renderer: MarkdownRenderer | null = null;
   private commandOutputBuffer = "";
+  private isOutputting = false;
 
   constructor(_agentName: string) {}
+
+  private flushOutput(): void {
+    if (process.stdout.writable) {
+      try {
+        process.stdout.write('');
+      } catch (e) {
+      }
+    }
+  }
 
   // Status bar stubs — kept for interface compatibility
   setupStatusBar(): void {}
@@ -53,6 +63,7 @@ export class TUI {
     this.stopSpinner();
     if (!this.renderer) this.startAgentResponse();
     this.renderer!.push(text);
+    this.flushOutput();
   }
 
   showToolCall(title: string, description?: string): void {
@@ -80,6 +91,7 @@ export class TUI {
     this.spinnerInterval = setInterval(() => {
       const frame = SPINNER_FRAMES[this.spinnerFrame % SPINNER_FRAMES.length];
       process.stdout.write(`\r  ${CYAN}${frame} ${label}...${RESET}\x1b[K`);
+      this.flushOutput();
       this.spinnerFrame++;
     }, 80);
   }

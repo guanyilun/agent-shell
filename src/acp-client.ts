@@ -34,6 +34,8 @@ export class AcpClient {
   }
 
   async start(): Promise<void> {
+    this.log(`Starting agent: ${this.config.agentCommand} ${this.config.agentArgs.join(" ")}`);
+
     // Spawn the agent subprocess
     // Spawn the agent — wait briefly to catch ENOENT and other spawn errors
     this.agentProcess = spawn(this.config.agentCommand, this.config.agentArgs, {
@@ -53,9 +55,12 @@ export class AcpClient {
       }, 100);
     });
 
+    this.log("Agent process spawned");
+
     this.agentProcess.on("exit", (code) => {
       this.tui.showError(`Agent process exited with code ${code}`);
       this.connection = null;
+      this.sessionId = null;
     });
 
     if (!this.agentProcess.stdin || !this.agentProcess.stdout) {
@@ -67,6 +72,8 @@ export class AcpClient {
     const input = Readable.toWeb(this.agentProcess.stdout) as ReadableStream<Uint8Array>;
     const stream = acp.ndJsonStream(output, input);
 
+    this.log("Creating ACP connection");
+
     // Create the client-side connection, providing our Client handler
     this.connection = new acp.ClientSideConnection(
       (_agent) => this.createClientHandler(),
@@ -74,6 +81,7 @@ export class AcpClient {
     );
 
     // Initialize the connection
+    this.log("Sending initialize request");
     const initResponse = await this.connection.initialize({
       protocolVersion: acp.PROTOCOL_VERSION,
       clientInfo: { name: "agent-shell", version: "0.1.0" },
@@ -86,16 +94,20 @@ export class AcpClient {
       },
     });
 
+    this.log("Initialize successful");
+
     // Connection info available at initResponse.agentInfo if needed
 
     // Create a session
     const context = this.shell.getContext();
+    this.log(`Creating new session with cwd: ${context.cwd}`);
     const sessionResponse = await this.connection.newSession({
       cwd: context.cwd,
       mcpServers: [],
     });
 
     this.sessionId = sessionResponse.sessionId;
+    this.log(`Session created: ${this.sessionId}`);
   }
 
   /**

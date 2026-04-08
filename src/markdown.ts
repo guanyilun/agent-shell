@@ -278,5 +278,11 @@ export class MarkdownRenderer {
     if (this.firstLine && visibleLength(text) === 0) return;
     this.firstLine = false;
     process.stdout.write(`  ${text}\n`);
+    if (process.stdout.writable) {
+      try {
+        process.stdout.write('');
+      } catch (e) {
+      }
+    }
   }
 }
