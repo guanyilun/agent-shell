@@ -22,6 +22,7 @@ export class Shell {
   private autocompleteItems: { name: string; description: string }[] = [];
   private autocompleteLines = 0; // how many lines the suggestion list occupies
   private shellActivitySinceAgent: CommandRecord[] = [];
+  private foregroundBusy = false; // true while a command is running in the PTY (between Enter and next prompt marker)
   private slashCommandDefs: { name: string; description: string }[] = [];
   private onAgentRequest: (query: string) => void;
   private onAgentCancel: () => void;
@@ -122,6 +123,7 @@ export class Shell {
         if (this.lineBuffer.trim()) {
           this.lastCommand = this.lineBuffer.trim();
           this.currentOutputCapture = "";
+          this.foregroundBusy = true;
         }
         this.lineBuffer = "";
         this.ptyProcess.write(ch);
@@ -139,7 +141,8 @@ export class Shell {
         this.ptyProcess.write(ch);
       } else {
         // Check if ">" at start of empty line → enter agent input mode
-        if (this.lineBuffer === "" && ch === ">") {
+        // But not if a foreground process (ssh, vim, etc.) is running
+        if (this.lineBuffer === "" && ch === ">" && !this.foregroundBusy) {
           this.enterAgentInputMode();
           return; // don't process remaining chars
         }
@@ -500,7 +503,9 @@ export class Shell {
   private parsePromptMarker(data: string): void {
     // Check for our marker: \x1b]9999;PROMPT\x07
     if (data.includes("\x1b]9999;PROMPT\x07")) {
-      // A new prompt appeared — finalize the previous command
+      // A new prompt appeared — the foreground process has exited
+      this.foregroundBusy = false;
+      // Finalize the previous command
       if (this.lastCommand) {
         const output = this.stripAnsi(this.currentOutputCapture).trim();
         // Remove the echoed command from the start of the output
@@ -566,6 +571,11 @@ export class Shell {
 
   setAgentActive(active: boolean): void {
     this.agentActive = active;
+  }
+
+  /** Whether an interactive foreground process is running in the PTY. */
+  isForegroundBusy(): boolean {
+    return this.foregroundBusy;
   }
 
   resize(cols: number, rows: number): void {
