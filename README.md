@@ -1,10 +1,10 @@
 # agent-shell
 
-A real shell where an LLM agent is one keystroke away.
+Not a shell that lives in an agent — an agent that lives in a shell.
 
-Regular input runs as shell commands in a true PTY. Lines starting with `>` are sent to an AI agent via the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/). The agent has full context of your shell session — working directory, recent commands, last output — and can run commands on your behalf.
+agent-shell is a real terminal first. Every keystroke goes to a real PTY. `cd`, pipes, vim, job control — they all just work. But type `>` at the start of a line, and you're talking to an AI agent that has full context of what you've been doing: your working directory, recent commands, their output.
 
-The result is a drop-in terminal replacement that works with **any** ACP-compatible agent: [pi](https://github.com/svkozak/pi-acp), claude-code, codex, gemini-cli, goose, etc.
+The agent connects via the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/), so you can plug in **any** ACP-compatible agent: [pi](https://github.com/svkozak/pi-acp), claude-code, codex, gemini-cli, goose, etc.
 
 ```
 ⚡ src $ ls -la                          # real shell command
@@ -14,11 +14,11 @@ The result is a drop-in terminal replacement that works with **any** ACP-compati
 ⚡ src $ > explain the last error         # agent sees your recent commands + output
 ```
 
-## Why?
+## Why shell-first?
 
-Most AI coding tools are agent-first: the LLM drives the experience and the shell is an afterthought. That means no real PTY, no job control, no interactive commands, and fragile `cd` tracking.
+Most AI coding tools are agent-first: the LLM drives the experience and the shell is bolted on. That means no real PTY, no job control, no interactive commands, and fragile `cd` tracking that reimplements what bash gives you for free.
 
-agent-shell flips the architecture: **shell-first, agent-on-demand**. You get a real terminal with full bash/zsh capabilities, and the agent is available when you need it via a simple `>` prefix.
+agent-shell starts from the opposite end. The shell is the primary interface — it's your terminal, not the agent's. The agent is a tool you reach for when you need it, not the other way around.
 
 ### Why ACP?
 
