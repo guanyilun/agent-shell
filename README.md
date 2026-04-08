@@ -24,10 +24,20 @@ agent-shell starts from the opposite end. The shell is the primary interface —
 
 The [Agent Client Protocol](https://agentclientprotocol.com/) decouples the shell from any specific agent:
 
-- **Pluggable agents** — swap between pi, claude-code, codex with a CLI flag
+- **Pluggable agents** — swap between pi-acp, claude-code, codex with a CLI flag
 - **Standard protocol** — JSON-RPC 2.0 over stdio, well-specified capability negotiation
 - **Agent handles LLM details** — no API keys, tool definitions, or context windows to manage
 - **Terminal delegation** — ACP defines `terminal/create`, `terminal/output`, `terminal/wait_for_exit` — exactly what an agent needs to run commands in your shell
+
+## Key Features
+
+- **🚀 Instant Start** — Shell starts immediately, no waiting for agent connection
+- **🔄 Smart Connection** — Agent connects asynchronously in the background
+- **⏳ Auto-Wait** — Queries automatically wait for agent to finish connecting
+- **📊 Real-time Streaming** — Agent responses stream live with syntax highlighting
+- **⚡ Zero Latency** — Direct PTY access, full terminal compatibility
+- **🧠 Context Aware** — Agent sees your cwd, recent commands, and their output
+- **🎯 Multiple Agents** — Easy switching between pi-acp, claude, and other ACP agents
 
 ## Install
 
@@ -45,10 +55,17 @@ Requires Node.js 18+ and an ACP-compatible agent installed on your system.
 After building, you can run agent-shell in several ways:
 
 ```bash
+# Start with the default agent (pi-acp) - RECOMMENDED
+npm start
+
+# Quick shortcuts
+npm run pi         # Start with pi-acp
+npm run claude     # Start with Claude agent
+
 # Using the built binary directly
 node dist/index.js --agent <agent-name>
 
-# Using npm script
+# Using npm script with custom agent
 npm start -- --agent <agent-name>
 
 # Using npx (if published to npm)
@@ -57,6 +74,9 @@ npx agent-shell --agent <agent-name>
 # Make the built file executable and run directly
 chmod +x dist/index.js
 ./dist/index.js --agent <agent-name>
+
+# Using environment variable to set default agent
+AGENT_SHELL_AGENT=claude npm start
 ```
 
 ### Install ACP-compatible agents
@@ -65,7 +85,7 @@ agent-shell requires an ACP-compatible agent. Here are some popular options:
 
 | Agent | Install Command | Notes |
 |-------|----------------|-------|
-| **pi-acp** | `npm install -g pi-acp` | ACP adapter for pi coding agent |
+| **pi-acp** | `npm install -g pi-acp` | **Recommended default** - ACP adapter for pi coding agent |
 | **claude-code** | See [claude-code](https://github.com/anthropics/claude-code) | Anthropic's official ACP agent |
 | **gemini-cli** | See [gemini-cli](https://github.com/google-gemini/gemini-cli) | Google's Gemini ACP agent |
 
@@ -78,22 +98,38 @@ pi-acp --help  # Verify installation
 ## Usage
 
 ```bash
-# Start with the default agent (claude)
-npx agent-shell
+# Start with the default agent (pi-acp)
+npm start
+
+# Quick shortcuts
+npm run pi         # pi-acp
+npm run claude     # Claude
 
 # Start with a specific agent
-npx agent-shell --agent pi-acp
+npm start -- --agent pi-acp
 
 # Pass arguments to the agent
-npx agent-shell --agent claude --agent-args "--model sonnet"
+npm start -- --agent claude --agent-args "--model sonnet"
 
 # Use a different shell
-npx agent-shell --shell /bin/zsh
+npm start -- --shell /bin/zsh
+
+# Set default agent via environment variable
+AGENT_SHELL_AGENT=claude npm start
 ```
 
 ### Agent environment configuration
 
-Many ACP agents require environment variables for API keys and configuration. Set these before starting agent-shell:
+agent-shell can be configured via environment variables:
+
+```bash
+# Set the default agent to use
+export AGENT_SHELL_AGENT=pi-acp  # Default is pi-acp
+```
+
+**Smart Connection**: agent-shell uses an intelligent connection system where the shell starts immediately and the agent connects in the background. If you send a query before the agent is fully connected, the system automatically waits for connection completion. This provides instant access to the shell while ensuring reliable agent communication.
+
+Many ACP agents also require API keys. Set these before starting agent-shell:
 
 #### pi-acp configuration
 
@@ -123,13 +159,13 @@ You can also configure pi-acp by passing arguments:
 
 ```bash
 # Use a specific model
-node dist/index.js --agent pi-acp --agent-args "--provider openai --model gpt-4o"
+npm start -- --agent pi-acp --agent-args "--provider openai --model gpt-4o"
 
 # Enable thinking mode
-node dist/index.js --agent pi-acp --agent-args "--thinking high"
+npm start -- --agent pi-acp --agent-args "--thinking high"
 
 # Limit to read-only tools
-node dist/index.js --agent pi-acp --agent-args "--tools read,grep,find,ls"
+npm start -- --agent pi-acp --agent-args "--tools read,grep,find,ls"
 ```
 
 For more pi-acp options, run `pi --help` (pi-acp accepts the same arguments).
@@ -160,7 +196,7 @@ export GOOGLE_API_KEY="your-key"
 | `Ctrl-C` | Standard signal to shell, or cancels active agent response |
 | `Escape` | Exit agent input mode (when typing after `>`) |
 
-When you type `>` at the start of a line, agent-shell enters **agent input mode** — the prompt changes to a yellow `❯` and your text is sent to the agent on Enter. The agent's response streams inline in a bordered box with markdown rendering.
+When you type `>` at the start of a line, agent-shell enters **agent input mode** — the prompt changes to a yellow `❯` and your text is sent to the agent on Enter. The agent's response streams inline in real-time in a bordered box with markdown rendering and syntax highlighting.
 
 ### Slash commands
 
@@ -238,7 +274,7 @@ agent-shell is an ACP **client**. The agent is a subprocess launched with stdio 
 
 | Update type | What we render |
 |---|---|
-| `agent_message_chunk` | Stream markdown with syntax highlighting in a bordered box |
+| `agent_message_chunk` | Real-time streaming markdown with syntax highlighting in a bordered box |
 | `tool_call` | Yellow header showing what the agent is invoking |
 | `tool_call_update` | Status indicator (✓ or ✗ with exit code) |
 
@@ -247,13 +283,15 @@ agent-shell is an ACP **client**. The agent is a subprocess launched with stdio 
 ```
 agent-shell/
 ├── src/
-│   ├── index.ts        # Entry point, CLI arg parsing, wiring
+│   ├── index.ts        # Entry point, CLI arg parsing, agent connection
 │   ├── shell.ts        # PTY management, input routing, agent input mode
 │   ├── acp-client.ts   # ACP connection, request/notification handling
 │   ├── executor.ts     # Isolated command execution for terminal/* handlers
 │   ├── tui.ts          # Spinner, status, agent output rendering
 │   ├── markdown.ts     # Streaming markdown → ANSI renderer with box drawing
 │   ├── commands.ts     # Slash command definitions (/help, /clear, /copy, etc.)
+│   ├── diff.ts         # File diff computation for change previews
+│   ├── file-watcher.ts # Track file changes made by agent tools
 │   └── types.ts        # Shared interfaces
 ├── package.json
 └── tsconfig.json
@@ -268,11 +306,18 @@ npm run dev
 # Build
 npm run build
 
-# Run the built version
+# Run the built version (uses default agent pi-acp)
 npm start
 
+# Quick shortcuts for different agents
+npm run pi         # Start with pi-acp
+npm run claude     # Start with Claude agent
+
 # Debug mode — logs ACP protocol details to stderr
-DEBUG=1 npx agent-shell
+DEBUG=1 npm start
+
+# Test with specific agent
+npm run dev -- --agent pi-acp
 ```
 
 ## How it works
@@ -280,11 +325,13 @@ DEBUG=1 npx agent-shell
 1. agent-shell spawns a real PTY running bash and sets up raw stdin passthrough
 2. It launches the specified ACP agent as a subprocess with stdio transport
 3. All keyboard input goes directly to the PTY — zero latency, full terminal compatibility
-4. When you type `>` at the start of a line, agent-shell intercepts and enters agent input mode
-5. On Enter, the query (plus shell context) is sent to the agent via `session/prompt`
-6. The agent's streaming response renders inline in a bordered markdown box
-7. If the agent needs to run commands, it calls `terminal/create` and agent-shell executes them in isolated child processes, streaming output back
-8. When the agent finishes, normal shell operation resumes
+4. **Smart connection**: The agent connects asynchronously in the background while the shell starts immediately
+5. **Auto-wait**: If you send a query before the agent is fully connected, the system automatically waits for connection completion
+6. When you type `>` at the start of a line, agent-shell intercepts and enters agent input mode
+7. On Enter, the query (plus shell context) is sent to the agent via `session/prompt`
+8. The agent's streaming response renders inline in a bordered markdown box with real-time output
+9. If the agent needs to run commands, it calls `terminal/create` and agent-shell executes them in isolated child processes, streaming output back
+10. When the agent finishes, normal shell operation resumes
 
 ## License
 

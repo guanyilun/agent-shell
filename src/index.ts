@@ -6,7 +6,9 @@ import { commands, executeSlashCommand, type CommandContext } from "./commands.j
 import type { AgentShellConfig } from "./types.js";
 
 function parseArgs(argv: string[]): AgentShellConfig {
-  let agentCommand = "claude";
+  // Priority: CLI args > Environment variables > Config file > Defaults
+  const defaultAgent = process.env.AGENT_SHELL_AGENT || "pi-acp";
+  let agentCommand = defaultAgent;
   let agentArgs: string[] = [];
   const shell = process.env.SHELL || "/bin/bash";
 
@@ -23,11 +25,24 @@ function parseArgs(argv: string[]): AgentShellConfig {
 
 Usage: agent-shell [options]
 
+Quick Start:
+  npm start           Start with default agent (pi-acp)
+  npm run pi          Start with pi-acp agent
+  npm run claude      Start with Claude agent
+
 Options:
-  --agent <cmd>       Agent command to launch (default: "claude")
+  --agent <cmd>       Agent command to launch (default: $AGENT_SHELL_AGENT or "pi-acp")
   --agent-args <args> Arguments for the agent (space-separated, quoted)
   --shell <path>      Shell to use (default: $SHELL or /bin/bash)
   -h, --help          Show this help
+
+Environment Variables:
+  AGENT_SHELL_AGENT   Default agent to use (e.g., "pi-acp", "claude")
+
+Examples:
+  npm start --agent pi-acp
+  npm start -- --agent claude --agent-args "--model sonnet"
+  AGENT_SHELL_AGENT=claude npm start
 
 Inside the shell:
   Type normally        Commands run in your real shell
@@ -52,21 +67,54 @@ async function main(): Promise<void> {
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;
 
-  // Placeholder for agent — we wire it after creating shell
+  // Placeholder for agent — we'll create it after shell but before starting input
   let acpClient: AcpClient | null = null;
+  let agentConnected = false;
 
+  // Signal handling
+  const cleanup = () => {
+    tui.teardownStatusBar();
+    acpClient?.kill();
+    shell.kill();
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+    }
+    process.exit(0);
+  };
+
+  // Create shell first
   const shell = new Shell({
     cols,
     rows,
     shell: config.shell,
     cwd: process.cwd(),
-    onAgentRequest: (query: string) => {
-      if (acpClient) {
-        acpClient.sendPrompt(query).catch((err) => {
-          tui.showError(err instanceof Error ? err.message : String(err));
-          shell.resumeOutput();
-          shell.setAgentActive(false);
-        });
+    onAgentRequest: async (query: string) => {
+      if (!acpClient) {
+        tui.showError("Agent not initialized");
+        return;
+      }
+
+      // Wait for agent to be connected before sending prompt
+      let attempts = 0;
+      const maxAttempts = 30; // Wait up to 3 seconds (30 * 100ms)
+      while (!agentConnected && attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        attempts++;
+      }
+
+      if (!agentConnected) {
+        tui.showError("Agent not connected. Please wait a moment and try again.");
+        shell.resumeOutput();
+        shell.setAgentActive(false);
+        return;
+      }
+
+      try {
+        await acpClient.sendPrompt(query);
+      } catch (err: any) {
+        tui.showError(err.message);
+        shell.resumeOutput();
+        shell.setAgentActive(false);
       }
     },
     onAgentCancel: () => {
@@ -91,16 +139,26 @@ async function main(): Promise<void> {
     },
   });
 
+  // Create agent client
   acpClient = new AcpClient(shell, tui, config);
 
-  // Set stdin to raw mode for PTY passthrough
-  if (process.stdin.isTTY) {
-    process.stdin.setRawMode(true);
-  }
-  process.stdin.resume();
+  // Connect to agent asynchronously (don't block shell startup)
+  const connectAgent = async () => {
+    try {
+      await acpClient!.start();
+      agentConnected = true;
+      // Note: We don't print success message here to avoid interfering with shell output
+    } catch (err) {
+      console.error(`Failed to connect to ${config.agentCommand}:`, err);
+    }
+  };
 
-  // Set up status bar after shell has a moment to initialize
-  setTimeout(() => tui.setupStatusBar(), 500);
+  // Start agent connection in background
+  connectAgent();
+
+  // Set up event handlers
+  process.on("SIGTERM", cleanup);
+  process.on("SIGHUP", cleanup);
 
   // Handle terminal resize
   process.stdout.on("resize", () => {
@@ -120,29 +178,14 @@ async function main(): Promise<void> {
     process.exit(e.exitCode);
   });
 
-  // Signal handling
-  const cleanup = () => {
-    tui.teardownStatusBar();
-    acpClient?.kill();
-    shell.kill();
-    if (process.stdin.isTTY) {
-      process.stdin.setRawMode(false);
-    }
-    process.exit(0);
-  };
-
-  process.on("SIGTERM", cleanup);
-  process.on("SIGHUP", cleanup);
-
-  // Start the ACP agent connection
-  try {
-    await acpClient.start();
-  } catch (err) {
-    tui.showInfo(
-      `Agent connection failed: ${err instanceof Error ? err.message : String(err)}` +
-        "\nShell is running without agent. Use --agent to specify an ACP agent."
-    );
+  // Set stdin to raw mode for PTY passthrough
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
   }
+  process.stdin.resume();
+
+  // Set up status bar after shell has a moment to initialize
+  setTimeout(() => tui.setupStatusBar(), 500);
 }
 
 main().catch((err) => {

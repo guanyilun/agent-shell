@@ -10,7 +10,9 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "pi": "node dist/index.js --agent pi-acp",
+    "claude": "node dist/index.js --agent claude"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.18.1",
