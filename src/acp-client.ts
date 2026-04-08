@@ -3,6 +3,9 @@ import { Readable, Writable } from "node:stream";
 import * as fs from "node:fs/promises";
 import * as acp from "@agentclientprotocol/sdk";
 import { executeCommand, killSession, type ExecutorSession } from "./executor.js";
+import { computeDiff } from "./diff.js";
+import { FileWatcher } from "./file-watcher.js";
+import * as path from "node:path";
 import type { Shell } from "./shell.js";
 import type { TUI } from "./tui.js";
 import type { AgentShellConfig } from "./types.js";
@@ -20,18 +23,21 @@ export class AcpClient {
   private terminalSessions = new Map<string, ExecutorSession>();
   private terminalDonePromises = new Map<string, Promise<void>>();
   private terminalCounter = 0;
+  private autoApproveWrites = false;
+  private fileWatcher: FileWatcher;
 
   constructor(shell: Shell, tui: TUI, config: AgentShellConfig) {
     this.shell = shell;
     this.tui = tui;
     this.config = config;
+    this.fileWatcher = new FileWatcher(process.cwd());
   }
 
   async start(): Promise<void> {
     // Spawn the agent subprocess
     // Spawn the agent — wait briefly to catch ENOENT and other spawn errors
     this.agentProcess = spawn(this.config.agentCommand, this.config.agentArgs, {
-      stdio: ["pipe", "pipe", "inherit"], // stderr → our stderr for debugging
+      stdio: ["pipe", "pipe", process.env.DEBUG ? "inherit" : "ignore"],
     });
 
     // Catch spawn errors (ENOENT, EACCES, etc.) before proceeding
@@ -104,6 +110,7 @@ export class AcpClient {
     this.promptInProgress = true;
     this.shell.setAgentActive(true);
     this.shell.pauseOutput();
+    await this.fileWatcher.snapshot();
 
     // Echo the user's query
     const CYAN = "\x1b[36m";
@@ -161,6 +168,13 @@ export class AcpClient {
       this.log("restoring shell mode");
       this.lastResponseText = this.currentResponseText;
       this.tui.endAgentResponse();
+
+      // Show diff previews for files the agent modified via its own tools
+      // (modifications via fs/writeTextFile are already handled inline)
+      if (this.promptInProgress) {
+        await this.showPendingFileChanges();
+      }
+
       this.shell.resumeOutput();
       this.shell.setAgentActive(false);
       this.shell.printPrompt();
@@ -272,6 +286,9 @@ export class AcpClient {
   // ── Session update handler ─────────────────────────────────────
 
   private handleSessionUpdate(params: acp.SessionNotification): void {
+    // Suppress rendering during initialization / between prompts
+    if (!this.promptInProgress) return;
+
     const update = params.update;
 
     switch (update.sessionUpdate) {
@@ -469,14 +486,95 @@ export class AcpClient {
   private async handleWriteTextFile(
     params: acp.WriteTextFileRequest,
   ): Promise<acp.WriteTextFileResponse> {
+    // Read original content for diff preview
+    let original: string | null = null;
+    try {
+      original = await fs.readFile(params.path, "utf-8");
+    } catch {
+      // File doesn't exist yet — will show as "new file"
+    }
+
+    const diff = computeDiff(original, params.content);
+
+    // Identical content — nothing to do
+    if (diff.isIdentical) return {};
+
+    // Show interactive diff preview (unless auto-approved)
+    if (!this.autoApproveWrites) {
+      this.tui.stopSpinner();
+      this.tui.flushCommandOutput();
+      this.tui.flushRenderer();
+      this.tui.endAgentResponse();
+
+      this.shell.resumeOutput();
+      const decision = await this.tui.previewDiff({
+        path: params.path,
+        diff,
+      });
+      this.shell.pauseOutput();
+
+      if (decision === "reject") {
+        throw new Error(`User rejected modification: ${params.path}`);
+      }
+      if (decision === "approve_all") {
+        this.autoApproveWrites = true;
+      }
+      // Renderer will be lazily re-created on next agent output
+    }
+
+    // Write the file
     try {
       await fs.writeFile(params.path, params.content, "utf-8");
+      this.fileWatcher.approve(path.resolve(params.path), params.content);
       return {};
     } catch (err) {
       throw new Error(
         `Failed to write ${params.path}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
+  }
+
+  // ── Diff preview for non-ACP file changes ────────────────────
+
+  /**
+   * After the agent finishes, check all tracked files for changes
+   * made via the agent's own tools (not through fs/writeTextFile)
+   * and show interactive diff previews.
+   */
+  private async showPendingFileChanges(): Promise<void> {
+    if (this.autoApproveWrites) return;
+
+    const changes = await this.fileWatcher.detectChanges();
+    if (changes.length === 0) return;
+
+    this.shell.resumeOutput();
+
+    for (const change of changes) {
+      const diff = computeDiff(change.before, change.after);
+      if (diff.isIdentical) continue;
+
+      const decision = await this.tui.previewDiff({
+        path: change.relPath,
+        diff,
+      });
+
+      if (decision === "approve" || decision === "approve_all") {
+        this.fileWatcher.approve(change.path, change.after);
+      } else {
+        await this.fileWatcher.revert(change.path);
+      }
+
+      if (decision === "approve_all") {
+        this.autoApproveWrites = true;
+        // Approve remaining changes automatically
+        for (const remaining of changes.slice(changes.indexOf(change) + 1)) {
+          this.fileWatcher.approve(remaining.path, remaining.after);
+        }
+        break;
+      }
+    }
+
+    this.shell.pauseOutput();
   }
 
   // ── Cleanup ────────────────────────────────────────────────────
