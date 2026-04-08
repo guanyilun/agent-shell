@@ -79,18 +79,7 @@ export class TUI {
     this.spinnerFrame = 0;
     this.spinnerInterval = setInterval(() => {
       const frame = SPINNER_FRAMES[this.spinnerFrame % SPINNER_FRAMES.length];
-      if (this.renderer) {
-        // Overwrite the current line inside the box
-        const text = `${CYAN}${frame} ${label}...${RESET}`;
-        const vLen = label.length + 5; // frame + space + label + "..."
-        const contentWidth = this.renderer["contentWidth"];
-        const pad = Math.max(0, contentWidth - vLen);
-        process.stdout.write(
-          `\r${CYAN}│${RESET} ${text}${" ".repeat(pad)} ${CYAN}│${RESET}`
-        );
-      } else {
-        process.stdout.write(`\r${CYAN}${frame} ${label}...${RESET}\x1b[K`);
-      }
+      process.stdout.write(`\r  ${CYAN}${frame} ${label}...${RESET}\x1b[K`);
       this.spinnerFrame++;
     }, 80);
   }

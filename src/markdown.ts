@@ -11,8 +11,7 @@ const YELLOW = "\x1b[33m";
 const GRAY = "\x1b[90m";
 const RESET = "\x1b[0m";
 
-// Max inner content width (excluding borders + padding)
-const MAX_BOX_WIDTH = 80;
+const MAX_CONTENT_WIDTH = 90;
 
 /**
  * Strip ANSI escape sequences to get the visible text length.
@@ -102,11 +101,12 @@ export class MarkdownRenderer {
   private codeLanguage = "";
   private codeLines: string[] = [];
   private contentWidth: number;
+  private firstLine = true;
 
   constructor(terminalWidth?: number) {
     const termW = terminalWidth ?? (process.stdout.columns || 100);
-    // Box uses: "│ " (3) + content + " │" (2) = 5 chars of chrome
-    this.contentWidth = Math.min(MAX_BOX_WIDTH, termW - 5);
+    // 2-char left indent for content
+    this.contentWidth = Math.min(MAX_CONTENT_WIDTH, termW - 2);
   }
 
   /**
@@ -132,13 +132,14 @@ export class MarkdownRenderer {
   }
 
   printTopBorder(): void {
-    const w = this.contentWidth + 2; // +2 for padding spaces
-    process.stdout.write(`${CYAN}┌${"─".repeat(w)}┐${RESET}\n`);
+    const w = Math.min(this.contentWidth, 40);
+    process.stdout.write(`${DIM}${CYAN}${"─".repeat(w)}${RESET}\n`);
+    this.firstLine = true;
   }
 
   printBottomBorder(): void {
-    const w = this.contentWidth + 2;
-    process.stdout.write(`${CYAN}└${"─".repeat(w)}┘${RESET}\n`);
+    const w = Math.min(this.contentWidth, 40);
+    process.stdout.write(`${DIM}${CYAN}${"─".repeat(w)}${RESET}\n`);
   }
 
   private processBuffer(): void {
@@ -271,13 +272,11 @@ export class MarkdownRenderer {
   }
 
   /**
-   * Write a single line inside the box: │ content padded │
+   * Write a single line with a subtle left indent.
    */
   writeLine(text: string): void {
-    const vLen = visibleLength(text);
-    const pad = Math.max(0, this.contentWidth - vLen);
-    process.stdout.write(
-      `${CYAN}│${RESET} ${text}${" ".repeat(pad)} ${CYAN}│${RESET}\n`
-    );
+    if (this.firstLine && visibleLength(text) === 0) return;
+    this.firstLine = false;
+    process.stdout.write(`  ${text}\n`);
   }
 }
