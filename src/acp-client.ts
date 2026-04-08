@@ -375,7 +375,7 @@ export class AcpClient {
     const context = this.shell.getContext();
     const cwd = params.cwd ?? context.cwd;
 
-    this.tui.showToolCall(`$ ${fullCommand}`);
+    // Don't show tool call here - it's already shown in handleSessionUpdate
 
     const id = `t${++this.terminalCounter}`;
 
