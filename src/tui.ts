@@ -1,4 +1,5 @@
 import { MarkdownRenderer } from "./markdown.js";
+import type { DiffResult } from "./diff.js";
 
 const CYAN = "\x1b[36m";
 const DIM = "\x1b[2m";
@@ -10,6 +11,10 @@ const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+function visibleLen(str: string): number {
+  return str.replace(/\x1b\[[^m]*m/g, "").length;
+}
 
 export class TUI {
   private spinnerInterval: ReturnType<typeof setInterval> | null = null;
@@ -40,20 +45,22 @@ export class TUI {
     }
   }
 
+  flushRenderer(): void {
+    this.renderer?.flush();
+  }
+
   writeAgentText(text: string): void {
     this.stopSpinner();
-    if (this.renderer) {
-      this.renderer.push(text);
-    }
+    if (!this.renderer) this.startAgentResponse();
+    this.renderer!.push(text);
   }
 
   showToolCall(title: string, description?: string): void {
     this.stopSpinner();
-    if (this.renderer) {
-      this.renderer.flush();
-      const desc = description ? ` ${DIM}${description}${RESET}` : "";
-      this.renderer.writeLine(`${YELLOW}${BOLD}▶ ${title}${RESET}${desc}`);
-    }
+    if (!this.renderer) this.startAgentResponse();
+    this.renderer!.flush();
+    const desc = description ? ` ${DIM}${description}${RESET}` : "";
+    this.renderer!.writeLine(`${YELLOW}${BOLD}▶ ${title}${RESET}${desc}`);
   }
 
   showToolResult(exitCode: number | null): void {
@@ -145,6 +152,120 @@ export class TUI {
         if (ch === "y") resolve("approve");
         else if (ch === "a") resolve("approve_all");
         else resolve(null);
+      };
+      process.stdin.on("data", handler);
+    });
+  }
+
+  /**
+   * Show an interactive diff preview box and wait for the user's decision.
+   * Returns "approve", "reject", or "approve_all".
+   */
+  async previewDiff(opts: {
+    path: string;
+    diff: DiffResult;
+  }): Promise<"approve" | "reject" | "approve_all"> {
+    const termW = process.stdout.columns || 80;
+    const contentW = Math.min(80, termW - 4);
+    const boxW = contentW + 2;
+    const MAX_DISPLAY = 25;
+    const R = RESET;
+
+    // Helper: write one line inside the box with proper padding
+    const boxed = (text: string) => {
+      const pad = Math.max(0, contentW - visibleLen(text));
+      process.stdout.write(
+        `${YELLOW}│${R} ${text}${" ".repeat(pad)} ${YELLOW}│${R}\n`,
+      );
+    };
+
+    // ── Count lines & measure line-number column ──
+    let totalLines = 0;
+    let maxNo = 0;
+    for (const hunk of opts.diff.hunks) {
+      totalLines += hunk.lines.length;
+      for (const line of hunk.lines) {
+        const n = line.oldNo ?? line.newNo ?? 0;
+        if (n > maxNo) maxNo = n;
+      }
+    }
+    const noW = String(maxNo).length;
+    const textMax = contentW - noW - 6;
+
+    // ── Top border with header ──
+    process.stdout.write("\n");
+    const stats = opts.diff.isNewFile
+      ? `(+${opts.diff.added} lines)`
+      : `(+${opts.diff.added} / -${opts.diff.removed})`;
+    const headerText = opts.diff.isNewFile
+      ? `new: ${opts.path}  ${stats}`
+      : `${opts.path}  ${stats}`;
+    const afterDashes = Math.max(1, boxW - headerText.length - 2);
+    process.stdout.write(
+      `${YELLOW}┌${R} ${headerText} ${YELLOW}${"─".repeat(afterDashes)}┐${R}\n`,
+    );
+
+    boxed("");
+
+    // ── Diff lines ──
+    let shown = 0;
+    let hunkIdx = 0;
+    for (const hunk of opts.diff.hunks) {
+      if (shown >= MAX_DISPLAY) break;
+      if (hunkIdx > 0) boxed(`  ${DIM}⋯${R}`);
+
+      for (const line of hunk.lines) {
+        if (shown >= MAX_DISPLAY) break;
+        shown++;
+
+        const no = String(line.oldNo ?? line.newNo ?? "").padStart(noW);
+        const sign =
+          line.type === "removed"
+            ? `${RED}-${R}`
+            : line.type === "added"
+              ? `${GREEN}+${R}`
+              : " ";
+        const color =
+          line.type === "removed" ? RED
+          : line.type === "added" ? GREEN
+          : DIM;
+        const text =
+          line.text.length > textMax
+            ? line.text.slice(0, textMax - 1) + "…"
+            : line.text;
+
+        boxed(`${sign} ${DIM}${no}${R} ${DIM}│${R} ${color}${text}${R}`);
+      }
+      hunkIdx++;
+    }
+
+    if (totalLines > MAX_DISPLAY) {
+      boxed(`  ${DIM}⋯ ${totalLines - MAX_DISPLAY} more lines${R}`);
+    }
+
+    boxed("");
+
+    // ── Prompt ──
+    process.stdout.write(`${YELLOW}├${"─".repeat(boxW)}┤${R}\n`);
+    boxed(`  ${BOLD}[y] Apply  [n] Skip  [a] Apply all${R}`);
+    process.stdout.write(`${YELLOW}└${"─".repeat(boxW)}┘${R}\n`);
+
+    // ── Wait for keypress ──
+    return new Promise((resolve) => {
+      const handler = (data: Buffer) => {
+        const ch = data.toString("utf-8").toLowerCase();
+        process.stdin.removeListener("data", handler);
+
+        if (ch === "y") {
+          process.stdout.write(`  ${GREEN}✓ Applied${R}\n`);
+          resolve("approve");
+        } else if (ch === "a") {
+          process.stdout.write(`  ${GREEN}✓ Applied (auto-approve on)${R}\n`);
+          resolve("approve_all");
+        } else {
+          process.stdout.write(`  ${RED}✗ Skipped${R}\n`);
+          resolve("reject");
+        }
       };
       process.stdin.on("data", handler);
     });
