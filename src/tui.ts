@@ -247,7 +247,7 @@ export class TUI {
 
     // ── Prompt ──
     process.stdout.write(`${YELLOW}├${"─".repeat(boxW)}┤${R}\n`);
-    boxed(`  ${BOLD}[y] Apply  [n] Skip  [a] Apply all${R}`);
+    boxed(`  ${BOLD}[y] Apply  [n] Skip  [a] Don't ask again${R}`);
     process.stdout.write(`${YELLOW}└${"─".repeat(boxW)}┘${R}\n`);
 
     // ── Wait for keypress ──
