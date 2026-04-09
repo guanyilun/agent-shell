@@ -2,8 +2,9 @@
 import { EventBus } from "./event-bus.js";
 import { ContextManager } from "./context-manager.js";
 import { Shell } from "./shell.js";
-import { TUI } from "./tui.js";
 import { AcpClient } from "./acp-client.js";
+import { DIM, GREEN, RESET } from "./ansi.js";
+import { tuiRenderer } from "./extensions/tui-renderer.js";
 import { interactivePrompts } from "./extensions/interactive-prompts.js";
 import { slashCommands } from "./extensions/slash-commands.js";
 import { fileAutocomplete } from "./extensions/file-autocomplete.js";
@@ -69,15 +70,28 @@ Inside the shell:
   return { agentCommand, agentArgs, shell, model };
 }
 
+function formatAgentInfo(agentInfo: { name: string; version: string }, model?: string): string {
+  const name = agentInfo.name.replace(/-acp$/, "").replace(/-/g, " ");
+  let infoStr = `${DIM}${name}${RESET}`;
+  if (model) {
+    const cleanModel = model
+      .replace(/^openai\//i, "")
+      .replace(/^anthropic\//i, "")
+      .replace(/^google\//i, "");
+    infoStr += ` ${DIM}(${cleanModel})${RESET}`;
+  }
+  return `${infoStr} ${GREEN}●${RESET}`;
+}
+
 async function main(): Promise<void> {
   const config = parseArgs(process.argv.slice(2));
 
   // Create foundational infrastructure
   const bus = new EventBus();
   const contextManager = new ContextManager(bus);
-  const tui = new TUI(bus);
 
-  // Load extensions
+  // Load extensions (order doesn't matter — they just register on the bus)
+  tuiRenderer(bus);
   interactivePrompts(bus);
 
   // Set terminal title
@@ -92,7 +106,6 @@ async function main(): Promise<void> {
 
   // Signal handling
   const cleanup = () => {
-    tui.teardownStatusBar();
     acpClient?.kill();
     shell.kill();
     if (process.stdin.isTTY) {
@@ -143,35 +156,14 @@ async function main(): Promise<void> {
       }
     },
     onShowAgentInfo: () => {
-      // Return agent info string and model when entering agent input mode
       if (acpClient && acpClient.isConnected()) {
         const agentInfo = acpClient.getAgentInfo();
         const model = acpClient.getModel();
         if (agentInfo) {
-          return {
-            info: tui.getAgentInfoString(agentInfo, model),
-            model: model
-          };
-        } else {
-          // Debug: show why agent info is not available
-          if (process.env.DEBUG) {
-            process.stderr.write('[agent-shell] Agent info not available\n');
-          }
-        }
-      } else {
-        // Debug: show why we can't show agent info
-        if (process.env.DEBUG) {
-          if (!acpClient) {
-            process.stderr.write('[agent-shell] acpClient is null\n');
-          } else if (!acpClient.isConnected()) {
-            process.stderr.write('[agent-shell] Agent not connected\n');
-          }
+          return { info: formatAgentInfo(agentInfo, model) };
         }
       }
       return { info: "" };
-    },
-    onPtyOutput: () => {
-      tui.scheduleRepaint();
     },
   });
 
@@ -188,7 +180,6 @@ async function main(): Promise<void> {
     try {
       await acpClient!.start();
       agentConnected = true;
-      // Note: We don't print success message here to avoid interfering with shell output
     } catch (err) {
       console.error(`Failed to connect to ${config.agentCommand}:`, err);
     }
@@ -206,12 +197,10 @@ async function main(): Promise<void> {
     const newCols = process.stdout.columns || 80;
     const newRows = process.stdout.rows || 24;
     shell.resize(newCols, newRows);
-    tui.handleResize(newCols, newRows);
   });
 
   // Handle shell exit
   shell.onExit((e) => {
-    tui.teardownStatusBar();
     acpClient?.kill();
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(false);
@@ -224,9 +213,6 @@ async function main(): Promise<void> {
     process.stdin.setRawMode(true);
   }
   process.stdin.resume();
-
-  // Set up status bar after shell has a moment to initialize
-  setTimeout(() => tui.setupStatusBar(), 500);
 }
 
 main().catch((err) => {
