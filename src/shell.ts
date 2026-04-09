@@ -30,7 +30,7 @@ export class Shell implements InputContext {
     for (const [k, v] of Object.entries(process.env)) {
       if (v !== undefined) env[k] = v;
     }
-    env.AGENT_SHELL = "1";
+    env.AGENT_SH = "1";
 
     // Spawn the user's shell with their full config (aliases, plugins, PATH,
     // completions, etc.). The core injects three invisible OSC hooks:
@@ -63,26 +63,26 @@ export class Shell implements InputContext {
         `[ -f "${userZdotdir}/.zshrc" ] && source "${userZdotdir}/.zshrc"`,
         "",
         "# agent-sh hooks (invisible OSC sequences for cwd + prompt detection)",
-        "__agent_shell_precmd() {",
+        "__agent_sh_precmd() {",
         `  ${osc7Cmd}`,
         `  ${promptMarker}`,
         "}",
-        "precmd_functions+=(__agent_shell_precmd)",
+        "precmd_functions+=(__agent_sh_precmd)",
         "",
         "# End-of-prompt marker via zle-line-init (fires after prompt is rendered)",
         "# Chain onto existing widget (p10k uses zle-line-init) rather than clobbering",
         'if (( ${+widgets[zle-line-init]} )); then',
-        "  zle -A zle-line-init __agent_shell_orig_line_init",
-        "  __agent_shell_line_init() {",
-        "    zle __agent_shell_orig_line_init",
+        "  zle -A zle-line-init __agent_sh_orig_line_init",
+        "  __agent_sh_line_init() {",
+        "    zle __agent_sh_orig_line_init",
         '    printf "\\e]9998;READY\\a"',
         "  }",
         "else",
-        "  __agent_shell_line_init() {",
+        "  __agent_sh_line_init() {",
         '    printf "\\e]9998;READY\\a"',
         "  }",
         "fi",
-        "zle -N zle-line-init __agent_shell_line_init",
+        "zle -N zle-line-init __agent_sh_line_init",
       ].join("\n") + "\n");
       env.ZDOTDIR = this.tmpDir;
       shellArgs = ["--no-globalrcs"];

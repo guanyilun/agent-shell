@@ -80,7 +80,7 @@ chmod +x dist/index.js
 ./dist/index.js --agent <agent-name>
 
 # Using environment variable to set default agent
-AGENT_SHELL_AGENT=claude-agent-acp npm start
+AGENT_SH_AGENT=claude-agent-acp npm start
 ```
 
 ### Install ACP-compatible agents
@@ -149,7 +149,7 @@ npm start -- --agent pi-acp --agent-args "--provider openai --model gpt-4o"
 npm start -- --shell /bin/zsh
 
 # Set default agent via environment variable
-AGENT_SHELL_AGENT=claude-agent-acp npm start
+AGENT_SH_AGENT=claude-agent-acp npm start
 ```
 
 ### Common Claude Models
@@ -178,7 +178,7 @@ agent-sh can be configured via environment variables:
 
 ```bash
 # Set the default agent to use
-export AGENT_SHELL_AGENT=pi-acp  # Default is pi-acp
+export AGENT_SH_AGENT=pi-acp  # Default is pi-acp
 ```
 
 **Smart Connection**: agent-sh uses an intelligent connection system where the shell starts immediately and the agent connects in the background. If you send a query before the agent is fully connected, the system automatically waits for connection completion. This provides instant access to the shell while ensuring reliable agent communication.

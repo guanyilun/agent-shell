@@ -4,21 +4,59 @@
   "description": "A shell-first terminal where any ACP-compatible AI agent is one keystroke away",
   "type": "module",
   "main": "dist/core.js",
+  "types": "dist/core.d.ts",
   "bin": {
     "agent-sh": "dist/index.js"
   },
   "exports": {
-    ".": "./dist/core.js",
-    "./core": "./dist/core.js",
+    ".": {
+      "types": "./dist/core.d.ts",
+      "default": "./dist/core.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "default": "./dist/core.js"
+    },
     "./utils/*": "./dist/utils/*",
-    "./types": "./dist/types.js"
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "default": "./dist/types.js"
+    }
   },
+  "files": [
+    "dist",
+    "examples"
+  ],
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "pi": "node dist/index.js --agent pi-acp",
-    "claude": "node dist/index.js --agent claude-agent-acp"
+    "claude": "node dist/index.js --agent claude-agent-acp",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "terminal",
+    "shell",
+    "agent",
+    "ai",
+    "acp",
+    "cli",
+    "pty",
+    "llm"
+  ],
+  "author": "Yilun Guan",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/guanyilun/agent-sh.git"
+  },
+  "homepage": "https://github.com/guanyilun/agent-sh",
+  "bugs": {
+    "url": "https://github.com/guanyilun/agent-sh/issues"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.18.1",

@@ -11,7 +11,7 @@ import type { AgentShellConfig } from "./types.js";
 
 function parseArgs(argv: string[]): AgentShellConfig {
   // Priority: CLI args > Environment variables > Config file > Defaults
-  const defaultAgent = process.env.AGENT_SHELL_AGENT || "pi-acp";
+  const defaultAgent = process.env.AGENT_SH_AGENT || "pi-acp";
   let agentCommand = defaultAgent;
   let agentArgs: string[] = [];
   let model: string | undefined;
@@ -46,7 +46,7 @@ Quick Start:
   npm run claude      Start with Claude agent
 
 Options:
-  --agent <cmd>       Agent command to launch (default: $AGENT_SHELL_AGENT or "pi-acp")
+  --agent <cmd>       Agent command to launch (default: $AGENT_SH_AGENT or "pi-acp")
   --agent-args <args> Arguments for the agent (space-separated, quoted)
   --shell <path>      Shell to use (default: $SHELL or /bin/bash)
   -e, --extensions    Extensions to load (comma-separated, repeatable)
@@ -59,7 +59,7 @@ Extensions:
     3. directory:  ~/.agent-sh/extensions/ (files or dirs with index.ts)
 
 Environment Variables:
-  AGENT_SHELL_AGENT   Default agent to use (e.g., "pi-acp", "claude")
+  AGENT_SH_AGENT   Default agent to use (e.g., "pi-acp", "claude")
 
 Examples:
   npm start --agent pi-acp
