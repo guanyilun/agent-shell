@@ -9,20 +9,17 @@ export class Shell implements InputContext {
   private outputParser: OutputParser;
   private paused = false;
   private agentActive = false;
-  private onPtyOutput: () => void;
 
   constructor(opts: {
     bus: EventBus;
     onAgentRequest: (query: string) => void;
     onAgentCancel: () => void;
-    onPtyOutput?: () => void;
     onShowAgentInfo?: () => { info: string; model?: string };
     cols: number;
     rows: number;
     shell: string;
     cwd: string;
   }) {
-    this.onPtyOutput = opts.onPtyOutput ?? (() => {});
 
     // Build environment — filter out undefined values (node-pty's native
     // posix_spawnp fails if any env value is undefined)
@@ -95,7 +92,6 @@ export class Shell implements InputContext {
 
       if (!this.paused) {
         process.stdout.write(data);
-        this.onPtyOutput();
       }
     });
   }
