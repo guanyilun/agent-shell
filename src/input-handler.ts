@@ -1,5 +1,6 @@
 import { visibleLen } from "./utils/ansi.js";
 import { palette as p } from "./utils/palette.js";
+import { LineEditor } from "./utils/line-editor.js";
 import type { EventBus } from "./event-bus.js";
 
 /**
@@ -21,7 +22,7 @@ export class InputHandler {
   private ctx: InputContext;
   private lineBuffer = "";
   private agentInputMode = false;
-  private agentInputBuffer = "";
+  private editor = new LineEditor();
   private autocompleteActive = false;
   private autocompleteIndex = 0;
   private autocompleteItems: { name: string; description: string }[] = [];
@@ -39,16 +40,20 @@ export class InputHandler {
     this.onShowAgentInfo = opts.onShowAgentInfo;
   }
 
-  /** Write the agent prompt line (clear + info prefix + ❯ + buffer text). */
+  /** Write the agent prompt line with cursor at the correct position. */
   private writeAgentPromptLine(showBuffer = true): void {
     const agentInfo = this.onShowAgentInfo();
     const infoPrefix = agentInfo.info ? `${agentInfo.info} ` : "";
-    process.stdout.write(
-      "\r\x1b[2K" +
-      infoPrefix +
-      p.warning + p.bold + "❯ " + p.reset +
-      (showBuffer ? p.accent + this.agentInputBuffer + p.reset : "")
-    );
+    const promptPrefix = infoPrefix + p.warning + p.bold + "❯ " + p.reset;
+    const bufferText = showBuffer ? p.accent + this.editor.buffer + p.reset : "";
+
+    process.stdout.write("\r\x1b[2K" + promptPrefix + bufferText);
+
+    // Position cursor within the buffer (not always at end)
+    if (showBuffer && this.editor.cursor < this.editor.buffer.length) {
+      const charsAfterCursor = this.editor.buffer.length - this.editor.cursor;
+      process.stdout.write(`\x1b[${charsAfterCursor}D`);
+    }
   }
 
   handleInput(data: string): void {
@@ -114,14 +119,14 @@ export class InputHandler {
 
   private enterAgentInputMode(): void {
     this.agentInputMode = true;
-    this.agentInputBuffer = "";
+    this.editor.clear();
     this.writeAgentPromptLine(false);
   }
 
   private exitAgentInputMode(): void {
     this.dismissAutocomplete();
     this.agentInputMode = false;
-    this.agentInputBuffer = "";
+    this.editor.clear();
     process.stdout.write("\r\x1b[2K");
     this.printPrompt();
   }
@@ -138,7 +143,7 @@ export class InputHandler {
 
   private updateAutocomplete(): void {
     const { items } = this.bus.emitPipe("autocomplete:request", {
-      buffer: this.agentInputBuffer,
+      buffer: this.editor.buffer,
       items: [],
     });
     if (items.length > 0) {
@@ -179,19 +184,8 @@ export class InputHandler {
     }
     const agentInfo = this.onShowAgentInfo();
     const infoLength = visibleLen(agentInfo.info);
-    const col = infoLength + 2 + this.agentInputBuffer.length;
+    const col = infoLength + 2 + this.editor.cursor;
     process.stdout.write(`\r\x1b[${col}C`);
-  }
-
-  private clearAutocompleteLines(): void {
-    if (this.autocompleteLines <= 0) return;
-
-    process.stdout.write("\x1b7"); // save cursor
-    for (let i = 0; i < this.autocompleteLines; i++) {
-      process.stdout.write("\n\x1b[2K"); // move down, clear line
-    }
-    process.stdout.write("\x1b8"); // restore cursor
-    this.autocompleteLines = 0;
   }
 
   private applyAutocomplete(): void {
@@ -199,18 +193,19 @@ export class InputHandler {
     const selected = this.autocompleteItems[this.autocompleteIndex];
     if (!selected) return;
 
-    const atPos = this.agentInputBuffer.lastIndexOf("@");
+    const atPos = this.editor.buffer.lastIndexOf("@");
     const isFileAc =
       atPos >= 0 &&
-      (atPos === 0 || this.agentInputBuffer[atPos - 1] === " ") &&
-      !this.agentInputBuffer.slice(atPos + 1).includes(" ");
+      (atPos === 0 || this.editor.buffer[atPos - 1] === " ") &&
+      !this.editor.buffer.slice(atPos + 1).includes(" ");
 
     if (isFileAc) {
-      this.agentInputBuffer =
-        this.agentInputBuffer.slice(0, atPos) + "@" + selected.name;
+      this.editor.buffer =
+        this.editor.buffer.slice(0, atPos) + "@" + selected.name;
     } else {
-      this.agentInputBuffer = selected.name;
+      this.editor.buffer = selected.name;
     }
+    this.editor.cursor = this.editor.buffer.length;
 
     this.clearAutocompleteLines();
     this.autocompleteActive = false;
@@ -228,107 +223,94 @@ export class InputHandler {
     this.autocompleteIndex = 0;
   }
 
+  private clearAutocompleteLines(): void {
+    if (this.autocompleteLines <= 0) return;
+
+    process.stdout.write("\x1b7"); // save cursor
+    for (let i = 0; i < this.autocompleteLines; i++) {
+      process.stdout.write("\n\x1b[2K"); // move down, clear line
+    }
+    process.stdout.write("\x1b8"); // restore cursor
+    this.autocompleteLines = 0;
+  }
+
   private handleAgentInput(data: string): void {
-    for (let i = 0; i < data.length; i++) {
-      const ch = data[i]!;
+    const actions = this.editor.feed(data);
 
-      // Detect arrow key sequences: \x1b[A (up), \x1b[B (down)
-      if (ch === "\x1b" && data[i + 1] === "[") {
-        const arrow = data[i + 2];
-        if (arrow === "A" && this.autocompleteActive) {
-          // Arrow up
-          this.autocompleteIndex =
-            this.autocompleteIndex === 0
-              ? this.autocompleteItems.length - 1
-              : this.autocompleteIndex - 1;
-          this.clearAutocompleteLines();
-          this.writeAgentPromptLine();
-          this.renderAutocomplete();
-          i += 2;
-          continue;
-        } else if (arrow === "B" && this.autocompleteActive) {
-          this.autocompleteIndex =
-            this.autocompleteIndex === this.autocompleteItems.length - 1
-              ? 0
-              : this.autocompleteIndex + 1;
-          this.clearAutocompleteLines();
-          this.writeAgentPromptLine();
-          this.renderAutocomplete();
-          i += 2;
-          continue;
-        } else if (!this.autocompleteActive) {
-          // Escape without arrow: cancel agent input mode
-          this.dismissAutocomplete();
-          this.exitAgentInputMode();
-          return;
-        }
-        // Other escape sequences (e.g. left/right arrow) — ignore for now
-        i += 2;
-        continue;
-      }
-
-      if (ch === "\x1b") {
-        // Bare escape (no bracket follows)
-        if (this.autocompleteActive) {
-          this.dismissAutocomplete();
-          this.writeAgentPromptLine();
-        } else {
-          this.dismissAutocomplete();
-          this.exitAgentInputMode();
-        }
-        return;
-      }
-
-      if (ch === "\t") {
-        if (this.autocompleteActive) {
-          this.applyAutocomplete();
-        }
-        continue;
-      }
-
-      if (ch === "\r") {
-        if (this.autocompleteActive) {
-          this.applyAutocomplete();
-        }
-        const query = this.agentInputBuffer.trim();
-        this.clearAutocompleteLines();
-        process.stdout.write("\r\x1b[2K");
-        this.agentInputMode = false;
-        this.agentInputBuffer = "";
-        this.dismissAutocomplete();
-        if (query && query.startsWith("/")) {
-          const spaceIdx = query.indexOf(" ");
-          const name = spaceIdx === -1 ? query : query.slice(0, spaceIdx);
-          const args = spaceIdx === -1 ? "" : query.slice(spaceIdx + 1).trim();
-          this.bus.emit("command:execute", { name, args });
-          this.ctx.redrawPrompt();
-        } else if (query) {
-          this.bus.emit("agent:submit", { query });
-        } else {
-          this.exitAgentInputMode();
-        }
-        return;
-      } else if (ch === "\x03") {
-        // Ctrl-C: cancel
-        this.dismissAutocomplete();
-        this.exitAgentInputMode();
-        return;
-      } else if (ch === "\x7f" || ch === "\b") {
-        // Backspace
-        if (this.agentInputBuffer.length > 0) {
-          this.agentInputBuffer = this.agentInputBuffer.slice(0, -1);
+    for (const act of actions) {
+      switch (act.action) {
+        case "changed":
           this.autocompleteIndex = 0;
           this.renderAgentInput();
-        } else {
+          break;
+
+        case "submit": {
+          if (this.autocompleteActive) {
+            this.applyAutocomplete();
+          }
+          const query = act.buffer.trim();
+          this.clearAutocompleteLines();
+          process.stdout.write("\r\x1b[2K");
+          this.agentInputMode = false;
+          this.editor.clear();
+          this.dismissAutocomplete();
+          if (query && query.startsWith("/")) {
+            const spaceIdx = query.indexOf(" ");
+            const name = spaceIdx === -1 ? query : query.slice(0, spaceIdx);
+            const args = spaceIdx === -1 ? "" : query.slice(spaceIdx + 1).trim();
+            this.bus.emit("command:execute", { name, args });
+            this.ctx.redrawPrompt();
+          } else if (query) {
+            this.bus.emit("agent:submit", { query });
+          } else {
+            this.exitAgentInputMode();
+          }
+          return;
+        }
+
+        case "cancel":
+          if (this.autocompleteActive) {
+            this.dismissAutocomplete();
+            this.writeAgentPromptLine();
+          } else {
+            this.exitAgentInputMode();
+          }
+          return;
+
+        case "delete-empty":
           this.dismissAutocomplete();
           this.exitAgentInputMode();
           return;
-        }
-      } else if (ch.charCodeAt(0) >= 32) {
-        // Printable character
-        this.agentInputBuffer += ch;
-        this.autocompleteIndex = 0;
-        this.renderAgentInput();
+
+        case "tab":
+          if (this.autocompleteActive) {
+            this.applyAutocomplete();
+          }
+          break;
+
+        case "arrow-up":
+          if (this.autocompleteActive) {
+            this.autocompleteIndex =
+              this.autocompleteIndex === 0
+                ? this.autocompleteItems.length - 1
+                : this.autocompleteIndex - 1;
+            this.clearAutocompleteLines();
+            this.writeAgentPromptLine();
+            this.renderAutocomplete();
+          }
+          break;
+
+        case "arrow-down":
+          if (this.autocompleteActive) {
+            this.autocompleteIndex =
+              this.autocompleteIndex === this.autocompleteItems.length - 1
+                ? 0
+                : this.autocompleteIndex + 1;
+            this.clearAutocompleteLines();
+            this.writeAgentPromptLine();
+            this.renderAutocomplete();
+          }
+          break;
       }
     }
   }
