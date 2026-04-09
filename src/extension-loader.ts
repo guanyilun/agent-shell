@@ -1,24 +1,17 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "./types.js";
 
-// Built-in extensions that can be loaded by short name via --extensions
-const BUILTIN_DIR = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "extensions",
-);
+const CONFIG_DIR = path.join(os.homedir(), ".agent-shell");
+const EXT_DIR = path.join(CONFIG_DIR, "extensions");
+const SETTINGS_PATH = path.join(CONFIG_DIR, "settings.json");
 
 const TS_EXTS = [".ts", ".tsx", ".mts"];
-const ALL_EXTS = [".js", ".mjs", ".ts", ".tsx", ".mts"];
+const SCRIPT_EXTS = [".js", ".mjs", ".ts", ".tsx", ".mts"];
 
 let tsRegistered = false;
 
-/**
- * Register tsx so that .ts/.tsx extensions can be loaded via import().
- * Called lazily on first TS extension encountered.
- */
 async function ensureTsSupport(): Promise<void> {
   if (tsRegistered) return;
   try {
@@ -30,53 +23,85 @@ async function ensureTsSupport(): Promise<void> {
   }
 }
 
+interface Settings {
+  extensions?: string[];
+}
+
+async function loadSettings(): Promise<Settings> {
+  try {
+    const raw = await fs.readFile(SETTINGS_PATH, "utf-8");
+    return JSON.parse(raw) as Settings;
+  } catch {
+    return {};
+  }
+}
+
 /**
- * Load user/third-party extensions from two sources:
- * 1. CLI --extensions flag (npm packages, short names, or file paths)
- * 2. ~/.agent-shell/extensions/ directory (.js, .mjs, .ts files)
+ * Load extensions from three sources (merged, deduplicated):
  *
- * Resolution for bare names (e.g. "interactive-prompts"):
- *   - First tries as an npm package (import("interactive-prompts"))
- *   - Falls back to built-in extension in dist/extensions/
+ * 1. CLI flags: -e / --extensions (npm packages or file paths)
+ * 2. settings.json: ~/.agent-shell/settings.json → extensions[]
+ * 3. Extensions dir: ~/.agent-shell/extensions/ (files and directories with index.{ts,js})
  *
- * Each extension module should export a default or named `activate`
- * function that receives an ExtensionContext.
+ * Extension specifiers resolve as:
+ *   - File path (relative or absolute) → import directly
+ *   - Bare name → npm package (Node resolution)
  *
+ * Each module should export a default or named `activate(ctx)` function.
  * Errors are non-fatal — logged via ui:error and skipped.
  */
 export async function loadExtensions(
   ctx: ExtensionContext,
-  extensionPaths?: string[],
+  cliExtensions?: string[],
 ): Promise<void> {
-  const paths: string[] = [];
+  const specifiers: string[] = [];
 
-  // 1. CLI-specified extensions
-  if (extensionPaths) {
-    paths.push(...extensionPaths);
+  // 1. CLI -e / --extensions
+  if (cliExtensions) {
+    specifiers.push(...cliExtensions);
   }
 
-  // 2. Directory-based discovery
-  const extDir = path.join(os.homedir(), ".agent-shell", "extensions");
+  // 2. settings.json
+  const settings = await loadSettings();
+  if (settings.extensions) {
+    specifiers.push(...settings.extensions);
+  }
+
+  // 3. ~/.agent-shell/extensions/ directory
   try {
-    const entries = await fs.readdir(extDir);
+    const entries = await fs.readdir(EXT_DIR, { withFileTypes: true });
     for (const entry of entries) {
-      if (ALL_EXTS.some((ext) => entry.endsWith(ext))) {
-        paths.push(path.join(extDir, entry));
+      const fullPath = path.join(EXT_DIR, entry.name);
+      if (entry.isDirectory()) {
+        // Directory extension: look for index.{ts,js,mjs,...}
+        const indexFile = await findIndex(fullPath);
+        if (indexFile) {
+          specifiers.push(indexFile);
+        }
+      } else if (SCRIPT_EXTS.some((ext) => entry.name.endsWith(ext))) {
+        specifiers.push(fullPath);
       }
     }
   } catch {
     // Directory doesn't exist — no user extensions
   }
 
-  // 3. Load each extension
-  for (const extPath of paths) {
+  // Deduplicate
+  const seen = new Set<string>();
+  const unique = specifiers.filter((s) => {
+    if (seen.has(s)) return false;
+    seen.add(s);
+    return true;
+  });
+
+  // Load each extension
+  for (const specifier of unique) {
     try {
-      // Enable TS support if any TS extension is encountered
-      if (TS_EXTS.some((ext) => extPath.endsWith(ext))) {
+      const importPath = await resolveSpecifier(specifier);
+
+      if (TS_EXTS.some((ext) => importPath.endsWith(ext))) {
         await ensureTsSupport();
       }
-
-      const importPath = await resolveExtension(extPath);
       const mod = await import(importPath);
       // tsx may double-wrap default exports: mod.default.default
       const activate = typeof mod.default === "function"
@@ -89,52 +114,64 @@ export async function loadExtensions(
       }
     } catch (err) {
       ctx.bus.emit("ui:error", {
-        message: `Failed to load extension ${extPath}: ${err instanceof Error ? err.message : String(err)}`,
+        message: `Failed to load extension ${specifier}: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
   }
 }
 
 /**
- * Resolve an extension specifier to an importable path.
- *
- * Resolution order:
- * 1. File path (relative from cwd or absolute)
- * 2. Bare name → npm package (let Node resolve)
- * 3. Bare name → built-in extension (dist/extensions/<name>.js)
+ * Find an index file in a directory extension.
  */
-async function resolveExtension(specifier: string): Promise<string> {
-  // Explicit file paths
+async function findIndex(dir: string): Promise<string | null> {
+  for (const ext of SCRIPT_EXTS) {
+    const candidate = path.join(dir, `index${ext}`);
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve a specifier to an importable string.
+ *
+ * - Relative path (starts with ".") → resolve from cwd, file:// URL
+ * - Absolute path → file:// URL (directories resolved to index file)
+ * - Bare name → npm package (let Node resolve)
+ */
+async function resolveSpecifier(specifier: string): Promise<string> {
+  let resolved: string;
+
   if (specifier.startsWith(".")) {
-    return `file://${path.resolve(process.cwd(), specifier)}`;
-  }
-  if (path.isAbsolute(specifier)) {
-    return `file://${specifier}`;
+    resolved = path.resolve(process.cwd(), specifier);
+  } else if (path.isAbsolute(specifier)) {
+    resolved = specifier;
+  } else {
+    // Bare specifier — npm package
+    return specifier;
   }
 
-  // Bare name — could be an npm package or a built-in short name
-  const isBareShortName = !specifier.includes("/") && !specifier.includes("\\")
-    && !ALL_EXTS.some((ext) => specifier.endsWith(ext));
-
-  if (isBareShortName) {
-    // Try npm package first
-    try {
-      await import.meta.resolve?.(specifier);
-      return specifier;
-    } catch {
-      // Not an installed package — try built-in
+  // If it's a directory, find the index file
+  try {
+    const stat = await fs.stat(resolved);
+    if (stat.isDirectory()) {
+      const indexFile = await findIndex(resolved);
+      if (indexFile) {
+        return `file://${indexFile}`;
+      }
+      throw new Error(`No index file found in ${resolved}`);
     }
-
-    // Fall back to built-in extension
-    const builtinPath = path.join(BUILTIN_DIR, `${specifier}.js`);
-    try {
-      await fs.access(builtinPath);
-      return `file://${builtinPath}`;
-    } catch {
-      // Not a built-in either — let it fail naturally below
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      // Not a directory, treat as file
+    } else if (err instanceof Error && err.message.startsWith("No index")) {
+      throw err;
     }
   }
 
-  // Let Node try to resolve it (npm package with subpath, etc.)
-  return specifier;
+  return `file://${resolved}`;
 }

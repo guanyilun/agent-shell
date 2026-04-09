@@ -32,8 +32,9 @@ function parseArgs(argv: string[]): AgentShellConfig {
       }
     } else if (arg === "--shell" && argv[i + 1]) {
       return { agentCommand, agentArgs, shell: argv[++i]!, model, extensions };
-    } else if (arg === "--extensions" && argv[i + 1]) {
-      extensions = argv[++i]!.split(",").map(s => s.trim());
+    } else if ((arg === "--extensions" || arg === "-e") && argv[i + 1]) {
+      const exts = argv[++i]!.split(",").map(s => s.trim());
+      extensions = extensions ? [...extensions, ...exts] : exts;
     } else if (arg === "--help" || arg === "-h") {
       console.log(`agent-shell — a shell-first terminal with ACP agent access
 
@@ -48,16 +49,22 @@ Options:
   --agent <cmd>       Agent command to launch (default: $AGENT_SHELL_AGENT or "pi-acp")
   --agent-args <args> Arguments for the agent (space-separated, quoted)
   --shell <path>      Shell to use (default: $SHELL or /bin/bash)
-  --extensions <paths> Comma-separated extension module paths to load
+  -e, --extensions    Extensions to load (comma-separated, repeatable)
   -h, --help          Show this help
+
+Extensions:
+  Extensions are loaded from (in order):
+    1. -e flags:  npm packages or file paths
+    2. settings:  ~/.agent-shell/settings.json → "extensions": [...]
+    3. directory:  ~/.agent-shell/extensions/ (files or dirs with index.ts)
 
 Environment Variables:
   AGENT_SHELL_AGENT   Default agent to use (e.g., "pi-acp", "claude")
 
 Examples:
   npm start --agent pi-acp
-  npm start -- --agent claude --agent-args "--model sonnet"
-  AGENT_SHELL_AGENT=claude npm start
+  npm start -- -e my-extension-package
+  npm start -- -e ./local-ext.ts -e another-package
 
 Inside the shell:
   Type normally        Commands run in your real shell
