@@ -45,40 +45,23 @@ The [Agent Client Protocol](https://agentclientprotocol.com/) decouples the shel
 - **Thinking Display** — Toggle agent thinking/reasoning text with Ctrl+T
 - **Themeable** — Semantic color palette, swappable via [extensions](docs/extensions.md)
 
-## Install
-
-```bash
-git clone https://github.com/guanyilun/agent-sh.git
-cd agent-sh
-npm install
-npm run build
-```
-
-Requires Node.js 18+ and an ACP-compatible agent installed on your system.
-
-### Install ACP-compatible agents
-
-| Agent | Install Command | Notes |
-|-------|----------------|-------|
-| **pi-acp** | `npm install -g pi-acp` | **Recommended default** - ACP adapter for pi coding agent |
-| **claude-agent-acp** | `npm install -g @agentclientprotocol/claude-agent-acp` | Anthropic's official ACP Claude agent |
-
-> **Note**: The `claude` CLI tool (Claude Code) does **not** support the ACP protocol. Use `claude-agent-acp` or `pi-acp` with Anthropic models.
-
 ## Quick Start
 
 ```bash
-# 1. Install an agent
-npm install -g pi-acp
+# 1. Install agent-sh and an ACP-compatible agent
+npm install -g agent-sh pi-acp
 
 # 2. Set API keys
 export ANTHROPIC_API_KEY="your-key"
 
 # 3. Start
-npm start                          # default agent (pi-acp)
-npm run claude                     # claude-agent-acp
-npm start -- --agent pi-acp       # explicit agent
+agent-sh                           # default agent (pi-acp)
+agent-sh --agent claude-agent-acp  # use a different agent
 ```
+
+Requires Node.js 18+. Other ACP agents: `npm install -g @agentclientprotocol/claude-agent-acp`
+
+> **Note**: The `claude` CLI tool (Claude Code) does **not** support ACP. Use `claude-agent-acp` or `pi-acp` with Anthropic models.
 
 See the [Usage Guide](docs/usage.md) for all options, model configuration, and environment variables.
 
