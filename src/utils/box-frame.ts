@@ -5,7 +5,8 @@
  * never writes to stdout. Supports multiple border styles and
  * optional title/footer sections with dividers.
  */
-import { DIM, RESET, visibleLen } from "./ansi.js";
+import { visibleLen } from "./ansi.js";
+import { palette as p } from "./palette.js";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -52,7 +53,7 @@ export interface BoxFrameOptions {
  * @returns Array of terminal-ready lines with borders
  */
 export function renderBoxFrame(content: string[], opts: BoxFrameOptions): string[] {
-  const { width, borderColor = DIM } = opts;
+  const { width, borderColor = p.dim } = opts;
   const style = opts.style ?? "rounded";
   const b = BORDERS[style];
   const bc = borderColor;
@@ -66,10 +67,10 @@ export function renderBoxFrame(content: string[], opts: BoxFrameOptions): string
     const titleVis = visibleLen(opts.title);
     const afterDashes = Math.max(1, width - titleVis - 4);
     output.push(
-      `${bc}${b.tl}${RESET} ${opts.title} ${bc}${b.h.repeat(afterDashes)}${b.tr}${RESET}`,
+      `${bc}${b.tl}${p.reset} ${opts.title} ${bc}${b.h.repeat(afterDashes)}${b.tr}${p.reset}`,
     );
   } else {
-    output.push(`${bc}${b.tl}${b.h.repeat(width - 2)}${b.tr}${RESET}`);
+    output.push(`${bc}${b.tl}${b.h.repeat(width - 2)}${b.tr}${p.reset}`);
   }
 
   // Content lines
@@ -79,14 +80,14 @@ export function renderBoxFrame(content: string[], opts: BoxFrameOptions): string
 
   // Footer with divider
   if (opts.footer && opts.footer.length > 0) {
-    output.push(`${bc}${b.ml}${b.h.repeat(width - 2)}${b.mr}${RESET}`);
+    output.push(`${bc}${b.ml}${b.h.repeat(width - 2)}${b.mr}${p.reset}`);
     for (const line of opts.footer) {
       output.push(boxLine(line, innerW, b.v, bc));
     }
   }
 
   // Bottom border
-  output.push(`${bc}${b.bl}${b.h.repeat(width - 2)}${b.br}${RESET}`);
+  output.push(`${bc}${b.bl}${b.h.repeat(width - 2)}${b.br}${p.reset}`);
 
   return output;
 }
@@ -95,5 +96,5 @@ export function renderBoxFrame(content: string[], opts: BoxFrameOptions): string
 
 function boxLine(text: string, innerW: number, v: string, bc: string): string {
   const pad = Math.max(0, innerW - visibleLen(text));
-  return `${bc}${v}${RESET} ${text}${" ".repeat(pad)} ${bc}${v}${RESET}`;
+  return `${bc}${v}${p.reset} ${text}${" ".repeat(pad)} ${bc}${v}${p.reset}`;
 }

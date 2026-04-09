@@ -11,7 +11,7 @@
  * can subscribe to the same events.
  */
 import { MarkdownRenderer } from "../utils/markdown.js";
-import { CYAN, DIM, GREEN, RED, GRAY, BOLD, RESET } from "../utils/ansi.js";
+import { palette as p } from "../utils/palette.js";
 import {
   renderToolCall,
   renderToolResult,
@@ -56,14 +56,14 @@ export default function activate({ bus }: ExtensionContext): void {
       stopCurrentSpinner();
       if (showThinkingText) {
         if (!renderer) startAgentResponse();
-        renderer!.writeLine(`${DIM}${BOLD}💭 Thinking${RESET}`);
+        renderer!.writeLine(`${p.dim}${p.bold}💭 Thinking${p.reset}`);
       } else {
         startThinkingSpinner("Thinking");
       }
     }
     if (showThinkingText && e.text) {
       if (!renderer) startAgentResponse();
-      renderer!.push(`${DIM}${e.text}${RESET}`);
+      renderer!.push(`${p.dim}${e.text}${p.reset}`);
       flushOutput();
     }
   });
@@ -153,25 +153,25 @@ export default function activate({ bus }: ExtensionContext): void {
     const lines: string[] = [];
     for (const raw of query.split("\n")) {
       if (raw.length <= contentW) {
-        lines.push(`${CYAN}${raw}${RESET}`);
+        lines.push(`${p.accent}${raw}${p.reset}`);
       } else {
         // Simple word wrap
         let remaining = raw;
         while (remaining.length > contentW) {
           let breakAt = remaining.lastIndexOf(" ", contentW);
           if (breakAt <= 0) breakAt = contentW;
-          lines.push(`${CYAN}${remaining.slice(0, breakAt)}${RESET}`);
+          lines.push(`${p.accent}${remaining.slice(0, breakAt)}${p.reset}`);
           remaining = remaining.slice(breakAt).trimStart();
         }
-        if (remaining) lines.push(`${CYAN}${remaining}${RESET}`);
+        if (remaining) lines.push(`${p.accent}${remaining}${p.reset}`);
       }
     }
 
     const framed = renderBoxFrame(lines, {
       width: boxW,
       style: "rounded",
-      borderColor: CYAN,
-      title: `${CYAN}${BOLD}❯${RESET}`,
+      borderColor: p.accent,
+      title: `${p.accent}${p.bold}❯${p.reset}`,
     });
     process.stdout.write("\n");
     for (const line of framed) {
@@ -186,7 +186,7 @@ export default function activate({ bus }: ExtensionContext): void {
         renderer.flush();
         const termW = process.stdout.columns || 80;
         const w = Math.min(80, termW);
-        renderer.writeLine(`${DIM}${"─".repeat(w)}${RESET}`);
+        renderer.writeLine(`${p.dim}${"─".repeat(w)}${p.reset}`);
       }
     }
     stopCurrentSpinner();
@@ -237,7 +237,7 @@ export default function activate({ bus }: ExtensionContext): void {
     commandOutputBuffer = lines.pop()!;
     for (const line of lines) {
       if (commandOutputLineCount < MAX_COMMAND_OUTPUT_LINES) {
-        renderer.writeLine(`${DIM}  ${line}${RESET}`);
+        renderer.writeLine(`${p.dim}  ${line}${p.reset}`);
         commandOutputLineCount++;
       } else {
         commandOutputOverflow++;
@@ -249,7 +249,7 @@ export default function activate({ bus }: ExtensionContext): void {
     if (!renderer) return;
     if (commandOutputBuffer) {
       if (commandOutputLineCount < MAX_COMMAND_OUTPUT_LINES) {
-        renderer.writeLine(`${DIM}  ${commandOutputBuffer}${RESET}`);
+        renderer.writeLine(`${p.dim}  ${commandOutputBuffer}${p.reset}`);
         commandOutputLineCount++;
       } else {
         commandOutputOverflow++;
@@ -257,26 +257,27 @@ export default function activate({ bus }: ExtensionContext): void {
       commandOutputBuffer = "";
     }
     if (commandOutputOverflow > 0) {
-      renderer.writeLine(`${DIM}  … ${commandOutputOverflow} more lines${RESET}`);
+      renderer.writeLine(`${p.dim}  … ${commandOutputOverflow} more lines${p.reset}`);
       commandOutputOverflow = 0;
     }
   }
 
   const DIFF_MAX_LINES = 20;
 
+  function diffTitle(filePath: string, diff: DiffResult): string {
+    const stats = diff.isNewFile
+      ? `${p.success}+${diff.added}${p.reset}`
+      : `${p.success}+${diff.added}${p.reset} ${p.error}-${diff.removed}${p.reset}`;
+    return `${p.dim}${filePath}${p.reset}  ${stats}`;
+  }
+
   function showFileDiff(filePath: string, diff: DiffResult): void {
     if (diff.isIdentical) return;
 
     const termW = process.stdout.columns || 80;
     const boxW = Math.min(84, termW);
-    const contentW = boxW - 4; // inside box padding
+    const contentW = boxW - 4;
 
-    const stats = diff.isNewFile
-      ? `${GREEN}+${diff.added}${RESET}`
-      : `${GREEN}+${diff.added}${RESET} ${RED}-${diff.removed}${RESET}`;
-    const title = `${DIM}${filePath}${RESET}  ${stats}`;
-
-    // Render with limit to check if truncated
     const diffLines = renderDiff(diff, {
       width: contentW,
       filePath,
@@ -285,7 +286,6 @@ export default function activate({ bus }: ExtensionContext): void {
       mode: "unified",
     });
 
-    // Check if the diff was truncated (last line contains "… N more lines")
     const lastLine = diffLines[diffLines.length - 1] ?? "";
     const isTruncated = lastLine.includes("… ");
 
@@ -295,18 +295,17 @@ export default function activate({ bus }: ExtensionContext): void {
       lastTruncatedDiff = null;
     }
 
-    // Skip the header line from renderDiff (we have our own title)
     const body = diffLines.length > 1 ? ["", ...diffLines.slice(1), ""] : diffLines;
 
     const footer = isTruncated
-      ? [`  ${DIM}ctrl+o to expand${RESET}`]
+      ? [`  ${p.dim}ctrl+o to expand${p.reset}`]
       : undefined;
 
     const framed = renderBoxFrame(body, {
       width: boxW,
       style: "rounded",
-      borderColor: DIM,
-      title,
+      borderColor: p.dim,
+      title: diffTitle(filePath, diff),
       footer,
     });
 
@@ -323,22 +322,15 @@ export default function activate({ bus }: ExtensionContext): void {
     entry.expanded = !entry.expanded;
 
     if (!entry.expanded) {
-      // Collapsing — show the truncated version again
       showFileDiffCached(entry);
       return;
     }
 
-    // Build and cache the expanded frame if not already cached
     if (!entry.expandedLines) {
       const { filePath, diff } = entry;
       const termW = process.stdout.columns || 80;
       const boxW = Math.min(120, termW);
       const contentW = boxW - 4;
-
-      const stats = diff.isNewFile
-        ? `${GREEN}+${diff.added}${RESET}`
-        : `${GREEN}+${diff.added}${RESET} ${RED}-${diff.removed}${RESET}`;
-      const title = `${DIM}${filePath}${RESET}  ${stats}`;
 
       const diffLines = renderDiff(diff, {
         width: contentW,
@@ -352,9 +344,9 @@ export default function activate({ bus }: ExtensionContext): void {
       entry.expandedLines = renderBoxFrame(body, {
         width: boxW,
         style: "rounded",
-        borderColor: DIM,
-        title,
-        footer: [`  ${DIM}ctrl+o to collapse${RESET}`],
+        borderColor: p.dim,
+        title: diffTitle(filePath, diff),
+        footer: [`  ${p.dim}ctrl+o to collapse${p.reset}`],
       });
     }
 
@@ -364,17 +356,11 @@ export default function activate({ bus }: ExtensionContext): void {
     }
   }
 
-  /** Re-render the truncated diff (for collapsing back). */
   function showFileDiffCached(entry: NonNullable<typeof lastTruncatedDiff>): void {
     const { filePath, diff } = entry;
     const termW = process.stdout.columns || 80;
     const boxW = Math.min(84, termW);
     const contentW = boxW - 4;
-
-    const stats = diff.isNewFile
-      ? `${GREEN}+${diff.added}${RESET}`
-      : `${GREEN}+${diff.added}${RESET} ${RED}-${diff.removed}${RESET}`;
-    const title = `${DIM}${filePath}${RESET}  ${stats}`;
 
     const diffLines = renderDiff(diff, {
       width: contentW,
@@ -389,9 +375,9 @@ export default function activate({ bus }: ExtensionContext): void {
     const framed = renderBoxFrame(body, {
       width: boxW,
       style: "rounded",
-      borderColor: DIM,
-      title,
-      footer: [`  ${DIM}ctrl+o to expand${RESET}`],
+      borderColor: p.dim,
+      title: diffTitle(filePath, diff),
+      footer: [`  ${p.dim}ctrl+o to expand${p.reset}`],
     });
 
     process.stdout.write("\n");
@@ -403,14 +389,14 @@ export default function activate({ bus }: ExtensionContext): void {
   function toggleThinkingDisplay(): void {
     showThinkingText = !showThinkingText;
     const state = showThinkingText ? "on" : "off";
-    process.stdout.write(`\n${DIM}Thinking display: ${state}${RESET}\n`);
+    process.stdout.write(`\n${p.dim}Thinking display: ${state}${p.reset}\n`);
   }
 
   function showError(message: string): void {
-    process.stdout.write(`\n${RED}Error: ${message}${RESET}\n`);
+    process.stdout.write(`\n${p.error}Error: ${message}${p.reset}\n`);
   }
 
   function showInfo(message: string): void {
-    process.stdout.write(`${GRAY}${message}${RESET}\n`);
+    process.stdout.write(`${p.muted}${message}${p.reset}\n`);
   }
 }

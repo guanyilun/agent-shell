@@ -4,7 +4,8 @@
  * Follows the render(width) -> string[] protocol for completed tools.
  * Also provides a spinner/timer component for in-progress tools.
  */
-import { CYAN, DIM, YELLOW, GREEN, RED, GRAY, BOLD, RESET, visibleLen } from "./ansi.js";
+import { visibleLen } from "./ansi.js";
+import { palette as p } from "./palette.js";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -69,18 +70,18 @@ export function renderToolCall(
 
   if (mode === "summary") {
     const text = truncateVisible(`▶ ${tool.title}`, width);
-    return [`${YELLOW}${text}${RESET}`];
+    return [`${p.warning}${text}${p.reset}`];
   }
 
   const lines: string[] = [];
-  lines.push(`${YELLOW}${BOLD}▶ ${tool.title}${RESET}`);
+  lines.push(`${p.warning}${p.bold}▶ ${tool.title}${p.reset}`);
 
   if (tool.command && mode === "full") {
     const maxCmdW = Math.max(1, width - 4);
     const cmd = tool.command.length > maxCmdW
       ? tool.command.slice(0, maxCmdW - 1) + "…"
       : tool.command;
-    lines.push(`  ${DIM}$ ${cmd}${RESET}`);
+    lines.push(`  ${p.dim}$ ${cmd}${p.reset}`);
   }
 
   return lines;
@@ -97,11 +98,11 @@ export function renderToolResult(
 
   // Status indicator
   if (result.exitCode === null) {
-    lines.push(`  ${GRAY}(timed out)${RESET}`);
+    lines.push(`  ${p.muted}(timed out)${p.reset}`);
   } else if (result.exitCode === 0) {
-    lines.push(`  ${GREEN}✓${RESET}`);
+    lines.push(`  ${p.success}✓${p.reset}`);
   } else {
-    lines.push(`  ${RED}✗ exit ${result.exitCode}${RESET}`);
+    lines.push(`  ${p.error}✗ exit ${result.exitCode}${p.reset}`);
   }
 
   // Output preview (full mode only)
@@ -115,11 +116,11 @@ export function renderToolResult(
       const text = line.length > maxTextW
         ? line.slice(0, maxTextW - 1) + "…"
         : line;
-      lines.push(`  ${DIM}  ${text}${RESET}`);
+      lines.push(`  ${p.dim}  ${text}${p.reset}`);
     }
 
     if (total > maxLines) {
-      lines.push(`  ${DIM}  … ${total - maxLines} more lines${RESET}`);
+      lines.push(`  ${p.dim}  … ${total - maxLines} more lines${p.reset}`);
     }
   }
 
@@ -163,13 +164,13 @@ export function startSpinner(
   opts?: { color?: string },
 ): SpinnerState {
   const state = createSpinner();
-  const color = opts?.color ?? CYAN;
+  const color = opts?.color ?? p.accent;
 
   state.interval = setInterval(() => {
     const frame = SPINNER_FRAMES[state.frame % SPINNER_FRAMES.length];
     const elapsed = formatElapsed(Date.now() - state.startTime);
-    const timer = elapsed ? ` ${DIM}${elapsed}${RESET}` : "";
-    process.stdout.write(`\r  ${color}${frame} ${label}...${RESET}${timer}\x1b[K`);
+    const timer = elapsed ? ` ${p.dim}${elapsed}${p.reset}` : "";
+    process.stdout.write(`\r  ${color}${frame} ${label}...${p.reset}${timer}\x1b[K`);
     state.frame++;
   }, 80);
 
