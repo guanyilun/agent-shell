@@ -61,7 +61,7 @@ npm start
 
 # Quick shortcuts
 npm run pi         # Start with pi-acp
-npm run claude     # Start with Claude agent
+npm run claude     # Start with claude-agent-acp (Anthropic's official Claude agent)
 
 # Using the built binary directly
 node dist/index.js --agent <agent-name>
@@ -77,7 +77,7 @@ chmod +x dist/index.js
 ./dist/index.js --agent <agent-name>
 
 # Using environment variable to set default agent
-AGENT_SHELL_AGENT=claude npm start
+AGENT_SHELL_AGENT=claude-agent-acp npm start
 ```
 
 ### Install ACP-compatible agents
@@ -87,8 +87,9 @@ agent-shell requires an ACP-compatible agent. Here are some popular options:
 | Agent | Install Command | Notes |
 |-------|----------------|-------|
 | **pi-acp** | `npm install -g pi-acp` | **Recommended default** - ACP adapter for pi coding agent |
-| **claude-code** | See [claude-code](https://github.com/anthropics/claude-code) | Anthropic's official ACP agent |
-| **gemini-cli** | See [gemini-cli](https://github.com/google-gemini/gemini-cli) | Google's Gemini ACP agent |
+| **claude-agent-acp** | `npm install -g @agentclientprotocol/claude-agent-acp` | Anthropic's official ACP Claude agent |
+
+**⚠️ Important**: The `claude` CLI tool (Claude Code) does **not** support the ACP protocol. You must use `claude-agent-acp` or `pi-acp` with Anthropic models.
 
 **Example: Installing pi-acp**
 ```bash
@@ -98,6 +99,24 @@ pi-acp --help  # Verify installation
 
 ## Usage
 
+### Quick Start
+
+```bash
+# 1. Install required agents (if not already installed)
+npm install -g pi-acp
+npm install -g @agentclientprotocol/claude-agent-acp
+
+# 2. Set required API keys
+export ANTHROPIC_API_KEY="your-anthropic-api-key"
+# Or for OpenAI models with pi-acp:
+# export OPENAI_API_KEY="your-openai-api-key"
+
+# 3. Start agent-shell
+npm start
+```
+
+### Common Usage Patterns
+
 ```bash
 # Start with the default agent (pi-acp)
 npm start
@@ -105,24 +124,49 @@ npm start
 
 # Quick shortcuts
 npm run pi         # pi-acp
-npm run claude     # Claude
+npm run claude     # claude-agent-acp (Anthropic's official Claude agent)
 
 # Start with a specific agent
 npm start -- --agent pi-acp
 
 # Pass arguments to the agent (including model)
-npm start -- --agent claude --agent-args "--model sonnet"
-# Shows: claude (sonnet) ● ❯ when entering agent mode
+npm start -- --agent claude-agent-acp --agent-args "--model claude-3-5-sonnet-20241022"
+# Shows: claude-agent-acp (claude-3-5-sonnet-20241022) ● ❯ when entering agent mode
+
+# Use pi-acp with Claude
+npm start -- --agent pi-acp --agent-args "--provider anthropic --model claude-3-5-sonnet-20241022"
+# Shows: pi (claude-3-5-sonnet-20241022) ● ❯
+
+# Use pi-acp with OpenAI GPT-4
+export OPENAI_API_KEY="your-openai-key"
+npm start -- --agent pi-acp --agent-args "--provider openai --model gpt-4o"
+# Shows: pi (gpt-4o) ● ❯
 
 # Use a different shell
 npm start -- --shell /bin/zsh
 
 # Set default agent via environment variable
-AGENT_SHELL_AGENT=claude npm start
+AGENT_SHELL_AGENT=claude-agent-acp npm start
+```
 
-# Specify model for pi-acp
-npm start -- --agent pi-acp --agent-args "--provider openai --model gpt-4o"
-# Shows: pi (gpt-4o) ● ❯ when entering agent mode
+### Common Claude Models
+
+**Valid Claude model names** (for use with `--model` parameter):
+- `claude-3-5-sonnet-20241022` (latest Sonnet)
+- `claude-3-5-haiku-20241022` (latest Haiku)
+- `claude-3-opus-20240229` (older Opus)
+- `claude-3-sonnet-20240229` (older Sonnet)
+
+**Example with claude-agent-acp**:
+```bash
+export ANTHROPIC_API_KEY="your-key"
+npm start -- --agent claude-agent-acp --agent-args "--model claude-3-5-sonnet-20241022"
+```
+
+**Example with pi-acp**:
+```bash
+export ANTHROPIC_API_KEY="your-key"
+npm start -- --agent pi-acp --agent-args "--provider anthropic --model claude-3-5-sonnet-20241022"
 ```
 
 ### Agent environment configuration
@@ -165,10 +209,14 @@ export OPENROUTER_API_KEY="your-openrouter-key"
 You can also configure pi-acp by passing arguments:
 
 ```bash
-# Use a specific model
-npm start -- --agent pi-acp --agent-args "--provider openai --model gpt-4o"
+# Use Claude 3.5 Sonnet with pi-acp
+npm start -- --agent pi-acp --agent-args "--provider anthropic --model claude-3-5-sonnet-20241022"
+# Shows: pi (claude-3-5-sonnet-20241022) ● ❯
 
-# The model will be displayed next to the prompt: pi (gpt-4o) ● ❯
+# Use GPT-4o with pi-acp
+export OPENAI_API_KEY="your-openai-key"
+npm start -- --agent pi-acp --agent-args "--provider openai --model gpt-4o"
+# Shows: pi (gpt-4o) ● ❯
 
 # Enable thinking mode
 npm start -- --agent pi-acp --agent-args "--thinking high"
@@ -186,10 +234,10 @@ For more pi-acp options, run `pi --help` (pi-acp accepts the same arguments).
 Refer to each agent's documentation for their specific environment variable requirements. Common patterns:
 
 ```bash
-# claude-code
+# claude-agent-acp (Anthropic's official Claude agent)
 export ANTHROPIC_API_KEY="your-key"
 
-# gemini-cli  
+# gemini-cli
 export GOOGLE_API_KEY="your-key"
 ```
 
@@ -212,7 +260,8 @@ When you type `>` at the start of a line, agent-shell enters **agent input mode*
 **Agent Info Display**: When entering agent mode, you'll see the current agent name and model (if specified) next to the prompt, followed by a green dot (●) indicating the connection status. For example:
 - `pi ● ❯` — pi agent without model specified
 - `pi (gpt-4o) ● ❯` — pi agent with gpt-4o model
-- `claude (sonnet) ● ❯` — claude agent with sonnet model
+- `pi (claude-3-5-sonnet-20241022) ● ❯` — pi agent with Claude Sonnet model
+- `claude-agent-acp (claude-3-5-sonnet-20241022) ● ❯` — Claude agent with Sonnet model
 
 ### Slash commands
 
@@ -327,7 +376,7 @@ npm start
 
 # Quick shortcuts for different agents
 npm run pi         # Start with pi-acp
-npm run claude     # Start with Claude agent
+npm run claude     # Start with claude-agent-acp (Anthropic's official Claude agent)
 
 # Debug mode — logs ACP protocol details to stderr
 DEBUG=1 npm start
@@ -348,6 +397,71 @@ npm run dev -- --agent pi-acp
 8. The agent's streaming response renders inline in a bordered markdown box with real-time output
 9. If the agent needs to run commands, it calls `terminal/create` and agent-shell executes them in isolated child processes, streaming output back
 10. When the agent finishes, normal shell operation resumes
+
+## Troubleshooting
+
+### Agent connection issues
+
+**Problem**: "Agent not connected. Please wait a moment and try again."
+
+**Solutions**:
+1. **Check agent installation**:
+   ```bash
+   which pi-acp
+   which claude-agent-acp
+   ```
+
+2. **Verify ACP compatibility**:
+   ```bash
+   # Test if agent supports ACP protocol
+   echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"test","version":"1.0.0"},"clientCapabilities":{"terminal":true,"fs":{"readTextFile":true,"writeTextFile":true}}}}' | pi-acp
+   ```
+
+3. **Install missing agents**:
+   ```bash
+   npm install -g pi-acp
+   npm install -g @agentclientprotocol/claude-agent-acp
+   ```
+
+4. **Check environment variables**:
+   ```bash
+   echo $ANTHROPIC_API_KEY
+   echo $OPENAI_API_KEY
+   echo $GEMINI_API_KEY
+   ```
+
+### Common errors
+
+**Error**: "claude: command not found"
+- **Cause**: Trying to use `claude` CLI tool which doesn't support ACP
+- **Solution**: Use `claude-agent-acp` or `pi-acp` instead
+
+**Error**: "API key not found"
+- **Cause**: Missing required API key environment variable
+- **Solution**: Set the appropriate API key (e.g., `export ANTHROPIC_API_KEY="your-key"`)
+
+**Error**: "Invalid model name"
+- **Cause**: Using incorrect model name
+- **Solution**: Use valid model names like `claude-3-5-sonnet-20241022` or `gpt-4o`
+
+**Error**: "Agent process exited with code X"
+- **Cause**: Agent crashed or failed to start
+- **Solution**: Check agent installation and API key validity
+
+### Debug mode
+
+Enable debug mode to see detailed ACP protocol information:
+```bash
+DEBUG=1 npm start -- --agent pi-acp
+```
+
+### Getting help
+
+If you encounter issues:
+1. Check the [ACP Protocol Documentation](https://agentclientprotocol.com/)
+2. Verify agent installation: `pi-acp --version` or `claude-agent-acp --version`
+3. Test with different agents to isolate the problem
+4. Check GitHub issues for known problems
 
 ## License
 
