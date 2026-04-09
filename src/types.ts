@@ -9,6 +9,8 @@ export interface AgentShellConfig {
   shell?: string;
   model?: string;
   extensions?: string[];
+  /** Full shell environment (from user's rc files) for agent subprocess. */
+  shellEnv?: Record<string, string>;
 }
 
 /**
