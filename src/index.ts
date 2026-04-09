@@ -10,6 +10,7 @@ function parseArgs(argv: string[]): AgentShellConfig {
   const defaultAgent = process.env.AGENT_SHELL_AGENT || "pi-acp";
   let agentCommand = defaultAgent;
   let agentArgs: string[] = [];
+  let model: string | undefined;
   const shell = process.env.SHELL || "/bin/bash";
 
   for (let i = 0; i < argv.length; i++) {
@@ -17,9 +18,15 @@ function parseArgs(argv: string[]): AgentShellConfig {
     if (arg === "--agent" && argv[i + 1]) {
       agentCommand = argv[++i]!;
     } else if (arg === "--agent-args" && argv[i + 1]) {
-      agentArgs = argv[++i]!.split(" ");
+      const argsString = argv[++i]!;
+      agentArgs = argsString.split(" ");
+      // Extract model from agent args if provided
+      const modelArgIndex = agentArgs.findIndex(a => a === "--model" || a === "-m");
+      if (modelArgIndex !== -1 && agentArgs[modelArgIndex + 1]) {
+        model = agentArgs[modelArgIndex + 1];
+      }
     } else if (arg === "--shell" && argv[i + 1]) {
-      return { agentCommand, agentArgs, shell: argv[++i]! };
+      return { agentCommand, agentArgs, shell: argv[++i]!, model };
     } else if (arg === "--help" || arg === "-h") {
       console.log(`agent-shell — a shell-first terminal with ACP agent access
 
@@ -54,7 +61,7 @@ Inside the shell:
     }
   }
 
-  return { agentCommand, agentArgs, shell };
+  return { agentCommand, agentArgs, shell, model };
 }
 
 async function main(): Promise<void> {
@@ -132,6 +139,34 @@ async function main(): Promise<void> {
         });
       }
       shell.printPrompt();
+    },
+    onShowAgentInfo: () => {
+      // Return agent info string and model when entering agent input mode
+      if (acpClient && acpClient.isConnected()) {
+        const agentInfo = acpClient.getAgentInfo();
+        const model = acpClient.getModel();
+        if (agentInfo) {
+          return {
+            info: tui.getAgentInfoString(agentInfo, model),
+            model: model
+          };
+        } else {
+          // Debug: show why agent info is not available
+          if (process.env.DEBUG) {
+            process.stderr.write('[agent-shell] Agent info not available\n');
+          }
+        }
+      } else {
+        // Debug: show why we can't show agent info
+        if (process.env.DEBUG) {
+          if (!acpClient) {
+            process.stderr.write('[agent-shell] acpClient is null\n');
+          } else if (!acpClient.isConnected()) {
+            process.stderr.write('[agent-shell] Agent not connected\n');
+          }
+        }
+      }
+      return { info: "" };
     },
     slashCommandDefs: commands.map((c) => ({ name: c.name, description: c.description })),
     onPtyOutput: () => {
