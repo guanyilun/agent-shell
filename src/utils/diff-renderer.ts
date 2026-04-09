@@ -5,6 +5,7 @@
  * Supports unified, split (side-by-side), and summary modes.
  * Uses token-level LCS for word-level inline diff highlighting.
  */
+import { highlight } from "cli-highlight";
 import type { DiffResult, DiffHunk, DiffLine } from "./diff.js";
 import { GREEN, RED, DIM, BOLD, RESET, GRAY, visibleLen } from "./ansi.js";
 import { wrapLine } from "./markdown.js";
@@ -20,10 +21,12 @@ export interface DiffRenderOptions {
   mode?: DiffDisplayMode;
   /** Maximum number of output lines before truncation. Default 50. */
   maxLines?: number;
-  /** File path to show in the header. */
+  /** File path to show in the header (also used to detect language for syntax highlighting). */
   filePath?: string;
   /** Use true-color (24-bit) backgrounds. Default true. */
   trueColor?: boolean;
+  /** Enable syntax highlighting on diff lines. Default true. */
+  syntaxHighlight?: boolean;
 }
 
 // ── Constants ────────────────────────────────────────────────────
@@ -40,6 +43,49 @@ const BG_REMOVED_EMPH = "\x1b[48;2;90;0;0m";
 // Foreground-only fallbacks
 const FG_ADDED = GREEN;
 const FG_REMOVED = RED;
+
+// ── Syntax highlighting ──────────────────────────────────────────
+
+const EXT_TO_LANG: Record<string, string> = {
+  ".ts": "typescript", ".tsx": "typescript", ".js": "javascript", ".jsx": "javascript",
+  ".py": "python", ".rb": "ruby", ".rs": "rust", ".go": "go", ".java": "java",
+  ".c": "c", ".h": "c", ".cpp": "cpp", ".hpp": "cpp", ".cs": "csharp",
+  ".swift": "swift", ".kt": "kotlin", ".scala": "scala",
+  ".sh": "bash", ".bash": "bash", ".zsh": "bash", ".fish": "bash",
+  ".json": "json", ".yaml": "yaml", ".yml": "yaml", ".toml": "ini",
+  ".xml": "xml", ".html": "html", ".htm": "html", ".css": "css", ".scss": "scss",
+  ".sql": "sql", ".md": "markdown", ".lua": "lua", ".php": "php",
+  ".ex": "elixir", ".exs": "elixir", ".erl": "erlang",
+  ".hs": "haskell", ".ml": "ocaml", ".clj": "clojure",
+  ".vim": "vim", ".dockerfile": "dockerfile",
+};
+
+function detectLanguage(filePath?: string): string | undefined {
+  if (!filePath) return undefined;
+  const dot = filePath.lastIndexOf(".");
+  if (dot === -1) {
+    // Handle extensionless files like Dockerfile, Makefile
+    const base = filePath.split("/").pop()?.toLowerCase();
+    if (base === "dockerfile") return "dockerfile";
+    if (base === "makefile") return "makefile";
+    return undefined;
+  }
+  return EXT_TO_LANG[filePath.slice(dot).toLowerCase()];
+}
+
+/**
+ * Syntax-highlight a single line of code.
+ * Returns the original text if highlighting fails or no language detected.
+ */
+function highlightLine(text: string, language?: string): string {
+  if (!language || text.trim() === "") return text;
+  try {
+    // cli-highlight adds a trailing newline; strip it
+    return highlight(text, { language }).replace(/\n$/, "");
+  } catch {
+    return text;
+  }
+}
 
 // ── Token-level LCS for inline highlighting ──────────────────────
 
@@ -128,8 +174,16 @@ function highlightInlineChanges(
   oldPalette: InlinePalette,
   newPalette: InlinePalette,
   useTrueColor: boolean,
+  language?: string,
 ): { old: string; new: string } {
   if (!useTrueColor) {
+    // Still apply syntax highlighting even without true-color backgrounds
+    if (language) {
+      return {
+        old: highlightLine(oldLine, language),
+        new: highlightLine(newLine, language),
+      };
+    }
     return { old: oldLine, new: newLine };
   }
 
@@ -138,12 +192,18 @@ function highlightInlineChanges(
 
   // Skip if either side is trivially small
   if (oldTokens.length === 0 || newTokens.length === 0) {
-    return { old: oldLine, new: newLine };
+    return {
+      old: language ? highlightLine(oldLine, language) : oldLine,
+      new: language ? highlightLine(newLine, language) : newLine,
+    };
   }
 
   // Safety guard: skip if LCS matrix would be too large
   if (oldTokens.length * newTokens.length > 50000) {
-    return { old: oldLine, new: newLine };
+    return {
+      old: language ? highlightLine(oldLine, language) : oldLine,
+      new: language ? highlightLine(newLine, language) : newLine,
+    };
   }
 
   const { oldMatch, newMatch } = tokenLcs(oldTokens, newTokens);
@@ -156,9 +216,12 @@ function highlightInlineChanges(
     let result = "";
     for (let i = 0; i < tokens.length; i++) {
       if (matched[i]) {
-        result += palette.rowBg + tokens[i].text;
+        // Matched (unchanged) tokens: syntax highlight + row background
+        const text = language ? highlightLine(tokens[i].text, language) : tokens[i].text;
+        result += palette.rowBg + preserveBg(text, palette.rowBg);
       } else {
-        result += palette.emphBg + tokens[i].text;
+        // Changed tokens: emphasis background, no syntax highlighting (emphasis stands out)
+        result += palette.emphBg + BOLD + tokens[i].text + RESET;
       }
     }
     return result;
@@ -246,6 +309,8 @@ function renderSummary(diff: DiffResult): string[] {
 
 function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
   const useTrueColor = opts.trueColor !== false;
+  const useSyntax = opts.syntaxHighlight !== false;
+  const lang = useSyntax ? detectLanguage(opts.filePath) : undefined;
   const textWidth = opts.width;
   const output: string[] = [];
 
@@ -272,7 +337,6 @@ function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
     }
 
     const pairs = findChangePairs(hunk);
-    // Track which added lines have been rendered as part of a pair
     const renderedAsPartOfPair = new Set<number>();
 
     for (let i = 0; i < hunk.lines.length; i++) {
@@ -280,36 +344,35 @@ function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
       const no = String(line.oldNo ?? line.newNo ?? "").padStart(noW);
 
       if (line.type === "context") {
-        const text = truncateText(line.text, lineTextW);
+        const raw = truncateText(line.text, lineTextW);
+        const text = lang ? highlightLine(raw, lang) : raw;
         output.push(`  ${DIM}${no} │${RESET} ${DIM}${text}${RESET}`);
         continue;
       }
 
       if (line.type === "removed") {
         const pair = pairs.get(i);
-        let removedText = truncateText(line.text, lineTextW);
+        let removedText: string;
         let addedText: string | null = null;
         let addedNo: string | null = null;
 
         if (pair && pair.removedIdx === i) {
-          // This removed line has a matching added line — compute inline diff
           const highlighted = highlightInlineChanges(
             line.text,
             pair.added.text,
             removedPalette,
             addedPalette,
             useTrueColor,
+            lang,
           );
-          removedText = truncateText(
-            useTrueColor ? highlighted.old : line.text,
-            lineTextW,
-          );
-          addedText = truncateText(
-            useTrueColor ? highlighted.new : pair.added.text,
-            lineTextW,
-          );
+          removedText = truncateText(highlighted.old, lineTextW);
+          addedText = truncateText(highlighted.new, lineTextW);
           addedNo = String(pair.added.newNo ?? "").padStart(noW);
           renderedAsPartOfPair.add(pair.addedIdx);
+        } else {
+          // Unpaired removed line — syntax highlight the whole line
+          const raw = truncateText(line.text, lineTextW);
+          removedText = lang ? highlightLine(raw, lang) : raw;
         }
 
         if (useTrueColor) {
@@ -319,7 +382,6 @@ function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
           output.push(`${FG_REMOVED}- ${no} │ ${removedText}${RESET}`);
         }
 
-        // Emit the paired added line right after
         if (addedText !== null && addedNo !== null) {
           if (useTrueColor) {
             const rowContent = `${BG_ADDED}${GREEN}+ ${addedNo} │ ${preserveBg(addedText, BG_ADDED)}${RESET}`;
@@ -334,7 +396,8 @@ function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
       if (line.type === "added") {
         if (renderedAsPartOfPair.has(i)) continue;
 
-        const text = truncateText(line.text, lineTextW);
+        const raw = truncateText(line.text, lineTextW);
+        const text = lang ? highlightLine(raw, lang) : raw;
         if (useTrueColor) {
           const rowContent = `${BG_ADDED}${GREEN}+ ${no} │ ${preserveBg(text, BG_ADDED)}${RESET}`;
           output.push(padToWidth(rowContent, textWidth));
@@ -352,6 +415,8 @@ function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
 
 function renderSplit(diff: DiffResult, opts: DiffRenderOptions): string[] {
   const useTrueColor = opts.trueColor !== false;
+  const useSyntax = opts.syntaxHighlight !== false;
+  const lang = useSyntax ? detectLanguage(opts.filePath) : undefined;
   const totalWidth = opts.width;
   // 3 chars for " │ " separator
   const colWidth = Math.floor((totalWidth - 3) / 2);
@@ -384,7 +449,6 @@ function renderSplit(diff: DiffResult, opts: DiffRenderOptions): string[] {
       output.push(`${DIM}${"·".repeat(colWidth)} │ ${"·".repeat(colWidth)}${RESET}`);
     }
 
-    // Build paired rows for split view
     const rows = buildSplitRows(hunk);
 
     for (const row of rows) {
@@ -406,16 +470,22 @@ function renderSplit(diff: DiffResult, opts: DiffRenderOptions): string[] {
           removedPalette,
           addedPalette,
           useTrueColor,
+          lang,
         );
-        leftText = truncateText(useTrueColor ? highlighted.old : row.left.text, textW);
-        rightText = truncateText(useTrueColor ? highlighted.new : row.right.text, textW);
+        leftText = truncateText(highlighted.old, textW);
+        rightText = truncateText(highlighted.new, textW);
+      } else {
+        // Non-pair lines: apply syntax highlighting
+        if (lang) {
+          if (leftText) leftText = highlightLine(leftText, lang);
+          if (rightText) rightText = highlightLine(rightText, lang);
+        }
       }
 
       let leftCol: string;
       let rightCol: string;
 
       if (!row.left || row.left.type === "context") {
-        // Context or empty left
         leftCol = padToWidth(`${DIM}${leftNo} │${RESET} ${DIM}${leftText}${RESET}`, colWidth);
       } else if (row.left.type === "removed") {
         if (useTrueColor) {
@@ -498,11 +568,32 @@ function buildSplitRows(hunk: DiffHunk): SplitRow[] {
 
 // ── Utilities ────────────────────────────────────────────────────
 
+/**
+ * Truncate text to fit within maxWidth visible characters.
+ * ANSI-aware: measures visible length and preserves escape codes.
+ */
 function truncateText(text: string, maxWidth: number): string {
   if (maxWidth <= 0) return "";
-  if (text.length <= maxWidth) return text;
+  if (visibleLen(text) <= maxWidth) return text;
   if (maxWidth <= 1) return "…";
-  return text.slice(0, maxWidth - 1) + "…";
+
+  // Walk through the string, tracking visible characters
+  let visible = 0;
+  let i = 0;
+  while (i < text.length && visible < maxWidth - 1) {
+    // Check for ANSI escape sequence
+    if (text[i] === "\x1b" && text[i + 1] === "[") {
+      const end = text.indexOf("m", i);
+      if (end !== -1) {
+        i = end + 1;
+        continue;
+      }
+    }
+    visible++;
+    i++;
+  }
+
+  return text.slice(0, i) + RESET + "…";
 }
 
 // ── Public API ───────────────────────────────────────────────────
