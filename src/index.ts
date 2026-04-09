@@ -4,8 +4,8 @@ import { ContextManager } from "./context-manager.js";
 import { Shell } from "./shell.js";
 import { TUI } from "./tui.js";
 import { AcpClient } from "./acp-client.js";
-import { commands, executeSlashCommand, type CommandContext } from "./commands.js";
 import { interactivePrompts } from "./extensions/interactive-prompts.js";
+import { slashCommands } from "./extensions/slash-commands.js";
 import type { AgentShellConfig } from "./types.js";
 
 function parseArgs(argv: string[]): AgentShellConfig {
@@ -108,7 +108,7 @@ async function main(): Promise<void> {
     cwd: process.cwd(),
     onAgentRequest: async (query: string) => {
       if (!acpClient) {
-        tui.showError("Agent not initialized");
+        bus.emit("ui:error", { message: "Agent not initialized" });
         return;
       }
 
@@ -121,7 +121,7 @@ async function main(): Promise<void> {
       }
 
       if (!agentConnected) {
-        tui.showError("Agent not connected. Please wait a moment and try again.");
+        bus.emit("ui:error", { message: "Agent not connected. Please wait a moment and try again." });
         shell.resumeOutput();
         shell.setAgentActive(false);
         return;
@@ -130,7 +130,7 @@ async function main(): Promise<void> {
       try {
         await acpClient.sendPrompt(query);
       } catch (err: any) {
-        tui.showError(err.message);
+        bus.emit("ui:error", { message: err.message });
         shell.resumeOutput();
         shell.setAgentActive(false);
       }
@@ -139,17 +139,6 @@ async function main(): Promise<void> {
       if (acpClient) {
         acpClient.cancel().catch(() => {});
       }
-    },
-    onSlashCommand: (input: string) => {
-      if (acpClient) {
-        executeSlashCommand(input, {
-          tui,
-          acpClient,
-          shell,
-          quit: cleanup,
-        });
-      }
-      shell.printPrompt();
     },
     onShowAgentInfo: () => {
       // Return agent info string and model when entering agent input mode
@@ -179,7 +168,6 @@ async function main(): Promise<void> {
       }
       return { info: "" };
     },
-    slashCommandDefs: commands.map((c) => ({ name: c.name, description: c.description })),
     onPtyOutput: () => {
       tui.scheduleRepaint();
     },
@@ -187,6 +175,9 @@ async function main(): Promise<void> {
 
   // Create agent client — emits agent events, queries ContextManager for context
   acpClient = new AcpClient({ bus, contextManager, shell, config });
+
+  // Load extensions that need service references
+  slashCommands(bus, { getAcpClient: () => acpClient!, quit: cleanup });
 
   // Connect to agent asynchronously (don't block shell startup)
   const connectAgent = async () => {

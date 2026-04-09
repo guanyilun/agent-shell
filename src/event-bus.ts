@@ -46,6 +46,19 @@ export interface ShellEvents {
     metadata: Record<string, unknown>;
     decision: Record<string, unknown>;
   };
+
+  // Slash command system
+  "command:list": {
+    commands: { name: string; description: string }[];
+  };
+  "command:execute": {
+    name: string;
+    args: string;
+  };
+
+  // UI feedback (TUI subscribes to render; silently ignored without TUI)
+  "ui:info": { message: string };
+  "ui:error": { message: string };
 }
 
 type Listener<T> = (payload: T) => void;

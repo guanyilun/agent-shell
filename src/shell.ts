@@ -15,10 +15,8 @@ export class Shell implements InputContext {
     bus: EventBus;
     onAgentRequest: (query: string) => void;
     onAgentCancel: () => void;
-    onSlashCommand?: (command: string) => void;
     onPtyOutput?: () => void;
     onShowAgentInfo?: () => { info: string; model?: string };
-    slashCommandDefs?: { name: string; description: string }[];
     cols: number;
     rows: number;
     shell: string;
@@ -57,10 +55,9 @@ export class Shell implements InputContext {
 
     this.inputHandler = new InputHandler({
       ctx: this,
-      slashCommandDefs: opts.slashCommandDefs ?? [],
+      bus: opts.bus,
       onAgentRequest: opts.onAgentRequest,
       onAgentCancel: opts.onAgentCancel,
-      onSlashCommand: opts.onSlashCommand ?? (() => {}),
       onShowAgentInfo: opts.onShowAgentInfo ?? (() => ({ info: "" })),
     });
 
@@ -110,7 +107,7 @@ export class Shell implements InputContext {
     });
   }
 
-  // ── Public API (used by acp-client, index.ts, commands.ts) ──
+  // ── Public API (used by acp-client, index.ts) ──
 
   printPrompt(): void {
     this.inputHandler.printPrompt();

@@ -25,6 +25,10 @@ export class TUI {
     // Flush rendering state before any permission prompt (notify phase of
     // emitPipeAsync fires this before the extension's async handler runs)
     bus.on("permission:request", () => this.prepareForInteractivePrompt());
+
+    // UI feedback events (from extensions and core)
+    bus.on("ui:info", (e) => this.showInfo(e.message));
+    bus.on("ui:error", (e) => this.showError(e.message));
   }
 
   private flushOutput(): void {
@@ -170,11 +174,11 @@ export class TUI {
     }
   }
 
-  showError(message: string): void {
+  private showError(message: string): void {
     process.stdout.write(`\n${RED}Error: ${message}${RESET}\n`);
   }
 
-  showInfo(message: string): void {
+  private showInfo(message: string): void {
     process.stdout.write(`${GRAY}${message}${RESET}\n`);
   }
 

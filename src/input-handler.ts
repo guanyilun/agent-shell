@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { visibleLen } from "./ansi.js";
+import type { EventBus } from "./event-bus.js";
 
 /**
  * Narrow contract between InputHandler and its host (Shell).
@@ -24,25 +25,22 @@ export class InputHandler {
   private autocompleteIndex = 0;
   private autocompleteItems: { name: string; description: string }[] = [];
   private autocompleteLines = 0;
-  private slashCommandDefs: { name: string; description: string }[];
+  private bus: EventBus;
   private onAgentRequest: (query: string) => void;
   private onAgentCancel: () => void;
-  private onSlashCommand: (command: string) => void;
   private onShowAgentInfo: () => { info: string; model?: string };
 
   constructor(opts: {
     ctx: InputContext;
-    slashCommandDefs: { name: string; description: string }[];
+    bus: EventBus;
     onAgentRequest: (query: string) => void;
     onAgentCancel: () => void;
-    onSlashCommand: (command: string) => void;
     onShowAgentInfo: () => { info: string; model?: string };
   }) {
     this.ctx = opts.ctx;
-    this.slashCommandDefs = opts.slashCommandDefs;
+    this.bus = opts.bus;
     this.onAgentRequest = opts.onAgentRequest;
     this.onAgentCancel = opts.onAgentCancel;
-    this.onSlashCommand = opts.onSlashCommand;
     this.onShowAgentInfo = opts.onShowAgentInfo;
   }
 
@@ -161,7 +159,8 @@ export class InputHandler {
     // ── Slash command autocomplete ──
     if (this.agentInputBuffer.startsWith("/")) {
       const prefix = this.agentInputBuffer.toLowerCase();
-      this.autocompleteItems = this.slashCommandDefs.filter((c) =>
+      const { commands } = this.bus.emitPipe("command:list", { commands: [] });
+      this.autocompleteItems = commands.filter((c) =>
         c.name.toLowerCase().startsWith(prefix)
       );
       if (this.autocompleteItems.length > 0) {
@@ -366,7 +365,11 @@ export class InputHandler {
         this.agentInputBuffer = "";
         this.dismissAutocomplete();
         if (query && query.startsWith("/")) {
-          this.onSlashCommand(query);
+          const spaceIdx = query.indexOf(" ");
+          const name = spaceIdx === -1 ? query : query.slice(0, spaceIdx);
+          const args = spaceIdx === -1 ? "" : query.slice(spaceIdx + 1).trim();
+          this.bus.emit("command:execute", { name, args });
+          this.printPrompt();
         } else if (query) {
           this.onAgentRequest(query);
         } else {
