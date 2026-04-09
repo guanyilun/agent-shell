@@ -14,7 +14,8 @@
  */
 import type { DiffResult } from "../utils/diff.js";
 import { renderDiff } from "../utils/diff-renderer.js";
-import { DIM, YELLOW, GREEN, RED, BOLD, RESET, visibleLen } from "../utils/ansi.js";
+import { renderBoxFrame } from "../utils/box-frame.js";
+import { DIM, YELLOW, GREEN, RED, BOLD, RESET } from "../utils/ansi.js";
 import type { ExtensionContext } from "../types.js";
 
 export default function activate({ bus }: ExtensionContext): void {
@@ -79,10 +80,25 @@ async function handleFileWritePermission(
 // ── Interactive UI rendering ──────────────────────────────────
 
 async function promptPermission(title: string): Promise<string | null> {
-  process.stdout.write(
-    `\n${YELLOW}${BOLD}⚠ Permission required:${RESET} ${title}\n` +
-      `  ${DIM}[y]es / [n]o / [a]llow all${RESET} `
+  const termW = process.stdout.columns || 80;
+  const boxW = Math.min(84, termW);
+
+  const framed = renderBoxFrame(
+    [`${BOLD}⚠ ${title}${RESET}`],
+    {
+      width: boxW,
+      style: "rounded",
+      borderColor: YELLOW,
+      title: "Permission required",
+      footer: [`  ${DIM}[y]es / [n]o / [a]llow all${RESET}`],
+    },
   );
+
+  process.stdout.write("\n");
+  for (const line of framed) {
+    process.stdout.write(line + "\n");
+  }
+  process.stdout.write("  ");
 
   return new Promise((resolve) => {
     const handler = (data: Buffer) => {
@@ -103,35 +119,19 @@ async function previewDiff(opts: {
   diff: DiffResult;
 }): Promise<"approve" | "reject" | "approve_all"> {
   const termW = process.stdout.columns || 80;
-  const contentW = Math.min(80, termW - 4);
-  const boxW = contentW + 2;
+  const boxW = Math.min(84, termW);
+  const contentW = boxW - 4; // borders + padding
   const MAX_DISPLAY = 25;
-  const R = RESET;
 
-  const boxed = (text: string) => {
-    const pad = Math.max(0, contentW - visibleLen(text));
-    process.stdout.write(
-      `${YELLOW}│${R} ${text}${" ".repeat(pad)} ${YELLOW}│${R}\n`,
-    );
-  };
-
-  process.stdout.write("\n");
-
-  // Header
+  // Build title
   const stats = opts.diff.isNewFile
     ? `(+${opts.diff.added} lines)`
     : `(+${opts.diff.added} / -${opts.diff.removed})`;
-  const headerText = opts.diff.isNewFile
+  const title = opts.diff.isNewFile
     ? `new: ${opts.path}  ${stats}`
     : `${opts.path}  ${stats}`;
-  const afterDashes = Math.max(1, boxW - headerText.length - 2);
-  process.stdout.write(
-    `${YELLOW}┌${R} ${headerText} ${YELLOW}${"─".repeat(afterDashes)}┐${R}\n`,
-  );
 
-  boxed("");
-
-  // Render diff with the new renderer
+  // Render diff content
   const diffLines = renderDiff(opts.diff, {
     width: contentW,
     filePath: opts.path,
@@ -139,16 +139,22 @@ async function previewDiff(opts: {
     trueColor: true,
     mode: "unified",
   });
-  // Skip the header line from renderDiff (we already rendered our own)
-  for (const line of diffLines.slice(1)) {
-    boxed(line);
+  // Skip the header line from renderDiff (we show it in the box title)
+  const content = ["", ...diffLines.slice(1), ""];
+
+  // Render framed box
+  const framed = renderBoxFrame(content, {
+    width: boxW,
+    style: "rounded",
+    borderColor: YELLOW,
+    title,
+    footer: [`  ${BOLD}[y] Apply  [n] Skip  [a] Don't ask again${RESET}`],
+  });
+
+  process.stdout.write("\n");
+  for (const line of framed) {
+    process.stdout.write(line + "\n");
   }
-
-  boxed("");
-
-  process.stdout.write(`${YELLOW}├${"─".repeat(boxW)}┤${R}\n`);
-  boxed(`  ${BOLD}[y] Apply  [n] Skip  [a] Don't ask again${R}`);
-  process.stdout.write(`${YELLOW}└${"─".repeat(boxW)}┘${R}\n`);
 
   return new Promise((resolve) => {
     const handler = (data: Buffer) => {
@@ -156,13 +162,13 @@ async function previewDiff(opts: {
       process.stdin.removeListener("data", handler);
 
       if (ch === "y") {
-        process.stdout.write(`  ${GREEN}✓ Applied${R}\n`);
+        process.stdout.write(`  ${GREEN}✓ Applied${RESET}\n`);
         resolve("approve");
       } else if (ch === "a") {
-        process.stdout.write(`  ${GREEN}✓ Applied (auto-approve on)${R}\n`);
+        process.stdout.write(`  ${GREEN}✓ Applied (auto-approve on)${RESET}\n`);
         resolve("approve_all");
       } else {
-        process.stdout.write(`  ${RED}✗ Skipped${R}\n`);
+        process.stdout.write(`  ${RED}✗ Skipped${RESET}\n`);
         resolve("reject");
       }
     };
