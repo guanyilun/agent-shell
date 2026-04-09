@@ -12,13 +12,17 @@
  */
 import { MarkdownRenderer } from "../utils/markdown.js";
 import { CYAN, DIM, YELLOW, GREEN, RED, GRAY, BOLD, RESET } from "../utils/ansi.js";
+import {
+  renderToolCall,
+  renderToolResult,
+  startSpinner,
+  stopSpinner as stopToolSpinner,
+  type SpinnerState,
+} from "../utils/tool-display.js";
 import type { ExtensionContext } from "../types.js";
 
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
 export default function activate({ bus }: ExtensionContext): void {
-  let spinnerInterval: ReturnType<typeof setInterval> | null = null;
-  let spinnerFrame = 0;
+  let spinner: SpinnerState | null = null;
   let renderer: MarkdownRenderer | null = null;
   let commandOutputBuffer = "";
 
@@ -27,23 +31,23 @@ export default function activate({ bus }: ExtensionContext): void {
   bus.on("agent:query", (e) => {
     process.stdout.write(`\n${CYAN}${BOLD}❯ ${RESET}${CYAN}${e.query}${RESET}\n`);
     startAgentResponse();
-    startSpinner();
+    startThinkingSpinner();
   });
 
   bus.on("agent:response-chunk", (e) => writeAgentText(e.text));
   bus.on("agent:response-done", () => endAgentResponse());
 
   bus.on("agent:tool-started", (e) => {
-    stopSpinner();
+    stopCurrentSpinner();
     showToolCall(e.title);
   });
 
-  bus.on("agent:tool-completed", (e) => showToolResult(e.exitCode));
+  bus.on("agent:tool-completed", (e) => showToolComplete(e.exitCode));
   bus.on("agent:tool-output-chunk", (e) => writeCommandOutput(e.chunk));
   bus.on("agent:tool-output", () => flushCommandOutput());
 
   bus.on("agent:cancelled", () => {
-    stopSpinner();
+    stopCurrentSpinner();
     showInfo("(cancelled)");
     endAgentResponse();
   });
@@ -52,7 +56,7 @@ export default function activate({ bus }: ExtensionContext): void {
 
   // Flush rendering state before any permission prompt
   bus.on("permission:request", () => {
-    stopSpinner();
+    stopCurrentSpinner();
     flushCommandOutput();
     renderer?.flush();
     endAgentResponse();
@@ -84,46 +88,41 @@ export default function activate({ bus }: ExtensionContext): void {
   }
 
   function writeAgentText(text: string): void {
-    stopSpinner();
+    stopCurrentSpinner();
     if (!renderer) startAgentResponse();
     renderer!.push(text);
     flushOutput();
   }
 
   function showToolCall(title: string): void {
-    stopSpinner();
+    stopCurrentSpinner();
     if (!renderer) startAgentResponse();
     renderer!.flush();
-    renderer!.writeLine(`${YELLOW}${BOLD}▶ ${title}${RESET}`);
-  }
-
-  function showToolResult(exitCode: number | null): void {
-    if (!renderer) return;
-    if (exitCode === null) {
-      renderer.writeLine(`${GRAY}(timed out)${RESET}`);
-    } else if (exitCode === 0) {
-      renderer.writeLine(`${GREEN}✓${RESET}`);
-    } else {
-      renderer.writeLine(`${RED}✗ exit ${exitCode}${RESET}`);
+    const termW = process.stdout.columns || 80;
+    const lines = renderToolCall({ title }, termW);
+    for (const line of lines) {
+      renderer!.writeLine(line);
     }
   }
 
-  function startSpinner(label = "Thinking"): void {
-    stopSpinner();
-    spinnerFrame = 0;
-    spinnerInterval = setInterval(() => {
-      const frame = SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length];
-      process.stdout.write(`\r  ${CYAN}${frame} ${label}...${RESET}\x1b[K`);
-      flushOutput();
-      spinnerFrame++;
-    }, 80);
+  function showToolComplete(exitCode: number | null): void {
+    if (!renderer) return;
+    const termW = process.stdout.columns || 80;
+    const lines = renderToolResult({ exitCode }, termW);
+    for (const line of lines) {
+      renderer.writeLine(line);
+    }
   }
 
-  function stopSpinner(): void {
-    if (spinnerInterval) {
-      clearInterval(spinnerInterval);
-      spinnerInterval = null;
-      process.stdout.write("\r\x1b[2K");
+  function startThinkingSpinner(label = "Thinking"): void {
+    stopCurrentSpinner();
+    spinner = startSpinner(label);
+  }
+
+  function stopCurrentSpinner(): void {
+    if (spinner) {
+      stopToolSpinner(spinner);
+      spinner = null;
     }
   }
 
