@@ -1,5 +1,5 @@
 import type { EventBus } from "./event-bus.js";
-import { stripAnsi } from "./ansi.js";
+import { stripAnsi } from "./utils/ansi.js";
 
 /**
  * Parses PTY output to detect command boundaries, track cwd,

@@ -12,8 +12,8 @@
  * fall through to their safe defaults (cancelled/rejected). Alternative
  * extensions could auto-approve, show a web UI, apply policy rules, etc.
  */
-import type { DiffResult } from "../diff.js";
-import { DIM, YELLOW, GREEN, RED, BOLD, RESET, visibleLen } from "../ansi.js";
+import type { DiffResult } from "../utils/diff.js";
+import { DIM, YELLOW, GREEN, RED, BOLD, RESET, visibleLen } from "../utils/ansi.js";
 import type { ExtensionContext } from "../types.js";
 
 export default function activate({ bus }: ExtensionContext): void {
