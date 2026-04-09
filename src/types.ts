@@ -1,8 +1,26 @@
+import type { EventBus } from "./event-bus.js";
+import type { ContextManager } from "./context-manager.js";
+import type { Shell } from "./shell.js";
+import type { AcpClient } from "./acp-client.js";
+
 export interface AgentShellConfig {
   agentCommand: string;
   agentArgs: string[];
   shell: string;
-  model?: string; // Model name extracted from agent args
+  model?: string;
+  extensions?: string[];
+}
+
+/**
+ * Context passed to user/third-party extensions.
+ * Provides access to all core services via a single object.
+ */
+export interface ExtensionContext {
+  bus: EventBus;
+  contextManager: ContextManager;
+  shell: Shell;
+  getAcpClient: () => AcpClient;
+  quit: () => void;
 }
 
 export interface TerminalSession {

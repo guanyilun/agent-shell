@@ -359,6 +359,7 @@ agent-shell/
 │   ├── output-parser.ts   # OSC parsing, command boundary detection
 │   ├── acp-client.ts      # ACP protocol, terminal execution, session management
 │   ├── context-manager.ts # Exchange log, context assembly, recall API
+│   ├── extension-loader.ts # Dynamic extension loading (CLI + directory)
 │   ├── executor.ts        # Isolated child process execution
 │   ├── markdown.ts        # Streaming markdown → ANSI renderer
 │   ├── diff.ts            # Line-level LCS diff for file change previews
@@ -421,29 +422,62 @@ All communication between components flows through a typed EventBus. Components 
 
 ### Writing extensions
 
-An extension is a factory function that receives the EventBus and self-registers:
+An extension is a module that exports a default (or named `activate`) function. It receives an `ExtensionContext` with access to all core services:
 
 ```typescript
-import type { EventBus } from "./event-bus.js";
-
-export function myExtension(bus: EventBus): void {
-  // Subscribe to events
-  bus.on("agent:response-done", (e) => {
-    console.log(`Agent responded: ${e.response.slice(0, 100)}...`);
+// my-extension.js
+export default function activate(ctx) {
+  // Listen to agent events
+  ctx.bus.on("agent:response-done", (e) => {
+    console.log(`Agent responded with ${e.response.length} chars`);
   });
 
-  // Provide autocomplete items
-  bus.onPipe("autocomplete:request", (payload) => {
-    if (!payload.buffer.startsWith("!")) return payload;
-    return { ...payload, items: [...payload.items, { name: "!run", description: "custom command" }] };
+  // Add a slash command
+  ctx.bus.on("command:execute", (e) => {
+    if (e.name === "/greet") {
+      ctx.bus.emit("ui:info", { message: "Hello from my extension!" });
+    }
+  });
+  ctx.bus.onPipe("autocomplete:request", (payload) => {
+    if (!payload.buffer.startsWith("/g")) return payload;
+    return { ...payload, items: [...payload.items, { name: "/greet", description: "Say hello" }] };
+  });
+
+  // Intercept terminal commands
+  ctx.bus.onPipe("agent:terminal-intercept", (payload) => {
+    if (payload.command !== "my-tool") return payload;
+    return { ...payload, intercepted: true, output: "custom output" };
   });
 }
 ```
 
-Load it in `index.ts`:
-```typescript
-myExtension(bus);
+The `ExtensionContext` provides:
+
+| Property | Type | Description |
+|---|---|---|
+| `bus` | `EventBus` | Subscribe to events, emit events, register pipe handlers |
+| `contextManager` | `ContextManager` | Access exchange history, search, expand |
+| `shell` | `Shell` | Shell state (cwd, foreground busy) |
+| `getAcpClient` | `() => AcpClient` | Lazy getter for the agent client |
+| `quit` | `() => void` | Exit agent-shell |
+
+### Loading extensions
+
+Extensions are loaded from two sources:
+
+**1. CLI flag** — comma-separated module paths:
+```bash
+npm start -- --extensions ./my-ext.js,/path/to/other-ext.js
 ```
+
+**2. Extension directory** — any `.js` or `.mjs` file in `~/.agent-shell/extensions/` is automatically loaded:
+```bash
+mkdir -p ~/.agent-shell/extensions
+cp my-extension.js ~/.agent-shell/extensions/
+npm start  # extension is loaded automatically
+```
+
+Extensions are loaded after all built-in extensions and core services are initialized. Errors in extension loading are non-fatal — a `ui:error` is emitted and the next extension continues loading.
 
 ## Troubleshooting
 
