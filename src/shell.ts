@@ -35,12 +35,21 @@ export class Shell implements InputContext {
     env.AGENT_SHELL = "1";
 
     // Spawn the user's shell with their full config (aliases, plugins, PATH,
-    // completions, etc.). The core only injects two invisible hooks:
+    // completions, etc.). The core injects three invisible OSC hooks:
     //   - OSC 7: cwd tracking (required by OutputParser)
-    //   - OSC 9999: prompt marker (required for command boundary detection)
+    //   - OSC 9999: prompt start marker (command boundary detection)
+    //   - OSC 9998: prompt end marker (bracketed prompt capture)
     // Prompt theming is left entirely to the user's shell config.
-    const shellBin = opts.shell;
-    const isZsh = path.basename(shellBin).includes("zsh");
+    const shellName = path.basename(opts.shell);
+    const isZsh = shellName.includes("zsh");
+    const isBash = shellName.includes("bash");
+    if (!isZsh && !isBash) {
+      console.warn(
+        `Warning: agent-shell only supports zsh and bash. ` +
+        `"${opts.shell}" may not work correctly — falling back to /bin/bash.`
+      );
+    }
+    const shellBin = (isZsh || isBash) ? opts.shell : "/bin/bash";
     let shellArgs: string[];
 
     const osc7Cmd = 'printf "\\e]7;file://%s%s\\a" "$(hostname)" "$PWD"';
@@ -80,10 +89,12 @@ export class Shell implements InputContext {
       env.ZDOTDIR = this.tmpDir;
       shellArgs = ["--no-globalrcs"];
     } else {
-      // For bash: source user's bashrc, then append our hooks to PROMPT_COMMAND
+      // For bash: use --rcfile to source our wrapper, which sources the user's
+      // real bashrc then appends our hooks. No HOME override needed.
       this.tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-shell-"));
+      const userHome = env.HOME || os.homedir();
       fs.writeFileSync(path.join(this.tmpDir, ".bashrc"), [
-        '[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"',
+        `[ -f "${userHome}/.bashrc" ] && source "${userHome}/.bashrc"`,
         "",
         "# agent-shell hooks (invisible OSC sequences for cwd + prompt detection)",
         `PROMPT_COMMAND="\${PROMPT_COMMAND:+\$PROMPT_COMMAND;}${osc7Cmd}; ${promptMarker}"`,
@@ -91,8 +102,6 @@ export class Shell implements InputContext {
         "# End-of-prompt marker: append to PS1 (\\[...\\] marks it zero-width)",
         'case "$PS1" in *9998*) ;; *) PS1="${PS1}\\[\\e]9998;READY\\a\\]";; esac',
       ].join("\n") + "\n");
-      env.HOME_ORIG = env.HOME || os.homedir();
-      env.HOME = this.tmpDir;
       shellArgs = ["--rcfile", path.join(this.tmpDir, ".bashrc")];
     }
 
@@ -106,6 +115,15 @@ export class Shell implements InputContext {
 
     this.bus = opts.bus;
     this.outputParser = new OutputParser(opts.bus, opts.cwd);
+
+    // Ensure temp dir cleanup on abnormal exit (SIGKILL won't fire this,
+    // but it covers uncaught exceptions and normal process.exit paths)
+    if (this.tmpDir) {
+      const dir = this.tmpDir;
+      process.on("exit", () => {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      });
+    }
 
     this.inputHandler = new InputHandler({
       ctx: this,

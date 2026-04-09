@@ -30,13 +30,17 @@ export class OutputParser {
     // of the current chunk), so we only append subsequent chunks here.
     const wasCapturing = this.capturingPrompt;
     this.parsePromptMarker(data);
-    this.parsePromptEnd(data);
 
-    // If we were already capturing before this chunk, append it.
-    // (If capture just started in parsePromptMarker, the tail is already in promptBuffer.)
+    // If we were already capturing before this chunk (and still are), append
+    // the full chunk. If capture just started in parsePromptMarker above, the
+    // tail after the start marker is already in promptBuffer — don't double-add.
     if (wasCapturing && this.capturingPrompt) {
       this.promptBuffer += data;
     }
+
+    // Check for end marker. Must run after the append above so that
+    // multi-chunk captures include this chunk's data before we finalize.
+    this.parsePromptEnd(data);
   }
 
   /** Called when user presses Enter on a non-empty line. */
@@ -133,24 +137,38 @@ export class OutputParser {
 
   /**
    * Detect end-of-prompt marker (OSC 9998). Finalizes the bracketed capture.
+   *
+   * By the time this runs, the current chunk has already been appended to
+   * promptBuffer (either by parsePromptMarker for the first chunk, or by
+   * the wasCapturing guard in processData for subsequent chunks). So we
+   * just need to trim everything from the end marker onward.
    */
   private parsePromptEnd(data: string): void {
     if (!this.capturingPrompt) return;
     if (!data.includes("\x1b]9998;READY\x07")) return;
 
-    // Append the portion of this chunk before the end marker
-    const endIdx = data.indexOf("\x1b]9998;READY\x07");
-    this.promptBuffer += data.slice(0, endIdx);
+    // promptBuffer already contains this chunk's data. Find the end marker
+    // within the buffer and trim everything from it onward.
+    const endMarker = "\x1b]9998;READY\x07";
+    const bufEndIdx = this.promptBuffer.indexOf(endMarker);
+    if (bufEndIdx >= 0) {
+      this.promptBuffer = this.promptBuffer.slice(0, bufEndIdx);
+    }
 
     this.capturingPrompt = false;
     this.promptCaptureComplete = true;
     this.lastPrompt = this.sanitizePromptForReplay(this.promptBuffer);
   }
 
-  /** Strip internal OSC markers from captured prompt so replay is clean. */
+  /**
+   * Strip internal OSC markers from captured prompt so replay is clean.
+   * We intentionally strip all OSC 7 sequences — they're used for cwd
+   * reporting and have no visual effect, so replaying them would just
+   * cause duplicate cwd-change events.
+   */
   private sanitizePromptForReplay(raw: string): string {
     return raw
-      .replace(/\x1b\]7;[^\x07]*\x07/g, "")   // OSC 7 (cwd)
+      .replace(/\x1b\]7;[^\x07]*\x07/g, "")   // OSC 7 (cwd reporting)
       .replace(/\x1b\]9999;PROMPT\x07/g, "")    // start marker
       .replace(/\x1b\]9998;READY\x07/g, "");    // end marker
   }

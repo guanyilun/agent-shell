@@ -295,7 +295,7 @@ export class InputHandler {
           const name = spaceIdx === -1 ? query : query.slice(0, spaceIdx);
           const args = spaceIdx === -1 ? "" : query.slice(spaceIdx + 1).trim();
           this.bus.emit("command:execute", { name, args });
-          this.ctx.freshPrompt();
+          this.ctx.redrawPrompt();
         } else if (query) {
           this.onAgentRequest(query);
         } else {
