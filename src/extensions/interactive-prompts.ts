@@ -14,17 +14,7 @@
  */
 import type { EventBus } from "../event-bus.js";
 import type { DiffResult } from "../diff.js";
-
-const DIM = "\x1b[2m";
-const YELLOW = "\x1b[33m";
-const GREEN = "\x1b[32m";
-const RED = "\x1b[31m";
-const BOLD = "\x1b[1m";
-const RESET = "\x1b[0m";
-
-function visibleLen(str: string): number {
-  return str.replace(/\x1b\[[^m]*m/g, "").length;
-}
+import { DIM, YELLOW, GREEN, RED, BOLD, RESET, visibleLen } from "../ansi.js";
 
 /**
  * Factory function — call once at startup to register the extension.

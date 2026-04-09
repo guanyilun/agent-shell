@@ -1,31 +1,18 @@
 import { highlight } from "cli-highlight";
+import { CYAN, BOLD, DIM, GREEN, YELLOW, GRAY, RESET, visibleLen } from "./ansi.js";
 
-const CYAN = "\x1b[36m";
-const BOLD = "\x1b[1m";
-const DIM = "\x1b[2m";
 const ITALIC = "\x1b[3m";
 const UNDERLINE = "\x1b[4m";
 const MAGENTA = "\x1b[35m";
-const GREEN = "\x1b[32m";
-const YELLOW = "\x1b[33m";
-const GRAY = "\x1b[90m";
-const RESET = "\x1b[0m";
 
 const MAX_CONTENT_WIDTH = 90;
-
-/**
- * Strip ANSI escape sequences to get the visible text length.
- */
-function visibleLength(str: string): number {
-  return str.replace(/\x1b\[[^m]*m/g, "").length;
-}
 
 /**
  * Word-wrap a string (which may contain ANSI codes) to a maximum visible width.
  * Returns an array of lines, each fitting within `maxWidth` visible characters.
  */
 function wrapLine(text: string, maxWidth: number): string[] {
-  if (visibleLength(text) <= maxWidth) return [text];
+  if (visibleLen(text) <= maxWidth) return [text];
 
   const result: string[] = [];
   // Split into segments: ANSI codes and visible text
@@ -275,7 +262,7 @@ export class MarkdownRenderer {
    * Write a single line with a subtle left indent.
    */
   writeLine(text: string): void {
-    if (this.firstLine && visibleLength(text) === 0) return;
+    if (this.firstLine && visibleLen(text) === 0) return;
     this.firstLine = false;
     process.stdout.write(`  ${text}\n`);
     if (process.stdout.writable) {

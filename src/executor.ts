@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { stripAnsi } from "./ansi.js";
 
 const DEFAULT_TIMEOUT = 60_000;
 const DEFAULT_MAX_OUTPUT = 256 * 1024; // 256KB
@@ -14,17 +15,6 @@ export interface ExecutorSession {
   resolve?: () => void;
 }
 
-/**
- * Strip ANSI escape sequences, OSC sequences, and carriage returns.
- */
-function stripAnsi(str: string): string {
-  return str
-    .replace(/\x1b\][^\x07]*\x07/g, "")          // OSC sequences
-    .replace(/\x1b\[[^m]*m/g, "")                  // SGR (color) sequences
-    .replace(/\x1b\[\?[^a-zA-Z]*[a-zA-Z]/g, "")   // private mode sequences
-    .replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, "")      // CSI sequences
-    .replace(/\r/g, "");                            // carriage returns
-}
 
 /**
  * Spawn a command in an isolated child process with piped I/O.

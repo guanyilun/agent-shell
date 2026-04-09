@@ -1,14 +1,6 @@
 import { MarkdownRenderer } from "./markdown.js";
+import { CYAN, DIM, YELLOW, GREEN, RED, GRAY, BOLD, RESET } from "./ansi.js";
 import type { EventBus } from "./event-bus.js";
-
-const CYAN = "\x1b[36m";
-const DIM = "\x1b[2m";
-const YELLOW = "\x1b[33m";
-const GREEN = "\x1b[32m";
-const RED = "\x1b[31m";
-const GRAY = "\x1b[90m";
-const BOLD = "\x1b[1m";
-const RESET = "\x1b[0m";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
