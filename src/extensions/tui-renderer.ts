@@ -10,8 +10,8 @@
  * silently dropped. Alternative renderers (web UI, logging, minimal)
  * can subscribe to the same events.
  */
-import { MarkdownRenderer } from "../markdown.js";
-import { CYAN, DIM, YELLOW, GREEN, RED, GRAY, BOLD, RESET } from "../ansi.js";
+import { MarkdownRenderer } from "../utils/markdown.js";
+import { CYAN, DIM, YELLOW, GREEN, RED, GRAY, BOLD, RESET } from "../utils/ansi.js";
 import type { ExtensionContext } from "../types.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

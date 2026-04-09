@@ -1,4 +1,4 @@
-import { visibleLen } from "./ansi.js";
+import { visibleLen } from "./utils/ansi.js";
 import type { EventBus } from "./event-bus.js";
 
 /**

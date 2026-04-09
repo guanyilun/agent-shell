@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { stripAnsi } from "./ansi.js";
+import { stripAnsi } from "./utils/ansi.js";
 
 const DEFAULT_TIMEOUT = 60_000;
 const DEFAULT_MAX_OUTPUT = 256 * 1024; // 256KB

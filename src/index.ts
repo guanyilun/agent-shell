@@ -3,7 +3,7 @@ import { EventBus } from "./event-bus.js";
 import { ContextManager } from "./context-manager.js";
 import { Shell } from "./shell.js";
 import { AcpClient } from "./acp-client.js";
-import { DIM, GREEN, RESET } from "./ansi.js";
+import { DIM, GREEN, RESET } from "./utils/ansi.js";
 import tuiRenderer from "./extensions/tui-renderer.js";
 import interactivePrompts from "./extensions/interactive-prompts.js";
 import slashCommands from "./extensions/slash-commands.js";
