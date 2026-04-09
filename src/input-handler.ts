@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { visibleLen } from "./ansi.js";
 
 /**
  * Narrow contract between InputHandler and its host (Shell).
@@ -12,10 +13,6 @@ export interface InputContext {
   isAgentActive(): boolean;
   writeToPty(data: string): void;
   onCommandEntered(command: string, cwd: string): void;
-}
-
-function visibleLen(str: string): number {
-  return str.replace(/\x1b\[[^m]*m/g, "").length;
 }
 
 export class InputHandler {
@@ -47,6 +44,18 @@ export class InputHandler {
     this.onAgentCancel = opts.onAgentCancel;
     this.onSlashCommand = opts.onSlashCommand;
     this.onShowAgentInfo = opts.onShowAgentInfo;
+  }
+
+  /** Write the agent prompt line (clear + info prefix + ❯ + buffer text). */
+  private writeAgentPromptLine(showBuffer = true): void {
+    const agentInfo = this.onShowAgentInfo();
+    const infoPrefix = agentInfo.info ? `${agentInfo.info} ` : "";
+    process.stdout.write(
+      "\r\x1b[2K" +
+      infoPrefix +
+      "\x1b[33m\x1b[1m❯ \x1b[0m" +
+      (showBuffer ? "\x1b[36m" + this.agentInputBuffer + "\x1b[0m" : "")
+    );
   }
 
   handleInput(data: string): void {
@@ -102,14 +111,7 @@ export class InputHandler {
   private enterAgentInputMode(): void {
     this.agentInputMode = true;
     this.agentInputBuffer = "";
-    // Hide the shell's cursor line and show our agent prompt
-    const agentInfo = this.onShowAgentInfo();
-    const infoPrefix = agentInfo.info ? `${agentInfo.info} ` : "";
-    process.stdout.write(
-      "\r\x1b[2K" +
-      infoPrefix +
-      "\x1b[33m\x1b[1m❯ \x1b[0m"
-    );
+    this.writeAgentPromptLine(false);
   }
 
   private exitAgentInputMode(): void {
@@ -130,19 +132,8 @@ export class InputHandler {
   }
 
   private renderAgentInput(): void {
-    // Clear suggestion lines first, then redraw
     this.clearAutocompleteLines();
-
-    const agentInfo = this.onShowAgentInfo();
-    const infoPrefix = agentInfo.info ? `${agentInfo.info} ` : "";
-
-    process.stdout.write(
-      "\r\x1b[2K" +
-      infoPrefix +
-      "\x1b[33m\x1b[1m❯ \x1b[0m" +
-      "\x1b[36m" + this.agentInputBuffer + "\x1b[0m"
-    );
-
+    this.writeAgentPromptLine();
     this.updateAutocomplete();
   }
 
@@ -295,12 +286,7 @@ export class InputHandler {
     this.autocompleteItems = [];
     this.autocompleteIndex = 0;
 
-    process.stdout.write(
-      "\r\x1b[2K" +
-      "\x1b[33m\x1b[1m❯ \x1b[0m" +
-      "\x1b[36m" + this.agentInputBuffer + "\x1b[0m"
-    );
-
+    this.writeAgentPromptLine();
     if (isFileAc) this.updateAutocomplete();
   }
 
@@ -325,26 +311,17 @@ export class InputHandler {
               ? this.autocompleteItems.length - 1
               : this.autocompleteIndex - 1;
           this.clearAutocompleteLines();
-          process.stdout.write(
-            "\r\x1b[2K" +
-            "\x1b[33m\x1b[1m❯ \x1b[0m" +
-            "\x1b[36m" + this.agentInputBuffer + "\x1b[0m"
-          );
+          this.writeAgentPromptLine();
           this.renderAutocomplete();
           i += 2;
           continue;
         } else if (arrow === "B" && this.autocompleteActive) {
-          // Arrow down
           this.autocompleteIndex =
             this.autocompleteIndex === this.autocompleteItems.length - 1
               ? 0
               : this.autocompleteIndex + 1;
           this.clearAutocompleteLines();
-          process.stdout.write(
-            "\r\x1b[2K" +
-            "\x1b[33m\x1b[1m❯ \x1b[0m" +
-            "\x1b[36m" + this.agentInputBuffer + "\x1b[0m"
-          );
+          this.writeAgentPromptLine();
           this.renderAutocomplete();
           i += 2;
           continue;
@@ -363,11 +340,7 @@ export class InputHandler {
         // Bare escape (no bracket follows)
         if (this.autocompleteActive) {
           this.dismissAutocomplete();
-          process.stdout.write(
-            "\r\x1b[2K" +
-            "\x1b[33m\x1b[1m❯ \x1b[0m" +
-            "\x1b[36m" + this.agentInputBuffer + "\x1b[0m"
-          );
+          this.writeAgentPromptLine();
         } else {
           this.dismissAutocomplete();
           this.exitAgentInputMode();

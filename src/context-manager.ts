@@ -357,17 +357,21 @@ export class ContextManager {
     }
   }
 
+  private truncateForRecall(text: string): string {
+    const lines = text.split("\n");
+    if (lines.length <= RECALL_EXPAND_MAX_LINES) return text;
+    const half = RECALL_EXPAND_MAX_LINES / 2;
+    return (
+      lines.slice(0, half).join("\n") +
+      `\n[... ${lines.length - RECALL_EXPAND_MAX_LINES} more lines ...]\n` +
+      lines.slice(-half).join("\n")
+    );
+  }
+
   private formatExchangeFull(ex: Exchange): string {
     switch (ex.type) {
       case "shell_command": {
-        let output = ex.output;
-        const lines = output.split("\n");
-        if (lines.length > RECALL_EXPAND_MAX_LINES) {
-          output =
-            lines.slice(0, RECALL_EXPAND_MAX_LINES / 2).join("\n") +
-            `\n[... ${lines.length - RECALL_EXPAND_MAX_LINES} more lines ...]\n` +
-            lines.slice(-RECALL_EXPAND_MAX_LINES / 2).join("\n");
-        }
+        const output = this.truncateForRecall(ex.output);
         let s = `#${ex.id} [shell] $ ${ex.command} (${ex.outputLines} lines, ${ex.outputBytes} bytes)\n`;
         if (output) s += output + "\n";
         if (ex.exitCode !== null) s += `exit ${ex.exitCode}\n`;
@@ -378,14 +382,7 @@ export class ContextManager {
       case "agent_response":
         return `#${ex.id} [agent]\n${ex.response}`;
       case "tool_execution": {
-        let output = ex.output;
-        const lines = output.split("\n");
-        if (lines.length > RECALL_EXPAND_MAX_LINES) {
-          output =
-            lines.slice(0, RECALL_EXPAND_MAX_LINES / 2).join("\n") +
-            `\n[... ${lines.length - RECALL_EXPAND_MAX_LINES} more lines ...]\n` +
-            lines.slice(-RECALL_EXPAND_MAX_LINES / 2).join("\n");
-        }
+        const output = this.truncateForRecall(ex.output);
         let s = `#${ex.id} [tool] ${ex.tool} (${ex.outputLines} lines, ${ex.outputBytes} bytes)\n`;
         if (output) s += output + "\n";
         if (ex.exitCode !== null) s += `exit ${ex.exitCode}\n`;

@@ -1,4 +1,5 @@
 import type { EventBus } from "./event-bus.js";
+import { stripAnsi } from "./ansi.js";
 
 /**
  * Parses PTY output to detect command boundaries, track cwd,
@@ -26,9 +27,11 @@ export class OutputParser {
   onCommandEntered(command: string, cwd: string): void {
     this.lastCommand = command;
     this.currentOutputCapture = "";
-    this.foregroundBusy = true;
     this.bus.emit("shell:command-start", { command, cwd });
-    this.bus.emit("shell:foreground-busy", { busy: true });
+    if (!this.foregroundBusy) {
+      this.foregroundBusy = true;
+      this.bus.emit("shell:foreground-busy", { busy: true });
+    }
   }
 
   isForegroundBusy(): boolean {
@@ -58,10 +61,12 @@ export class OutputParser {
    */
   private parsePromptMarker(data: string): void {
     if (data.includes("\x1b]9999;PROMPT\x07")) {
-      this.foregroundBusy = false;
-      this.bus.emit("shell:foreground-busy", { busy: false });
+      if (this.foregroundBusy) {
+        this.foregroundBusy = false;
+        this.bus.emit("shell:foreground-busy", { busy: false });
+      }
       if (this.lastCommand) {
-        const output = this.stripAnsi(this.currentOutputCapture).trim();
+        const output = stripAnsi(this.currentOutputCapture).trim();
         const cleaned = this.removeEchoedCommand(output, this.lastCommand);
         this.bus.emit("shell:command-done", {
           command: this.lastCommand,
@@ -77,14 +82,6 @@ export class OutputParser {
     }
   }
 
-  private stripAnsi(str: string): string {
-    return str
-      .replace(/\x1b\][^\x07]*\x07/g, "")
-      .replace(/\x1b\[[^m]*m/g, "")
-      .replace(/\x1b\[\?[^a-zA-Z]*[a-zA-Z]/g, "")
-      .replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, "")
-      .replace(/\r/g, "");
-  }
 
   private removeEchoedCommand(output: string, command: string): string {
     const lines = output.split("\n");

@@ -6,6 +6,7 @@ import { executeCommand, killSession, type ExecutorSession } from "./executor.js
 import { computeDiff } from "./diff.js";
 import { FileWatcher } from "./file-watcher.js";
 import * as path from "node:path";
+import { stripAnsi } from "./ansi.js";
 import type { EventBus } from "./event-bus.js";
 import type { ContextManager } from "./context-manager.js";
 import type { Shell } from "./shell.js";
@@ -26,9 +27,9 @@ export class AcpClient {
   private terminalDonePromises = new Map<string, Promise<void>>();
   private terminalCounter = 0;
   private fileWatcher: FileWatcher;
-  private pendingToolCalls = new Map<string, boolean>(); // Track pending tool calls
-  private agentInfo: { name: string; version: string } | null = null; // Store agent info
-  private model: string | undefined; // Store model name from config
+  private pendingToolCalls = new Map<string, boolean>();
+  private pendingToolCounter = 0;
+  private agentInfo: { name: string; version: string } | null = null;
 
   constructor(opts: {
     bus: EventBus;
@@ -41,7 +42,6 @@ export class AcpClient {
     this.shell = opts.shell;
     this.config = opts.config;
     this.fileWatcher = new FileWatcher(process.cwd());
-    this.model = opts.config.model;
   }
 
   async start(): Promise<void> {
@@ -250,11 +250,8 @@ export class AcpClient {
     return this.agentInfo;
   }
 
-  /**
-   * Get model name for display.
-   */
   getModel(): string | undefined {
-    return this.model;
+    return this.config.model;
   }
 
   /**
@@ -344,7 +341,7 @@ export class AcpClient {
 
       case "tool_call": {
         // Use toolCallId if available, otherwise generate a simple ID
-        const toolId = update.toolCallId || `tool-${this.pendingToolCalls.size}`;
+        const toolId = update.toolCallId || `tool-${this.pendingToolCounter++}`;
         this.pendingToolCalls.set(toolId, true);
         this.bus.emit("agent:tool-started", { title: update.title, toolCallId: toolId });
         break;
@@ -438,7 +435,7 @@ export class AcpClient {
       maxOutputBytes: 256 * 1024,
       onOutput: (chunk) => {
         // Stream output into the box in real-time (strip ANSI for display)
-        this.bus.emit("agent:tool-output-chunk", { chunk: this.stripAnsi(chunk) });
+        this.bus.emit("agent:tool-output-chunk", { chunk: stripAnsi(chunk) });
       },
     });
 
@@ -506,14 +503,6 @@ export class AcpClient {
     return {};
   }
 
-  private stripAnsi(str: string): string {
-    return str
-      .replace(/\x1b\][^\x07]*\x07/g, "")
-      .replace(/\x1b\[[^m]*m/g, "")
-      .replace(/\x1b\[\?[^a-zA-Z]*[a-zA-Z]/g, "")
-      .replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, "")
-      .replace(/\r/g, "");
-  }
 
   // ── Filesystem handlers ────────────────────────────────────────
 
