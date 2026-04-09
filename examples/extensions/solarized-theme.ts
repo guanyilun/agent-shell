@@ -11,7 +11,8 @@
  */
 import type { ExtensionContext } from "agent-sh/types";
 
-export default function activate({ setPalette }: ExtensionContext) {
+export default function activate({ setPalette, bus }: ExtensionContext) {
+  console.log("☀️ Solarized Dark theme extension loading...");
   setPalette({
     accent:  "\x1b[38;2;38;139;210m",   // blue (#268bd2)
     success: "\x1b[38;2;133;153;0m",    // green (#859900)
@@ -24,4 +25,5 @@ export default function activate({ setPalette }: ExtensionContext) {
     successBgEmph: "\x1b[48;2;20;70;50m",   // stronger green tint
     errorBgEmph:   "\x1b[48;2;70;30;30m",   // stronger red tint
   });
+  console.log("☀️ Solarized Dark theme loaded successfully!");
 }
