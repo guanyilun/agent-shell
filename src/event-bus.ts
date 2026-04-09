@@ -15,12 +15,18 @@ export interface ShellEvents {
   "shell:cwd-change": { cwd: string };
   "shell:foreground-busy": { busy: boolean };
 
+  // Agent input (frontend → core: user submitted a query or wants to cancel)
+  "agent:submit": { query: string };
+  "agent:cancel-request": Record<string, never>;
+
   // Agent interaction
   "agent:query": { query: string };
   "agent:response-chunk": { text: string };
   "agent:response-done": { response: string };
 
   // Agent lifecycle
+  "agent:processing-start": Record<string, never>;
+  "agent:processing-done": Record<string, never>;
   "agent:cancelled": Record<string, never>;
   "agent:error": { message: string };
 
@@ -63,6 +69,13 @@ export interface ShellEvents {
     cwd: string;
     intercepted: boolean;
     output: string;
+  };
+
+  // Prompt redraw (sync pipe: core sends \n to PTY as default fallback;
+  // extensions can set `handled: true` and write their own prompt to stdout)
+  "shell:redraw-prompt": {
+    cwd: string;
+    handled: boolean;
   };
 
   // Autocomplete (sync pipe: extensions inspect buffer and append items)

@@ -12,6 +12,8 @@ export interface InputContext {
   isAgentActive(): boolean;
   writeToPty(data: string): void;
   onCommandEntered(command: string, cwd: string): void;
+  redrawPrompt(): void;
+  freshPrompt(): void;
 }
 
 export class InputHandler {
@@ -24,21 +26,15 @@ export class InputHandler {
   private autocompleteItems: { name: string; description: string }[] = [];
   private autocompleteLines = 0;
   private bus: EventBus;
-  private onAgentRequest: (query: string) => void;
-  private onAgentCancel: () => void;
   private onShowAgentInfo: () => { info: string; model?: string };
 
   constructor(opts: {
     ctx: InputContext;
     bus: EventBus;
-    onAgentRequest: (query: string) => void;
-    onAgentCancel: () => void;
     onShowAgentInfo: () => { info: string; model?: string };
   }) {
     this.ctx = opts.ctx;
     this.bus = opts.bus;
-    this.onAgentRequest = opts.onAgentRequest;
-    this.onAgentCancel = opts.onAgentCancel;
     this.onShowAgentInfo = opts.onShowAgentInfo;
   }
 
@@ -58,7 +54,7 @@ export class InputHandler {
     // If agent is running (processing a query), handle Ctrl-C as cancel
     if (this.ctx.isAgentActive()) {
       if (data === "\x03") {
-        this.onAgentCancel();
+        this.bus.emit("agent:cancel-request", {});
       }
       return;
     }
@@ -118,13 +114,8 @@ export class InputHandler {
     this.printPrompt();
   }
 
-  /**
-   * Print the shell prompt to stdout. Used to restore the prompt
-   * after agent mode or agent response without sending anything to the PTY.
-   */
   printPrompt(): void {
-    const dir = this.ctx.getCwd().split("/").pop() || this.ctx.getCwd();
-    process.stdout.write(`\x1b[36m⚡\x1b[0m \x1b[1m${dir}\x1b[0m $ `);
+    this.ctx.redrawPrompt();
   }
 
   private renderAgentInput(): void {
@@ -298,9 +289,9 @@ export class InputHandler {
           const name = spaceIdx === -1 ? query : query.slice(0, spaceIdx);
           const args = spaceIdx === -1 ? "" : query.slice(spaceIdx + 1).trim();
           this.bus.emit("command:execute", { name, args });
-          this.printPrompt();
+          this.ctx.redrawPrompt();
         } else if (query) {
-          this.onAgentRequest(query);
+          this.bus.emit("agent:submit", { query });
         } else {
           this.exitAgentInputMode();
         }

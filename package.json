@@ -3,9 +3,13 @@
   "version": "0.1.0",
   "description": "A shell-first terminal where any ACP-compatible AI agent is one keystroke away",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/core.js",
   "bin": {
     "agent-shell": "dist/index.js"
+  },
+  "exports": {
+    ".": "./dist/core.js",
+    "./core": "./dist/core.js"
   },
   "scripts": {
     "dev": "tsx src/index.ts",

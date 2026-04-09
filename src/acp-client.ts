@@ -9,7 +9,6 @@ import * as path from "node:path";
 import { stripAnsi } from "./utils/ansi.js";
 import type { EventBus } from "./event-bus.js";
 import type { ContextManager } from "./context-manager.js";
-import type { Shell } from "./shell.js";
 import type { AgentShellConfig } from "./types.js";
 
 export class AcpClient {
@@ -18,7 +17,6 @@ export class AcpClient {
   private sessionId: string | null = null;
   private bus: EventBus;
   private contextManager: ContextManager;
-  private shell: Shell;
   private config: AgentShellConfig;
   private promptInProgress = false;
   private currentResponseText = "";
@@ -34,12 +32,10 @@ export class AcpClient {
   constructor(opts: {
     bus: EventBus;
     contextManager: ContextManager;
-    shell: Shell;
     config: AgentShellConfig;
   }) {
     this.bus = opts.bus;
     this.contextManager = opts.contextManager;
-    this.shell = opts.shell;
     this.config = opts.config;
     this.fileWatcher = new FileWatcher(process.cwd());
   }
@@ -138,8 +134,7 @@ export class AcpClient {
     }
 
     this.promptInProgress = true;
-    this.shell.setAgentActive(true);
-    this.shell.pauseOutput();
+    this.bus.emit("agent:processing-start", {});
     await this.fileWatcher.snapshot();
 
     this.currentResponseText = "";
@@ -189,9 +184,7 @@ export class AcpClient {
         await this.showPendingFileChanges();
       }
 
-      this.shell.resumeOutput();
-      this.shell.setAgentActive(false);
-      this.shell.printPrompt();
+      this.bus.emit("agent:processing-done", {});
       this.promptInProgress = false;
     }
   }
@@ -216,9 +209,7 @@ export class AcpClient {
     if (this.promptInProgress) {
       this.bus.emit("agent:cancelled", {});
     }
-    this.shell.resumeOutput();
-    this.shell.setAgentActive(false);
-    this.shell.printPrompt();
+    this.bus.emit("agent:processing-done", {});
     this.promptInProgress = false;
   }
 
@@ -375,7 +366,6 @@ export class AcpClient {
   ): Promise<acp.RequestPermissionResponse> {
     const title = params.toolCall.title ?? "Unknown action";
 
-    this.shell.resumeOutput();
     const result = await this.bus.emitPipeAsync("permission:request", {
       kind: "tool-call",
       title,
@@ -387,7 +377,6 @@ export class AcpClient {
       },
       decision: { outcome: "cancelled" }, // default if no handler
     });
-    this.shell.pauseOutput();
 
     return { outcome: result.decision as acp.RequestPermissionOutcome };
   }
@@ -549,14 +538,12 @@ export class AcpClient {
     if (diff.isIdentical) return {};
 
     // Ask for permission — extension decides whether to prompt or auto-approve
-    this.shell.resumeOutput();
     const result = await this.bus.emitPipeAsync("permission:request", {
       kind: "file-write",
       title: params.path,
       metadata: { path: params.path, diff, content: params.content },
       decision: { approved: false }, // default if no handler
     });
-    this.shell.pauseOutput();
 
     if (!(result.decision as { approved: boolean }).approved) {
       throw new Error(`User rejected modification: ${params.path}`);
@@ -585,8 +572,6 @@ export class AcpClient {
     const changes = await this.fileWatcher.detectChanges();
     if (changes.length === 0) return;
 
-    this.shell.resumeOutput();
-
     for (const change of changes) {
       const diff = computeDiff(change.before, change.after);
       if (diff.isIdentical) continue;
@@ -604,8 +589,6 @@ export class AcpClient {
         await this.fileWatcher.revert(change.path);
       }
     }
-
-    this.shell.pauseOutput();
   }
 
   // ── Cleanup ────────────────────────────────────────────────────

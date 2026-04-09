@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-import { EventBus } from "./event-bus.js";
-import { ContextManager } from "./context-manager.js";
 import { Shell } from "./shell.js";
-import { AcpClient } from "./acp-client.js";
+import { createCore } from "./core.js";
 import { DIM, GREEN, RESET } from "./utils/ansi.js";
 import tuiRenderer from "./extensions/tui-renderer.js";
 import interactivePrompts from "./extensions/interactive-prompts.js";
@@ -10,7 +8,7 @@ import slashCommands from "./extensions/slash-commands.js";
 import fileAutocomplete from "./extensions/file-autocomplete.js";
 import shellRecall from "./extensions/shell-recall.js";
 import { loadExtensions } from "./extension-loader.js";
-import type { AgentShellConfig, ExtensionContext } from "./types.js";
+import type { AgentShellConfig } from "./types.js";
 
 function parseArgs(argv: string[]): AgentShellConfig {
   // Priority: CLI args > Environment variables > Config file > Defaults
@@ -91,23 +89,18 @@ function formatAgentInfo(agentInfo: { name: string; version: string }, model?: s
 async function main(): Promise<void> {
   const config = parseArgs(process.argv.slice(2));
 
-  // Create foundational infrastructure
-  const bus = new EventBus();
-  const contextManager = new ContextManager(bus);
+  // ── Core (frontend-agnostic) ──────────────────────────────────
+  const core = createCore(config);
+  const { bus, client } = core;
 
-  // Set terminal title
+  // ── Interactive frontend ──────────────────────────────────────
   process.stdout.write(`\x1b]0;agent-shell\x07`);
 
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;
 
-  // Placeholder for agent — we'll create it after shell but before starting input
-  let acpClient: AcpClient | null = null;
-  let agentConnected = false;
-
-  // Signal handling
   const cleanup = () => {
-    acpClient?.kill();
+    core.kill();
     shell.kill();
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(false);
@@ -115,51 +108,16 @@ async function main(): Promise<void> {
     process.exit(0);
   };
 
-  // Create shell — emits events to bus, ContextManager listens
   const shell = new Shell({
     bus,
     cols,
     rows,
-    shell: config.shell,
+    shell: config.shell || process.env.SHELL || "/bin/bash",
     cwd: process.cwd(),
-    onAgentRequest: async (query: string) => {
-      if (!acpClient) {
-        bus.emit("ui:error", { message: "Agent not initialized" });
-        return;
-      }
-
-      // Wait for agent to be connected before sending prompt
-      let attempts = 0;
-      const maxAttempts = 30; // Wait up to 3 seconds (30 * 100ms)
-      while (!agentConnected && attempts < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        attempts++;
-      }
-
-      if (!agentConnected) {
-        bus.emit("ui:error", { message: "Agent not connected. Please wait a moment and try again." });
-        shell.resumeOutput();
-        shell.setAgentActive(false);
-        return;
-      }
-
-      try {
-        await acpClient.sendPrompt(query);
-      } catch (err: any) {
-        bus.emit("ui:error", { message: err.message });
-        shell.resumeOutput();
-        shell.setAgentActive(false);
-      }
-    },
-    onAgentCancel: () => {
-      if (acpClient) {
-        acpClient.cancel().catch(() => {});
-      }
-    },
     onShowAgentInfo: () => {
-      if (acpClient && acpClient.isConnected()) {
-        const agentInfo = acpClient.getAgentInfo();
-        const model = acpClient.getModel();
+      if (client.isConnected()) {
+        const agentInfo = client.getAgentInfo();
+        const model = client.getModel();
         if (agentInfo) {
           return { info: formatAgentInfo(agentInfo, model) };
         }
@@ -168,60 +126,38 @@ async function main(): Promise<void> {
     },
   });
 
-  // Create agent client — emits agent events, queries ContextManager for context
-  acpClient = new AcpClient({ bus, contextManager, shell, config });
+  // ── Extensions ────────────────────────────────────────────────
+  const extCtx = core.extensionContext({ quit: cleanup });
 
-  // Build extension context — shared by all extensions (built-in and user)
-  const extCtx: ExtensionContext = {
-    bus, contextManager, shell,
-    getAcpClient: () => acpClient!,
-    quit: cleanup,
-  };
-
-  // Load built-in extensions
   tuiRenderer(extCtx);
   interactivePrompts(extCtx);
   slashCommands(extCtx);
   fileAutocomplete(extCtx);
   shellRecall(extCtx);
 
-  // Load user/third-party extensions (from --extensions flag and ~/.agent-shell/extensions/)
   await loadExtensions(extCtx, config.extensions);
 
-  // Connect to agent asynchronously (don't block shell startup)
-  const connectAgent = async () => {
-    try {
-      await acpClient!.start();
-      agentConnected = true;
-    } catch (err) {
-      console.error(`Failed to connect to ${config.agentCommand}:`, err);
-    }
-  };
+  // ── Agent connection (async — don't block shell startup) ──────
+  core.start().catch((err) => {
+    console.error(`Failed to connect to ${config.agentCommand}:`, err);
+  });
 
-  // Start agent connection in background
-  connectAgent();
-
-  // Set up event handlers
+  // ── Terminal lifecycle ────────────────────────────────────────
   process.on("SIGTERM", cleanup);
   process.on("SIGHUP", cleanup);
 
-  // Handle terminal resize
   process.stdout.on("resize", () => {
-    const newCols = process.stdout.columns || 80;
-    const newRows = process.stdout.rows || 24;
-    shell.resize(newCols, newRows);
+    shell.resize(process.stdout.columns || 80, process.stdout.rows || 24);
   });
 
-  // Handle shell exit
   shell.onExit((e) => {
-    acpClient?.kill();
+    core.kill();
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(false);
     }
     process.exit(e.exitCode);
   });
 
-  // Set stdin to raw mode for PTY passthrough
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
   }

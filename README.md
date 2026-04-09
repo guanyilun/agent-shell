@@ -289,17 +289,18 @@ This means you can run a failing command, then type `> fix this` and the agent k
 
 agent-shell is an ACP **client**. The agent is a subprocess launched with stdio transport.
 
-### Design philosophy: headless core + pluggable extensions
+### Design philosophy: headless core + pluggable frontends
 
-The core is a minimal, headless runtime — it manages the PTY, runs agent queries via ACP, tracks context, and executes tools. It has **zero opinions about rendering**. Everything else is an extension.
+The core (`createCore()`) is a frontend-agnostic kernel — it wires up the EventBus, ContextManager, and AcpClient with zero knowledge of terminals, PTYs, or rendering. The interactive terminal (Shell + TUI + extensions) is one frontend built on top.
 
 ```
-index.ts (wiring)
-  ├── Core infrastructure:
+createCore() — frontend-agnostic kernel:
   │     EventBus          — typed pub/sub + transform pipelines
-  │     Shell             — PTY lifecycle (delegates to InputHandler + OutputParser)
-  │     AcpClient         — ACP protocol, terminal execution
   │     ContextManager    — exchange recording, context assembly
+  │     AcpClient         — ACP protocol, terminal execution
+  │
+index.ts — interactive terminal frontend:
+  │     Shell             — PTY lifecycle (delegates to InputHandler + OutputParser)
   │
   └── Extensions (pluggable, loaded at startup):
         tuiRenderer       — bordered markdown rendering, spinner, tool display
@@ -309,11 +310,12 @@ index.ts (wiring)
         shellRecall       — __shell_recall terminal interception
 ```
 
-Extensions are factory functions that receive the EventBus and self-register. The core communicates exclusively through typed events — extensions subscribe to what they care about.
+All components communicate exclusively through typed bus events. AcpClient has no reference to Shell — it emits lifecycle events (`agent:processing-start`, `agent:processing-done`) and Shell subscribes to manage its own state. Input flows the same way: any frontend emits `agent:submit` and the core routes it to the agent.
 
-**Without any extensions loaded, agent-shell still works** — PTY passthrough, agent queries, tool execution, context management all function. Output is silently dropped. This enables:
+**The core works without any frontend.** This enables:
 
-- **Headless mode** — testing, CI, scripting, embedding as a library
+- **Library usage** — `import { createCore } from "agent-shell"` to build WebSocket servers, REST APIs, Electron apps, or test harnesses
+- **Headless mode** — CI, scripting, embedding — no terminal needed
 - **Alternative renderers** — web UI, logging backend, minimal TUI
 - **Custom features** — add commands, autocomplete providers, tool interceptors by writing an extension
 
@@ -352,7 +354,8 @@ Extensions are factory functions that receive the EventBus and self-register. Th
 ```
 agent-shell/
 ├── src/
-│   ├── index.ts            # Entry point, CLI args, wiring, extension loading
+│   ├── index.ts            # Interactive terminal entry point (CLI args, Shell, extensions)
+│   ├── core.ts             # createCore() — frontend-agnostic kernel, library entry point
 │   ├── event-bus.ts        # Typed EventBus: emit/on, emitPipe, emitPipeAsync
 │   ├── shell.ts            # PTY lifecycle + wiring (InputHandler + OutputParser)
 │   ├── input-handler.ts    # Keyboard input, agent mode, bus-driven autocomplete
@@ -402,7 +405,7 @@ npm run dev -- --agent pi-acp
 
 ## How it works
 
-1. agent-shell spawns a real PTY running bash and sets up raw stdin passthrough
+1. agent-shell spawns a real PTY running your shell (zsh or bash, with your full rc config — oh-my-zsh, p10k, aliases, plugins, PATH) and sets up raw stdin passthrough
 2. It launches the specified ACP agent as a subprocess with stdio transport
 3. All keyboard input goes directly to the PTY — zero latency, full terminal compatibility
 4. **Smart connection**: The agent connects asynchronously in the background while the shell starts immediately
@@ -457,8 +460,7 @@ The `ExtensionContext` provides:
 | Property | Type | Description |
 |---|---|---|
 | `bus` | `EventBus` | Subscribe to events, emit events, register pipe handlers |
-| `contextManager` | `ContextManager` | Access exchange history, search, expand |
-| `shell` | `Shell` | Shell state (cwd, foreground busy) |
+| `contextManager` | `ContextManager` | Access exchange history, cwd, search, expand |
 | `getAcpClient` | `() => AcpClient` | Lazy getter for the agent client |
 | `quit` | `() => void` | Exit agent-shell |
 
@@ -479,6 +481,31 @@ npm start  # extension is loaded automatically
 ```
 
 Extensions are loaded after all built-in extensions and core services are initialized. Errors in extension loading are non-fatal — a `ui:error` is emitted and the next extension continues loading.
+
+### Using as a library
+
+The core can be imported directly for building custom frontends — no terminal required:
+
+```typescript
+import { createCore } from "agent-shell";
+
+const core = createCore({ agentCommand: "pi-acp" });
+
+// Subscribe to events
+core.bus.on("agent:response-chunk", ({ text }) => process.stdout.write(text));
+core.bus.on("agent:processing-done", () => console.log("\n[done]"));
+
+// Handle permissions (auto-approve, or wire to your own UI)
+core.bus.onPipeAsync("permission:request", async (p) => {
+  return { ...p, decision: { approved: true } };
+});
+
+// Connect and send a query
+await core.start();
+core.bus.emit("agent:submit", { query: "explain this codebase" });
+```
+
+This works for WebSocket servers, REST APIs, Electron apps, test harnesses, or any environment where you want agent-shell's context management and ACP integration without the interactive terminal.
 
 ## Troubleshooting
 
