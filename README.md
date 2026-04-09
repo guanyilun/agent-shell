@@ -297,17 +297,19 @@ The core (`createCore()`) is a frontend-agnostic kernel — it wires up the Even
 createCore() — frontend-agnostic kernel:
   │     EventBus          — typed pub/sub + transform pipelines
   │     ContextManager    — exchange recording, context assembly
-  │     AcpClient         — ACP protocol, terminal execution
+  │     AcpClient         — ACP protocol, terminal execution (yolo by default)
   │
 index.ts — interactive terminal frontend:
   │     Shell             — PTY lifecycle (delegates to InputHandler + OutputParser)
   │
-  └── Extensions (pluggable, loaded at startup):
-        tuiRenderer       — bordered markdown rendering, spinner, tool display
-        interactivePrompts— permission dialogs, diff preview
-        slashCommands     — /help, /clear, /copy, /compact, /quit
-        fileAutocomplete  — @ file path completion
-        shellRecall       — __shell_recall terminal interception
+  ├── Built-in extensions:
+  │     tuiRenderer       — markdown rendering, syntax-highlighted diffs, spinner
+  │     slashCommands     — /help, /clear, /copy, /compact, /quit
+  │     fileAutocomplete  — @ file path completion
+  │     shellRecall       — __shell_recall terminal interception
+  │
+  └── User extensions (opt-in, loaded from -e flag / settings.json / extensions dir):
+        e.g. interactive-prompts — permission dialogs, diff preview
 ```
 
 All components communicate exclusively through typed bus events. AcpClient has no reference to Shell — it emits lifecycle events (`agent:processing-start`, `agent:processing-done`) and Shell subscribes to manage its own state. Input flows the same way: any frontend emits `agent:submit` and the core routes it to the agent.
@@ -362,20 +364,25 @@ agent-shell/
 │   ├── output-parser.ts    # OSC parsing, command boundary detection
 │   ├── acp-client.ts       # ACP protocol, terminal execution, session management
 │   ├── context-manager.ts  # Exchange log, context assembly, recall API
-│   ├── extension-loader.ts # Dynamic extension loading (CLI + directory)
+│   ├── extension-loader.ts # Extension loading (-e, settings.json, extensions dir)
 │   ├── executor.ts         # Isolated child process execution
 │   ├── types.ts            # Shared type definitions
 │   ├── utils/
 │   │   ├── ansi.ts         # Shared ANSI constants + utilities
 │   │   ├── diff.ts         # Line-level LCS diff for file change previews
+│   │   ├── diff-renderer.ts# Syntax-highlighted diff display (split/unified/summary)
+│   │   ├── box-frame.ts    # Bordered TUI panels (rounded/square/double/heavy)
+│   │   ├── tool-display.ts # Width-adaptive tool call/result rendering
 │   │   ├── file-watcher.ts # File change detection for agent tool writes
 │   │   └── markdown.ts     # Streaming markdown → ANSI renderer
 │   └── extensions/
-│       ├── tui-renderer.ts        # Terminal rendering (markdown, spinner, tools)
-│       ├── interactive-prompts.ts # Permission dialogs + diff preview
-│       ├── slash-commands.ts      # /help, /clear, /copy, /compact, /quit
-│       ├── file-autocomplete.ts   # @ file path completion
-│       └── shell-recall.ts       # __shell_recall terminal interception
+│       ├── tui-renderer.ts       # Terminal rendering (markdown, spinner, tools)
+│       ├── slash-commands.ts     # /help, /clear, /copy, /compact, /quit
+│       ├── file-autocomplete.ts  # @ file path completion
+│       └── shell-recall.ts      # __shell_recall terminal interception
+├── examples/
+│   └── extensions/
+│       └── interactive-prompts.ts # Example: permission gates (opt-in)
 ├── package.json
 └── tsconfig.json
 ```
@@ -464,23 +471,58 @@ The `ExtensionContext` provides:
 | `getAcpClient` | `() => AcpClient` | Lazy getter for the agent client |
 | `quit` | `() => void` | Exit agent-shell |
 
+### Yolo mode
+
+By default, agent-shell runs in **yolo mode** — all tool calls and file writes are auto-approved. This matches pi's design philosophy where the agent operates freely unless you explicitly add permission gates.
+
+To add permission prompts, load the example extension:
+```bash
+# One-off
+npm start -- -e ./examples/extensions/interactive-prompts.ts
+
+# Permanent: copy to your extensions dir
+cp examples/extensions/interactive-prompts.ts ~/.agent-shell/extensions/
+
+# Or add to settings.json
+echo '{ "extensions": ["./examples/extensions/interactive-prompts.ts"] }' > ~/.agent-shell/settings.json
+```
+
 ### Loading extensions
 
-Extensions are loaded from two sources:
+Extensions are loaded from three sources (in order, deduplicated):
 
-**1. CLI flag** — comma-separated module paths:
+**1. CLI flag (`-e` / `--extensions`)** — npm packages or file paths, repeatable:
 ```bash
-npm start -- --extensions ./my-ext.js,/path/to/other-ext.js
+npm start -- -e my-ext-package -e ./local-ext.ts
+npm start -- -e my-ext-package,another-package   # comma-separated also works
 ```
 
-**2. Extension directory** — any `.js` or `.mjs` file in `~/.agent-shell/extensions/` is automatically loaded:
-```bash
-mkdir -p ~/.agent-shell/extensions
-cp my-extension.js ~/.agent-shell/extensions/
-npm start  # extension is loaded automatically
+**2. Settings file** — `~/.agent-shell/settings.json`:
+```json
+{
+  "extensions": [
+    "my-published-extension",
+    "/absolute/path/to/ext.ts",
+    "./relative/path/to/ext.js"
+  ]
+}
 ```
 
-Extensions are loaded after all built-in extensions and core services are initialized. Errors in extension loading are non-fatal — a `ui:error` is emitted and the next extension continues loading.
+**3. Extensions directory** — files and directories in `~/.agent-shell/extensions/`:
+```bash
+~/.agent-shell/extensions/
+├── my-extension.ts          # loaded directly
+├── another.js               # JS works too
+└── complex-extension/       # directory with index file
+    ├── index.ts             # entry point (auto-detected)
+    └── helpers.ts           # supporting modules
+```
+
+Extensions can be written in **TypeScript or JavaScript** — `.ts`, `.tsx`, `.mts`, `.js`, `.mjs` are all supported. TS extensions are transpiled at runtime via tsx.
+
+Bare names (e.g. `my-ext-package`) resolve as **npm packages** via Node's standard module resolution. Install them globally or locally and reference by name.
+
+Errors in extension loading are non-fatal — a `ui:error` is emitted and the next extension continues loading.
 
 ### Using as a library
 
