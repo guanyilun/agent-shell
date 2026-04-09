@@ -3,7 +3,6 @@ import { Shell } from "./shell.js";
 import { createCore } from "./core.js";
 import { DIM, GREEN, RESET } from "./utils/ansi.js";
 import tuiRenderer from "./extensions/tui-renderer.js";
-import interactivePrompts from "./extensions/interactive-prompts.js";
 import slashCommands from "./extensions/slash-commands.js";
 import fileAutocomplete from "./extensions/file-autocomplete.js";
 import shellRecall from "./extensions/shell-recall.js";
@@ -130,7 +129,6 @@ async function main(): Promise<void> {
   const extCtx = core.extensionContext({ quit: cleanup });
 
   tuiRenderer(extCtx);
-  interactivePrompts(extCtx);
   slashCommands(extCtx);
   fileAutocomplete(extCtx);
   shellRecall(extCtx);

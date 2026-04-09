@@ -375,7 +375,10 @@ export class AcpClient {
           kind: o.kind,
         })),
       },
-      decision: { outcome: "cancelled" }, // default if no handler
+      decision: { // default: auto-approve (yolo mode); extensions can override to gate
+        outcome: "selected",
+        optionId: (params.options.find((o) => o.kind === "allow_once") ?? params.options[0])?.optionId,
+      },
     });
 
     return { outcome: result.decision as acp.RequestPermissionOutcome };
@@ -537,12 +540,12 @@ export class AcpClient {
     // Identical content — nothing to do
     if (diff.isIdentical) return {};
 
-    // Ask for permission — extension decides whether to prompt or auto-approve
+    // Extensions can gate this — default is auto-approve (yolo mode)
     const result = await this.bus.emitPipeAsync("permission:request", {
       kind: "file-write",
       title: params.path,
       metadata: { path: params.path, diff, content: params.content },
-      decision: { approved: false }, // default if no handler
+      decision: { approved: true },
     });
 
     if (!(result.decision as { approved: boolean }).approved) {
@@ -580,7 +583,7 @@ export class AcpClient {
         kind: "file-write",
         title: change.relPath,
         metadata: { path: change.relPath, diff, content: change.after },
-        decision: { approved: false },
+        decision: { approved: true },
       });
 
       if ((result.decision as { approved: boolean }).approved) {

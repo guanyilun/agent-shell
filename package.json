@@ -9,7 +9,9 @@
   },
   "exports": {
     ".": "./dist/core.js",
-    "./core": "./dist/core.js"
+    "./core": "./dist/core.js",
+    "./utils/*": "./dist/utils/*",
+    "./types": "./dist/types.js"
   },
   "scripts": {
     "dev": "tsx src/index.ts",
