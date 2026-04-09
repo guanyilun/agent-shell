@@ -5,6 +5,7 @@ import { Shell } from "./shell.js";
 import { TUI } from "./tui.js";
 import { AcpClient } from "./acp-client.js";
 import { commands, executeSlashCommand, type CommandContext } from "./commands.js";
+import { interactivePrompts } from "./extensions/interactive-prompts.js";
 import type { AgentShellConfig } from "./types.js";
 
 function parseArgs(argv: string[]): AgentShellConfig {
@@ -73,6 +74,9 @@ async function main(): Promise<void> {
   const bus = new EventBus();
   const contextManager = new ContextManager(bus);
   const tui = new TUI(bus);
+
+  // Load extensions
+  interactivePrompts(bus);
 
   // Set terminal title
   process.stdout.write(`\x1b]0;agent-shell\x07`);
@@ -182,7 +186,7 @@ async function main(): Promise<void> {
   });
 
   // Create agent client — emits agent events, queries ContextManager for context
-  acpClient = new AcpClient({ bus, contextManager, shell, tui, config });
+  acpClient = new AcpClient({ bus, contextManager, shell, config });
 
   // Connect to agent asynchronously (don't block shell startup)
   const connectAgent = async () => {
