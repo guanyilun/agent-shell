@@ -7,13 +7,7 @@
  * - Uses "ui:info"/"ui:error" for user feedback (no direct TUI dependency)
  */
 import { execSync } from "node:child_process";
-import type { EventBus } from "../event-bus.js";
-import type { AcpClient } from "../acp-client.js";
-
-interface SlashCommandServices {
-  getAcpClient: () => AcpClient;
-  quit: () => void;
-}
+import type { ExtensionContext } from "../types.js";
 
 interface SlashCommand {
   name: string;
@@ -21,7 +15,7 @@ interface SlashCommand {
   handler: (args: string) => Promise<void> | void;
 }
 
-export function slashCommands(bus: EventBus, services: SlashCommandServices): void {
+export default function activate({ bus, getAcpClient, quit }: ExtensionContext): void {
   const commands: SlashCommand[] = [
     {
       name: "/help",
@@ -38,7 +32,7 @@ export function slashCommands(bus: EventBus, services: SlashCommandServices): vo
       description: "Start a new agent session",
       handler: async () => {
         try {
-          await services.getAcpClient().resetSession();
+          await getAcpClient().resetSession();
           bus.emit("ui:info", { message: "Session cleared." });
         } catch (err) {
           bus.emit("ui:error", {
@@ -51,7 +45,7 @@ export function slashCommands(bus: EventBus, services: SlashCommandServices): vo
       name: "/copy",
       description: "Copy last agent response to clipboard",
       handler: () => {
-        const text = services.getAcpClient().getLastResponseText();
+        const text = getAcpClient().getLastResponseText();
         if (!text) {
           bus.emit("ui:info", { message: "No agent response to copy." });
           return;
@@ -72,7 +66,7 @@ export function slashCommands(bus: EventBus, services: SlashCommandServices): vo
       name: "/compact",
       description: "Ask agent to summarize the conversation",
       handler: async () => {
-        await services.getAcpClient().sendPrompt(
+        await getAcpClient().sendPrompt(
           "Please provide a concise summary of our conversation so far and the current state of the work."
         );
       },
@@ -81,7 +75,7 @@ export function slashCommands(bus: EventBus, services: SlashCommandServices): vo
       name: "/quit",
       description: "Exit agent-shell",
       handler: () => {
-        services.quit();
+        quit();
       },
     },
   ];

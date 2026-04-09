@@ -12,11 +12,11 @@
  */
 import { MarkdownRenderer } from "../markdown.js";
 import { CYAN, DIM, YELLOW, GREEN, RED, GRAY, BOLD, RESET } from "../ansi.js";
-import type { EventBus } from "../event-bus.js";
+import type { ExtensionContext } from "../types.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-export function tuiRenderer(bus: EventBus): void {
+export default function activate({ bus }: ExtensionContext): void {
   let spinnerInterval: ReturnType<typeof setInterval> | null = null;
   let spinnerFrame = 0;
   let renderer: MarkdownRenderer | null = null;

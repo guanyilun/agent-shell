@@ -12,15 +12,11 @@
  * fall through to their safe defaults (cancelled/rejected). Alternative
  * extensions could auto-approve, show a web UI, apply policy rules, etc.
  */
-import type { EventBus } from "../event-bus.js";
 import type { DiffResult } from "../diff.js";
 import { DIM, YELLOW, GREEN, RED, BOLD, RESET, visibleLen } from "../ansi.js";
+import type { ExtensionContext } from "../types.js";
 
-/**
- * Factory function — call once at startup to register the extension.
- * Follows the pi-mono pattern: receive bus, self-register, done.
- */
-export function interactivePrompts(bus: EventBus): void {
+export default function activate({ bus }: ExtensionContext): void {
   let autoApproveWrites = false;
 
   bus.onPipeAsync("permission:request", async (payload) => {

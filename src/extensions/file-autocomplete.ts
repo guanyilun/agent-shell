@@ -7,9 +7,9 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { EventBus } from "../event-bus.js";
+import type { ExtensionContext } from "../types.js";
 
-export function fileAutocomplete(bus: EventBus, getCwd: () => string): void {
+export default function activate({ bus, shell }: ExtensionContext): void {
   bus.onPipe("autocomplete:request", (payload) => {
     const atPos = payload.buffer.lastIndexOf("@");
     if (atPos < 0 || (atPos > 0 && payload.buffer[atPos - 1] !== " ")) {
@@ -20,7 +20,7 @@ export function fileAutocomplete(bus: EventBus, getCwd: () => string): void {
       return payload;
     }
 
-    const files = listFiles(afterAt, getCwd());
+    const files = listFiles(afterAt, shell.getCwd());
     if (files.length === 0) return payload;
     return { ...payload, items: [...payload.items, ...files] };
   });

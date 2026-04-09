@@ -4,13 +4,13 @@ import { ContextManager } from "./context-manager.js";
 import { Shell } from "./shell.js";
 import { AcpClient } from "./acp-client.js";
 import { DIM, GREEN, RESET } from "./ansi.js";
-import { tuiRenderer } from "./extensions/tui-renderer.js";
-import { interactivePrompts } from "./extensions/interactive-prompts.js";
-import { slashCommands } from "./extensions/slash-commands.js";
-import { fileAutocomplete } from "./extensions/file-autocomplete.js";
-import { shellRecall } from "./extensions/shell-recall.js";
+import tuiRenderer from "./extensions/tui-renderer.js";
+import interactivePrompts from "./extensions/interactive-prompts.js";
+import slashCommands from "./extensions/slash-commands.js";
+import fileAutocomplete from "./extensions/file-autocomplete.js";
+import shellRecall from "./extensions/shell-recall.js";
 import { loadExtensions } from "./extension-loader.js";
-import type { AgentShellConfig } from "./types.js";
+import type { AgentShellConfig, ExtensionContext } from "./types.js";
 
 function parseArgs(argv: string[]): AgentShellConfig {
   // Priority: CLI args > Environment variables > Config file > Defaults
@@ -95,10 +95,6 @@ async function main(): Promise<void> {
   const bus = new EventBus();
   const contextManager = new ContextManager(bus);
 
-  // Load extensions (order doesn't matter — they just register on the bus)
-  tuiRenderer(bus);
-  interactivePrompts(bus);
-
   // Set terminal title
   process.stdout.write(`\x1b]0;agent-shell\x07`);
 
@@ -175,16 +171,22 @@ async function main(): Promise<void> {
   // Create agent client — emits agent events, queries ContextManager for context
   acpClient = new AcpClient({ bus, contextManager, shell, config });
 
-  // Load built-in extensions that need service references
-  slashCommands(bus, { getAcpClient: () => acpClient!, quit: cleanup });
-  fileAutocomplete(bus, () => shell.getCwd());
-  shellRecall(bus, contextManager);
+  // Build extension context — shared by all extensions (built-in and user)
+  const extCtx: ExtensionContext = {
+    bus, contextManager, shell,
+    getAcpClient: () => acpClient!,
+    quit: cleanup,
+  };
+
+  // Load built-in extensions
+  tuiRenderer(extCtx);
+  interactivePrompts(extCtx);
+  slashCommands(extCtx);
+  fileAutocomplete(extCtx);
+  shellRecall(extCtx);
 
   // Load user/third-party extensions (from --extensions flag and ~/.agent-shell/extensions/)
-  await loadExtensions(
-    { bus, contextManager, shell, getAcpClient: () => acpClient!, quit: cleanup },
-    config.extensions,
-  );
+  await loadExtensions(extCtx, config.extensions);
 
   // Connect to agent asynchronously (don't block shell startup)
   const connectAgent = async () => {
