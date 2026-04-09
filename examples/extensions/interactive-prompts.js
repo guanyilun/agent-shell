@@ -1,0 +1,166 @@
+/**
+ * Interactive permission prompts extension.
+ *
+ * Adds permission gates for tool calls and file writes.
+ * Without this extension, agent-shell runs in yolo mode (auto-approve).
+ *
+ * Usage:
+ *   # Load by short name (built-in):
+ *   agent-shell --extensions interactive-prompts
+ *
+ *   # Or copy this file to ~/.agent-shell/extensions/ for permanent use:
+ *   cp examples/extensions/interactive-prompts.js ~/.agent-shell/extensions/
+ *
+ * Requires: ~/.agent-shell/package.json with { "type": "module" }
+ *           and agent-shell resolvable via node_modules
+ */
+import { renderDiff } from "agent-shell/utils/diff-renderer.js";
+import { renderBoxFrame } from "agent-shell/utils/box-frame.js";
+
+const DIM = "\x1b[2m";
+const YELLOW = "\x1b[33m";
+const GREEN = "\x1b[32m";
+const RED = "\x1b[31m";
+const BOLD = "\x1b[1m";
+const RESET = "\x1b[0m";
+
+export default function activate({ bus }) {
+  let autoApproveWrites = false;
+
+  bus.onPipeAsync("permission:request", async (payload) => {
+    switch (payload.kind) {
+      case "tool-call":
+        return handleToolCallPermission(payload);
+      case "file-write": {
+        if (autoApproveWrites) {
+          return { ...payload, decision: { approved: true } };
+        }
+        const result = await handleFileWritePermission(payload);
+        if (result.decision.autoApprove) {
+          autoApproveWrites = true;
+        }
+        return result;
+      }
+      default:
+        return payload;
+    }
+  });
+}
+
+async function handleToolCallPermission(payload) {
+  const options = payload.metadata.options;
+  const answer = await promptPermission(payload.title);
+
+  if (answer === "approve" || answer === "approve_all") {
+    const option = answer === "approve_all"
+      ? options.find((o) => o.kind === "allow_always") ?? options.find((o) => o.kind === "allow_once")
+      : options.find((o) => o.kind === "allow_once" || o.kind === "allow_always");
+    if (option) {
+      return { ...payload, decision: { outcome: "selected", optionId: option.optionId } };
+    }
+  }
+  return { ...payload, decision: { outcome: "cancelled" } };
+}
+
+async function handleFileWritePermission(payload) {
+  const diff = payload.metadata.diff;
+  const filePath = payload.metadata.path;
+  const answer = await previewDiff({ path: filePath, diff });
+  if (answer === "approve") {
+    return { ...payload, decision: { approved: true } };
+  }
+  if (answer === "approve_all") {
+    return { ...payload, decision: { approved: true, autoApprove: true } };
+  }
+  return { ...payload, decision: { approved: false } };
+}
+
+async function promptPermission(title) {
+  const termW = process.stdout.columns || 80;
+  const boxW = Math.min(84, termW);
+
+  const framed = renderBoxFrame(
+    [`${BOLD}⚠ ${title}${RESET}`],
+    {
+      width: boxW,
+      style: "rounded",
+      borderColor: YELLOW,
+      title: "Permission required",
+      footer: [`  ${DIM}[y]es / [n]o / [a]llow all${RESET}`],
+    },
+  );
+
+  process.stdout.write("\n");
+  for (const line of framed) {
+    process.stdout.write(line + "\n");
+  }
+  process.stdout.write("  ");
+
+  return new Promise((resolve) => {
+    const handler = (data) => {
+      const ch = data.toString("utf-8").toLowerCase();
+      process.stdin.removeListener("data", handler);
+      process.stdout.write("\n");
+
+      if (ch === "y") resolve("approve");
+      else if (ch === "a") resolve("approve_all");
+      else resolve(null);
+    };
+    process.stdin.on("data", handler);
+  });
+}
+
+async function previewDiff(opts) {
+  const termW = process.stdout.columns || 80;
+  const boxW = Math.min(84, termW);
+  const contentW = boxW - 4;
+  const MAX_DISPLAY = 25;
+
+  const stats = opts.diff.isNewFile
+    ? `(+${opts.diff.added} lines)`
+    : `(+${opts.diff.added} / -${opts.diff.removed})`;
+  const title = opts.diff.isNewFile
+    ? `new: ${opts.path}  ${stats}`
+    : `${opts.path}  ${stats}`;
+
+  const diffLines = renderDiff(opts.diff, {
+    width: contentW,
+    filePath: opts.path,
+    maxLines: MAX_DISPLAY,
+    trueColor: true,
+    mode: "unified",
+  });
+  const content = ["", ...diffLines.slice(1), ""];
+
+  const framed = renderBoxFrame(content, {
+    width: boxW,
+    style: "rounded",
+    borderColor: YELLOW,
+    title,
+    footer: [`  ${BOLD}[y] Apply  [n] Skip  [a] Don't ask again${RESET}`],
+  });
+
+  process.stdout.write("\n");
+  for (const line of framed) {
+    process.stdout.write(line + "\n");
+  }
+
+  return new Promise((resolve) => {
+    const handler = (data) => {
+      const ch = data.toString("utf-8").toLowerCase();
+      process.stdin.removeListener("data", handler);
+
+      if (ch === "y") {
+        process.stdout.write(`  ${GREEN}✓ Applied${RESET}\n`);
+        resolve("approve");
+      } else if (ch === "a") {
+        process.stdout.write(`  ${GREEN}✓ Applied (auto-approve on)${RESET}\n`);
+        resolve("approve_all");
+      } else {
+        process.stdout.write(`  ${RED}✗ Skipped${RESET}\n`);
+        resolve("reject");
+      }
+    };
+    process.stdin.on("data", handler);
+  });
+}
