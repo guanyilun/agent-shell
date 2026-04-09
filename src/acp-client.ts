@@ -6,16 +6,19 @@ import { executeCommand, killSession, type ExecutorSession } from "./executor.js
 import { computeDiff } from "./diff.js";
 import { FileWatcher } from "./file-watcher.js";
 import * as path from "node:path";
+import { stripAnsi } from "./ansi.js";
+import type { EventBus } from "./event-bus.js";
+import type { ContextManager } from "./context-manager.js";
 import type { Shell } from "./shell.js";
-import type { TUI } from "./tui.js";
 import type { AgentShellConfig } from "./types.js";
 
 export class AcpClient {
   private agentProcess: ChildProcess | null = null;
   private connection: acp.ClientSideConnection | null = null;
   private sessionId: string | null = null;
+  private bus: EventBus;
+  private contextManager: ContextManager;
   private shell: Shell;
-  private tui: TUI;
   private config: AgentShellConfig;
   private promptInProgress = false;
   private currentResponseText = "";
@@ -23,18 +26,22 @@ export class AcpClient {
   private terminalSessions = new Map<string, ExecutorSession>();
   private terminalDonePromises = new Map<string, Promise<void>>();
   private terminalCounter = 0;
-  private autoApproveWrites = false;
   private fileWatcher: FileWatcher;
-  private pendingToolCalls = new Map<string, boolean>(); // Track pending tool calls
-  private agentInfo: { name: string; version: string } | null = null; // Store agent info
-  private model: string | undefined; // Store model name from config
+  private pendingToolCalls = new Map<string, boolean>();
+  private pendingToolCounter = 0;
+  private agentInfo: { name: string; version: string } | null = null;
 
-  constructor(shell: Shell, tui: TUI, config: AgentShellConfig) {
-    this.shell = shell;
-    this.tui = tui;
-    this.config = config;
+  constructor(opts: {
+    bus: EventBus;
+    contextManager: ContextManager;
+    shell: Shell;
+    config: AgentShellConfig;
+  }) {
+    this.bus = opts.bus;
+    this.contextManager = opts.contextManager;
+    this.shell = opts.shell;
+    this.config = opts.config;
     this.fileWatcher = new FileWatcher(process.cwd());
-    this.model = config.model; // Store model from config
   }
 
   async start(): Promise<void> {
@@ -62,7 +69,7 @@ export class AcpClient {
     this.log("Agent process spawned");
 
     this.agentProcess.on("exit", (code) => {
-      this.tui.showError(`Agent process exited with code ${code}`);
+      this.bus.emit("agent:error", { message: `Agent process exited with code ${code}` });
       this.connection = null;
       this.sessionId = null;
     });
@@ -110,10 +117,10 @@ export class AcpClient {
     }
 
     // Create a session
-    const context = this.shell.getContext();
-    this.log(`Creating new session with cwd: ${context.cwd}`);
+    const cwd = this.contextManager.getCwd();
+    this.log(`Creating new session with cwd: ${cwd}`);
     const sessionResponse = await this.connection.newSession({
-      cwd: context.cwd,
+      cwd,
       mcpServers: [],
     });
 
@@ -126,7 +133,7 @@ export class AcpClient {
    */
   async sendPrompt(query: string): Promise<void> {
     if (!this.connection || !this.sessionId) {
-      this.tui.showError("Not connected to agent");
+      this.bus.emit("agent:error", { message: "Not connected to agent" });
       return;
     }
 
@@ -135,33 +142,14 @@ export class AcpClient {
     this.shell.pauseOutput();
     await this.fileWatcher.snapshot();
 
-    // Echo the user's query
-    const CYAN = "\x1b[36m";
-    const BOLD = "\x1b[1m";
-    const RESET = "\x1b[0m";
-    const GRAY = "\x1b[90m";
-    process.stdout.write(`\n${CYAN}${BOLD}❯ ${RESET}${CYAN}${query}${RESET}\n`);
-
     this.currentResponseText = "";
-    this.tui.startAgentResponse();
-    this.tui.startSpinner();
+    let cancelled = false;
 
-    // Include shell context — cwd + commands executed since last agent interaction
-    const context = this.shell.getContext();
-    const recentActivity = this.shell.getAndClearRecentActivity();
-    let contextBlock = `<shell_context>\n`;
-    contextBlock += `cwd: ${context.cwd}\n`;
-    if (recentActivity.length > 0) {
-      contextBlock += `\nshell_activity_since_last_interaction:\n`;
-      for (const entry of recentActivity) {
-        contextBlock += `$ ${entry.command}\n`;
-        if (entry.output) {
-          contextBlock += `${entry.output}\n`;
-        }
-        contextBlock += `\n`;
-      }
-    }
-    contextBlock += `</shell_context>\n\n`;
+    // Emit agent query event (TUI renders echo+spinner, ContextManager records it)
+    this.bus.emit("agent:query", { query });
+
+    // Build structured context from ContextManager
+    const contextBlock = this.contextManager.getContext();
 
     try {
       this.log("sending prompt...");
@@ -170,27 +158,30 @@ export class AcpClient {
         prompt: [
           {
             type: "text",
-            text: contextBlock + query,
+            text: contextBlock + "\n" + query,
           },
         ],
       });
 
-      this.tui.stopSpinner();
       this.log(`prompt resolved: stopReason=${response.stopReason}`);
 
       if (response.stopReason === "cancelled") {
-        this.tui.showInfo("(cancelled)");
+        cancelled = true;
+        this.bus.emit("agent:cancelled", {});
       }
     } catch (err) {
-      this.tui.stopSpinner();
       this.log(`prompt error: ${err}`);
-      this.tui.showError(
-        err instanceof Error ? err.message : String(err)
-      );
+      this.bus.emit("agent:error", {
+        message: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       this.log("restoring shell mode");
+      if (!cancelled) {
+        this.bus.emit("agent:response-done", {
+          response: this.currentResponseText,
+        });
+      }
       this.lastResponseText = this.currentResponseText;
-      this.tui.endAgentResponse();
 
       // Show diff previews for files the agent modified via its own tools
       // (modifications via fs/writeTextFile are already handled inline)
@@ -222,9 +213,9 @@ export class AcpClient {
       }
     }
     // Force-recover shell regardless of prompt state
-    this.tui.stopSpinner();
-    this.tui.showInfo("(cancelled)");
-    this.tui.endAgentResponse();
+    if (this.promptInProgress) {
+      this.bus.emit("agent:cancelled", {});
+    }
     this.shell.resumeOutput();
     this.shell.setAgentActive(false);
     this.shell.printPrompt();
@@ -236,9 +227,8 @@ export class AcpClient {
    */
   async resetSession(): Promise<void> {
     if (!this.connection) return;
-    const context = this.shell.getContext();
     const sessionResponse = await this.connection.newSession({
-      cwd: context.cwd,
+      cwd: this.contextManager.getCwd(),
       mcpServers: [],
     });
     this.sessionId = sessionResponse.sessionId;
@@ -260,11 +250,8 @@ export class AcpClient {
     return this.agentInfo;
   }
 
-  /**
-   * Get model name for display.
-   */
   getModel(): string | undefined {
-    return this.model;
+    return this.config.model;
   }
 
   /**
@@ -339,11 +326,10 @@ export class AcpClient {
 
     switch (update.sessionUpdate) {
       case "agent_message_chunk": {
-        this.tui.stopSpinner();
         const content = update.content;
         if (content.type === "text") {
           this.currentResponseText += content.text;
-          this.tui.writeAgentText(content.text);
+          this.bus.emit("agent:response-chunk", { text: content.text });
         }
         break;
       }
@@ -354,11 +340,10 @@ export class AcpClient {
       }
 
       case "tool_call": {
-        this.tui.stopSpinner();
         // Use toolCallId if available, otherwise generate a simple ID
-        const toolId = update.toolCallId || `tool-${this.pendingToolCalls.size}`;
+        const toolId = update.toolCallId || `tool-${this.pendingToolCounter++}`;
         this.pendingToolCalls.set(toolId, true);
-        this.tui.showToolCall(update.title);
+        this.bus.emit("agent:tool-started", { title: update.title, toolCallId: toolId });
         break;
       }
 
@@ -366,15 +351,12 @@ export class AcpClient {
         // Only show result when the tool completes, don't show tool call again
         if (update.status === "completed" || update.status === "failed") {
           const toolId = update.toolCallId;
+          const exitCode = update.status === "completed" ? 0 : 1;
           if (toolId && this.pendingToolCalls.has(toolId)) {
-            // Only show result if we haven't already
             this.pendingToolCalls.delete(toolId);
-            const exitCode = update.status === "completed" ? 0 : 1;
-            this.tui.showToolResult(exitCode);
+            this.bus.emit("agent:tool-completed", { toolCallId: toolId, exitCode });
           } else if (!toolId) {
-            // Fallback for tools without ID
-            const exitCode = update.status === "completed" ? 0 : 1;
-            this.tui.showToolResult(exitCode);
+            this.bus.emit("agent:tool-completed", { exitCode });
           }
         }
         break;
@@ -393,29 +375,21 @@ export class AcpClient {
   ): Promise<acp.RequestPermissionResponse> {
     const title = params.toolCall.title ?? "Unknown action";
 
-    // Find approve/deny options
-    const approveOption = params.options.find(
-      (o) => o.kind === "allow_once" || o.kind === "allow_always"
-    );
-
-    this.shell.resumeOutput(); // Show the prompt in the terminal
-    const decision = await this.tui.promptPermission(title);
+    this.shell.resumeOutput();
+    const result = await this.bus.emitPipeAsync("permission:request", {
+      kind: "tool-call",
+      title,
+      metadata: {
+        options: params.options.map((o) => ({
+          optionId: o.optionId,
+          kind: o.kind,
+        })),
+      },
+      decision: { outcome: "cancelled" }, // default if no handler
+    });
     this.shell.pauseOutput();
 
-    if (decision === "approve" || decision === "approve_all") {
-      const selectedOption =
-        decision === "approve_all"
-          ? params.options.find((o) => o.kind === "allow_always") ?? approveOption
-          : approveOption;
-
-      if (selectedOption) {
-        return {
-          outcome: { outcome: "selected", optionId: selectedOption.optionId },
-        };
-      }
-    }
-
-    return { outcome: { outcome: "cancelled" } };
+    return { outcome: result.decision as acp.RequestPermissionOutcome };
   }
 
   // ── Terminal handlers (isolated execution via child_process) ────
@@ -427,10 +401,35 @@ export class AcpClient {
       ? `${params.command} ${params.args.join(" ")}`
       : params.command;
 
-    const context = this.shell.getContext();
-    const cwd = params.cwd ?? context.cwd;
+    const cwd = params.cwd ?? this.contextManager.getCwd();
 
-    // Don't show tool call here - it's already shown in handleSessionUpdate
+    // Let extensions intercept before spawning a real process
+    const intercept = this.bus.emitPipe("agent:terminal-intercept", {
+      command: fullCommand,
+      cwd,
+      intercepted: false,
+      output: "",
+    });
+    if (intercept.intercepted) {
+      const id = `t${++this.terminalCounter}`;
+      const session: ExecutorSession = {
+        id,
+        command: fullCommand,
+        output: intercept.output,
+        exitCode: 0,
+        done: true,
+        truncated: false,
+        process: null,
+      };
+      this.terminalSessions.set(id, session);
+      this.terminalDonePromises.set(id, Promise.resolve());
+      return { terminalId: id };
+    }
+
+    this.bus.emit("agent:tool-call", {
+      tool: fullCommand,
+      args: { command: params.command, args: params.args, cwd },
+    });
 
     const id = `t${++this.terminalCounter}`;
 
@@ -441,7 +440,7 @@ export class AcpClient {
       maxOutputBytes: 256 * 1024,
       onOutput: (chunk) => {
         // Stream output into the box in real-time (strip ANSI for display)
-        this.tui.writeCommandOutput(this.stripAnsi(chunk));
+        this.bus.emit("agent:tool-output-chunk", { chunk: stripAnsi(chunk) });
       },
     });
 
@@ -482,8 +481,11 @@ export class AcpClient {
       if (done) await done;
     }
 
-    this.tui.flushCommandOutput();
-    this.tui.showToolResult(session.exitCode);
+    this.bus.emit("agent:tool-output", {
+      tool: session.command ?? "",
+      output: session.output,
+      exitCode: session.exitCode,
+    });
 
     return { exitCode: session.exitCode ?? -1 };
   }
@@ -506,14 +508,6 @@ export class AcpClient {
     return {};
   }
 
-  private stripAnsi(str: string): string {
-    return str
-      .replace(/\x1b\][^\x07]*\x07/g, "")
-      .replace(/\x1b\[[^m]*m/g, "")
-      .replace(/\x1b\[\?[^a-zA-Z]*[a-zA-Z]/g, "")
-      .replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, "")
-      .replace(/\r/g, "");
-  }
 
   // ── Filesystem handlers ────────────────────────────────────────
 
@@ -554,27 +548,18 @@ export class AcpClient {
     // Identical content — nothing to do
     if (diff.isIdentical) return {};
 
-    // Show interactive diff preview (unless auto-approved)
-    if (!this.autoApproveWrites) {
-      this.tui.stopSpinner();
-      this.tui.flushCommandOutput();
-      this.tui.flushRenderer();
-      this.tui.endAgentResponse();
+    // Ask for permission — extension decides whether to prompt or auto-approve
+    this.shell.resumeOutput();
+    const result = await this.bus.emitPipeAsync("permission:request", {
+      kind: "file-write",
+      title: params.path,
+      metadata: { path: params.path, diff, content: params.content },
+      decision: { approved: false }, // default if no handler
+    });
+    this.shell.pauseOutput();
 
-      this.shell.resumeOutput();
-      const decision = await this.tui.previewDiff({
-        path: params.path,
-        diff,
-      });
-      this.shell.pauseOutput();
-
-      if (decision === "reject") {
-        throw new Error(`User rejected modification: ${params.path}`);
-      }
-      if (decision === "approve_all") {
-        this.autoApproveWrites = true;
-      }
-      // Renderer will be lazily re-created on next agent output
+    if (!(result.decision as { approved: boolean }).approved) {
+      throw new Error(`User rejected modification: ${params.path}`);
     }
 
     // Write the file
@@ -597,8 +582,6 @@ export class AcpClient {
    * and show interactive diff previews.
    */
   private async showPendingFileChanges(): Promise<void> {
-    if (this.autoApproveWrites) return;
-
     const changes = await this.fileWatcher.detectChanges();
     if (changes.length === 0) return;
 
@@ -608,24 +591,17 @@ export class AcpClient {
       const diff = computeDiff(change.before, change.after);
       if (diff.isIdentical) continue;
 
-      const decision = await this.tui.previewDiff({
-        path: change.relPath,
-        diff,
+      const result = await this.bus.emitPipeAsync("permission:request", {
+        kind: "file-write",
+        title: change.relPath,
+        metadata: { path: change.relPath, diff, content: change.after },
+        decision: { approved: false },
       });
 
-      if (decision === "approve" || decision === "approve_all") {
+      if ((result.decision as { approved: boolean }).approved) {
         this.fileWatcher.approve(change.path, change.after);
       } else {
         await this.fileWatcher.revert(change.path);
-      }
-
-      if (decision === "approve_all") {
-        this.autoApproveWrites = true;
-        // Approve remaining changes automatically
-        for (const remaining of changes.slice(changes.indexOf(change) + 1)) {
-          this.fileWatcher.approve(remaining.path, remaining.after);
-        }
-        break;
       }
     }
 

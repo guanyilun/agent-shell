@@ -1,9 +1,16 @@
 #!/usr/bin/env node
+import { EventBus } from "./event-bus.js";
+import { ContextManager } from "./context-manager.js";
 import { Shell } from "./shell.js";
-import { TUI } from "./tui.js";
 import { AcpClient } from "./acp-client.js";
-import { commands, executeSlashCommand, type CommandContext } from "./commands.js";
-import type { AgentShellConfig } from "./types.js";
+import { DIM, GREEN, RESET } from "./ansi.js";
+import tuiRenderer from "./extensions/tui-renderer.js";
+import interactivePrompts from "./extensions/interactive-prompts.js";
+import slashCommands from "./extensions/slash-commands.js";
+import fileAutocomplete from "./extensions/file-autocomplete.js";
+import shellRecall from "./extensions/shell-recall.js";
+import { loadExtensions } from "./extension-loader.js";
+import type { AgentShellConfig, ExtensionContext } from "./types.js";
 
 function parseArgs(argv: string[]): AgentShellConfig {
   // Priority: CLI args > Environment variables > Config file > Defaults
@@ -11,6 +18,7 @@ function parseArgs(argv: string[]): AgentShellConfig {
   let agentCommand = defaultAgent;
   let agentArgs: string[] = [];
   let model: string | undefined;
+  let extensions: string[] | undefined;
   const shell = process.env.SHELL || "/bin/bash";
 
   for (let i = 0; i < argv.length; i++) {
@@ -26,7 +34,9 @@ function parseArgs(argv: string[]): AgentShellConfig {
         model = agentArgs[modelArgIndex + 1];
       }
     } else if (arg === "--shell" && argv[i + 1]) {
-      return { agentCommand, agentArgs, shell: argv[++i]!, model };
+      return { agentCommand, agentArgs, shell: argv[++i]!, model, extensions };
+    } else if (arg === "--extensions" && argv[i + 1]) {
+      extensions = argv[++i]!.split(",").map(s => s.trim());
     } else if (arg === "--help" || arg === "-h") {
       console.log(`agent-shell — a shell-first terminal with ACP agent access
 
@@ -41,6 +51,7 @@ Options:
   --agent <cmd>       Agent command to launch (default: $AGENT_SHELL_AGENT or "pi-acp")
   --agent-args <args> Arguments for the agent (space-separated, quoted)
   --shell <path>      Shell to use (default: $SHELL or /bin/bash)
+  --extensions <paths> Comma-separated extension module paths to load
   -h, --help          Show this help
 
 Environment Variables:
@@ -61,12 +72,28 @@ Inside the shell:
     }
   }
 
-  return { agentCommand, agentArgs, shell, model };
+  return { agentCommand, agentArgs, shell, model, extensions };
+}
+
+function formatAgentInfo(agentInfo: { name: string; version: string }, model?: string): string {
+  const name = agentInfo.name.replace(/-acp$/, "").replace(/-/g, " ");
+  let infoStr = `${DIM}${name}${RESET}`;
+  if (model) {
+    const cleanModel = model
+      .replace(/^openai\//i, "")
+      .replace(/^anthropic\//i, "")
+      .replace(/^google\//i, "");
+    infoStr += ` ${DIM}(${cleanModel})${RESET}`;
+  }
+  return `${infoStr} ${GREEN}●${RESET}`;
 }
 
 async function main(): Promise<void> {
   const config = parseArgs(process.argv.slice(2));
-  const tui = new TUI(config.agentCommand);
+
+  // Create foundational infrastructure
+  const bus = new EventBus();
+  const contextManager = new ContextManager(bus);
 
   // Set terminal title
   process.stdout.write(`\x1b]0;agent-shell\x07`);
@@ -80,7 +107,6 @@ async function main(): Promise<void> {
 
   // Signal handling
   const cleanup = () => {
-    tui.teardownStatusBar();
     acpClient?.kill();
     shell.kill();
     if (process.stdin.isTTY) {
@@ -89,15 +115,16 @@ async function main(): Promise<void> {
     process.exit(0);
   };
 
-  // Create shell first
+  // Create shell — emits events to bus, ContextManager listens
   const shell = new Shell({
+    bus,
     cols,
     rows,
     shell: config.shell,
     cwd: process.cwd(),
     onAgentRequest: async (query: string) => {
       if (!acpClient) {
-        tui.showError("Agent not initialized");
+        bus.emit("ui:error", { message: "Agent not initialized" });
         return;
       }
 
@@ -110,7 +137,7 @@ async function main(): Promise<void> {
       }
 
       if (!agentConnected) {
-        tui.showError("Agent not connected. Please wait a moment and try again.");
+        bus.emit("ui:error", { message: "Agent not connected. Please wait a moment and try again." });
         shell.resumeOutput();
         shell.setAgentActive(false);
         return;
@@ -119,7 +146,7 @@ async function main(): Promise<void> {
       try {
         await acpClient.sendPrompt(query);
       } catch (err: any) {
-        tui.showError(err.message);
+        bus.emit("ui:error", { message: err.message });
         shell.resumeOutput();
         shell.setAgentActive(false);
       }
@@ -129,60 +156,43 @@ async function main(): Promise<void> {
         acpClient.cancel().catch(() => {});
       }
     },
-    onSlashCommand: (input: string) => {
-      if (acpClient) {
-        executeSlashCommand(input, {
-          tui,
-          acpClient,
-          shell,
-          quit: cleanup,
-        });
-      }
-      shell.printPrompt();
-    },
     onShowAgentInfo: () => {
-      // Return agent info string and model when entering agent input mode
       if (acpClient && acpClient.isConnected()) {
         const agentInfo = acpClient.getAgentInfo();
         const model = acpClient.getModel();
         if (agentInfo) {
-          return {
-            info: tui.getAgentInfoString(agentInfo, model),
-            model: model
-          };
-        } else {
-          // Debug: show why agent info is not available
-          if (process.env.DEBUG) {
-            process.stderr.write('[agent-shell] Agent info not available\n');
-          }
-        }
-      } else {
-        // Debug: show why we can't show agent info
-        if (process.env.DEBUG) {
-          if (!acpClient) {
-            process.stderr.write('[agent-shell] acpClient is null\n');
-          } else if (!acpClient.isConnected()) {
-            process.stderr.write('[agent-shell] Agent not connected\n');
-          }
+          return { info: formatAgentInfo(agentInfo, model) };
         }
       }
       return { info: "" };
     },
-    slashCommandDefs: commands.map((c) => ({ name: c.name, description: c.description })),
-    onPtyOutput: () => {
-      tui.scheduleRepaint();
-    },
   });
 
-  // Create agent client
-  acpClient = new AcpClient(shell, tui, config);
+  // Create agent client — emits agent events, queries ContextManager for context
+  acpClient = new AcpClient({ bus, contextManager, shell, config });
+
+  // Build extension context — shared by all extensions (built-in and user)
+  const extCtx: ExtensionContext = {
+    bus, contextManager, shell,
+    getAcpClient: () => acpClient!,
+    quit: cleanup,
+  };
+
+  // Load built-in extensions
+  tuiRenderer(extCtx);
+  interactivePrompts(extCtx);
+  slashCommands(extCtx);
+  fileAutocomplete(extCtx);
+  shellRecall(extCtx);
+
+  // Load user/third-party extensions (from --extensions flag and ~/.agent-shell/extensions/)
+  await loadExtensions(extCtx, config.extensions);
 
   // Connect to agent asynchronously (don't block shell startup)
   const connectAgent = async () => {
     try {
       await acpClient!.start();
       agentConnected = true;
-      // Note: We don't print success message here to avoid interfering with shell output
     } catch (err) {
       console.error(`Failed to connect to ${config.agentCommand}:`, err);
     }
@@ -200,12 +210,10 @@ async function main(): Promise<void> {
     const newCols = process.stdout.columns || 80;
     const newRows = process.stdout.rows || 24;
     shell.resize(newCols, newRows);
-    tui.handleResize(newCols, newRows);
   });
 
   // Handle shell exit
   shell.onExit((e) => {
-    tui.teardownStatusBar();
     acpClient?.kill();
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(false);
@@ -218,9 +226,6 @@ async function main(): Promise<void> {
     process.stdin.setRawMode(true);
   }
   process.stdin.resume();
-
-  // Set up status bar after shell has a moment to initialize
-  setTimeout(() => tui.setupStatusBar(), 500);
 }
 
 main().catch((err) => {
