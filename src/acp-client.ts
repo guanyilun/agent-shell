@@ -191,7 +191,7 @@ export class AcpClient {
 
       this.shell.resumeOutput();
       this.shell.setAgentActive(false);
-      this.shell.printPrompt();
+      this.shell.freshPrompt();
       this.promptInProgress = false;
     }
   }
@@ -218,7 +218,7 @@ export class AcpClient {
     }
     this.shell.resumeOutput();
     this.shell.setAgentActive(false);
-    this.shell.printPrompt();
+    this.shell.freshPrompt();
     this.promptInProgress = false;
   }
 
