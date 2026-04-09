@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import { Shell } from "./shell.js";
 import { createCore } from "./core.js";
 import { palette as p } from "./utils/palette.js";
@@ -8,6 +9,35 @@ import fileAutocomplete from "./extensions/file-autocomplete.js";
 import shellRecall from "./extensions/shell-recall.js";
 import { loadExtensions } from "./extension-loader.js";
 import type { AgentShellConfig } from "./types.js";
+
+/**
+ * Capture the user's full shell environment by running a quick interactive
+ * subshell. This picks up env vars exported in .zshrc/.bashrc that the
+ * Node.js process (which was spawned before the PTY sources rc files)
+ * doesn't have.
+ */
+function captureShellEnv(shell: string): Record<string, string> {
+  try {
+    const output = execFileSync(shell, ["-i", "-c", "env -0"], {
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: ["pipe", "pipe", "pipe"], // suppress interactive noise on stderr
+    });
+    const env: Record<string, string> = {};
+    for (const entry of output.split("\0")) {
+      const eq = entry.indexOf("=");
+      if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1);
+    }
+    return env;
+  } catch {
+    // Fallback: use Node's own environment
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined) env[k] = v;
+    }
+    return env;
+  }
+}
 
 function parseArgs(argv: string[]): AgentShellConfig {
   // Priority: CLI args > Environment variables > Config file > Defaults
@@ -94,6 +124,10 @@ function formatAgentInfo(agentInfo: { name: string; version: string }, model?: s
 
 async function main(): Promise<void> {
   const config = parseArgs(process.argv.slice(2));
+
+  // Capture the user's shell environment (picks up vars from .zshrc/.bashrc
+  // that the Node process doesn't have)
+  config.shellEnv = captureShellEnv(config.shell || process.env.SHELL || "/bin/bash");
 
   // ── Core (frontend-agnostic) ──────────────────────────────────
   const core = createCore(config);

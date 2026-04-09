@@ -43,10 +43,12 @@ export class AcpClient {
   async start(): Promise<void> {
     this.log(`Starting agent: ${this.config.agentCommand} ${this.config.agentArgs.join(" ")}`);
 
-    // Spawn the agent subprocess
-    // Spawn the agent — wait briefly to catch ENOENT and other spawn errors
+    // Spawn the agent subprocess with the user's full shell environment
+    // (includes vars from .zshrc/.bashrc that process.env may not have)
+    const agentEnv = this.config.shellEnv ?? process.env;
     this.agentProcess = spawn(this.config.agentCommand, this.config.agentArgs, {
       stdio: ["pipe", "pipe", process.env.DEBUG ? "inherit" : "ignore"],
+      env: agentEnv as NodeJS.ProcessEnv,
     });
 
     // Catch spawn errors (ENOENT, EACCES, etc.) before proceeding
@@ -439,6 +441,7 @@ export class AcpClient {
     const { session, done } = executeCommand({
       command: fullCommand,
       cwd,
+      env: this.config.shellEnv,
       timeout: 60_000,
       maxOutputBytes: 256 * 1024,
       onOutput: (chunk) => {
