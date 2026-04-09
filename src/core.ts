@@ -20,11 +20,14 @@ import { EventBus } from "./event-bus.js";
 import { ContextManager } from "./context-manager.js";
 import { AcpClient } from "./acp-client.js";
 import type { AgentShellConfig, ExtensionContext } from "./types.js";
+import { setPalette } from "./utils/palette.js";
 
 // Re-export types that library consumers need
 export { EventBus } from "./event-bus.js";
 export type { ShellEvents } from "./event-bus.js";
 export type { AgentShellConfig, ExtensionContext } from "./types.js";
+export { palette, setPalette, resetPalette } from "./utils/palette.js";
+export type { ColorPalette } from "./utils/palette.js";
 
 export interface AgentShellCore {
   bus: EventBus;
@@ -87,6 +90,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
         contextManager,
         getAcpClient: () => client,
         quit: opts.quit,
+        setPalette,
       };
     },
 

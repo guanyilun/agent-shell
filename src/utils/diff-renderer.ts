@@ -7,7 +7,8 @@
  */
 import { highlight } from "cli-highlight";
 import type { DiffResult, DiffHunk, DiffLine } from "./diff.js";
-import { GREEN, RED, DIM, BOLD, RESET, GRAY, visibleLen } from "./ansi.js";
+import { visibleLen } from "./ansi.js";
+import { palette as p } from "./palette.js";
 import { wrapLine } from "./markdown.js";
 
 // ── Types ────────────────────────────────────────────────────────
@@ -33,16 +34,6 @@ export interface DiffRenderOptions {
 
 const SPLIT_MIN_WIDTH = 120;
 const UNIFIED_MIN_WIDTH = 40;
-
-// True-color backgrounds (RGB)
-const BG_ADDED = "\x1b[48;2;0;60;0m";
-const BG_REMOVED = "\x1b[48;2;50;0;0m";
-const BG_ADDED_EMPH = "\x1b[48;2;0;112;0m";
-const BG_REMOVED_EMPH = "\x1b[48;2;90;0;0m";
-
-// Foreground-only fallbacks
-const FG_ADDED = GREEN;
-const FG_REMOVED = RED;
 
 // ── Syntax highlighting ──────────────────────────────────────────
 
@@ -221,7 +212,7 @@ function highlightInlineChanges(
         result += palette.rowBg + preserveBg(text, palette.rowBg);
       } else {
         // Changed tokens: emphasis background, no syntax highlighting (emphasis stands out)
-        result += palette.emphBg + BOLD + tokens[i].text + RESET;
+        result += palette.emphBg + p.bold + tokens[i].text + p.reset;
       }
     }
     return result;
@@ -292,17 +283,17 @@ function findChangePairs(hunk: DiffHunk): Map<number, ChangePair> {
 function buildHeader(diff: DiffResult, filePath?: string): string {
   const path = filePath ?? "";
   if (diff.isNewFile) {
-    return `${BOLD}new: ${path}${RESET}  ${DIM}(+${diff.added} lines)${RESET}`;
+    return `${p.bold}new: ${path}${p.reset}  ${p.dim}(+${diff.added} lines)${p.reset}`;
   }
-  return `${BOLD}${path}${RESET}  ${DIM}(+${diff.added} / -${diff.removed})${RESET}`;
+  return `${p.bold}${path}${p.reset}  ${p.dim}(+${diff.added} / -${diff.removed})${p.reset}`;
 }
 
 // ── Summary mode ─────────────────────────────────────────────────
 
 function renderSummary(diff: DiffResult): string[] {
-  if (diff.isIdentical) return [`${DIM}(no changes)${RESET}`];
-  if (diff.isNewFile) return [`${GREEN}+${diff.added} lines${RESET} ${DIM}(new file)${RESET}`];
-  return [`${GREEN}+${diff.added}${RESET} ${RED}-${diff.removed}${RESET}`];
+  if (diff.isIdentical) return [`${p.dim}(no changes)${p.reset}`];
+  if (diff.isNewFile) return [`${p.success}+${diff.added} lines${p.reset} ${p.dim}(new file)${p.reset}`];
+  return [`${p.success}+${diff.added}${p.reset} ${p.error}-${diff.removed}${p.reset}`];
 }
 
 // ── Unified mode ─────────────────────────────────────────────────
@@ -327,13 +318,13 @@ function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
   const gutterW = noW + 5;
   const lineTextW = Math.max(1, textWidth - gutterW);
 
-  const removedPalette: InlinePalette = { rowBg: BG_REMOVED, emphBg: BG_REMOVED_EMPH };
-  const addedPalette: InlinePalette = { rowBg: BG_ADDED, emphBg: BG_ADDED_EMPH };
+  const removedPalette: InlinePalette = { rowBg: p.errorBg, emphBg: p.errorBgEmph };
+  const addedPalette: InlinePalette = { rowBg: p.successBg, emphBg: p.successBgEmph };
 
   for (let hunkIdx = 0; hunkIdx < diff.hunks.length; hunkIdx++) {
     const hunk = diff.hunks[hunkIdx];
     if (hunkIdx > 0) {
-      output.push(`  ${DIM}⋯${RESET}`);
+      output.push(`  ${p.dim}⋯${p.reset}`);
     }
 
     const pairs = findChangePairs(hunk);
@@ -346,7 +337,7 @@ function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
       if (line.type === "context") {
         const raw = truncateText(line.text, lineTextW);
         const text = lang ? highlightLine(raw, lang) : raw;
-        output.push(`  ${DIM}${no} │${RESET} ${DIM}${text}${RESET}`);
+        output.push(`  ${p.dim}${no} │${p.reset} ${p.dim}${text}${p.reset}`);
         continue;
       }
 
@@ -376,18 +367,18 @@ function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
         }
 
         if (useTrueColor) {
-          const rowContent = `${BG_REMOVED}${RED}- ${no} │ ${preserveBg(removedText, BG_REMOVED)}${RESET}`;
+          const rowContent = `${p.errorBg}${p.error}- ${no} │ ${preserveBg(removedText, p.errorBg)}${p.reset}`;
           output.push(padToWidth(rowContent, textWidth));
         } else {
-          output.push(`${FG_REMOVED}- ${no} │ ${removedText}${RESET}`);
+          output.push(`${p.error}- ${no} │ ${removedText}${p.reset}`);
         }
 
         if (addedText !== null && addedNo !== null) {
           if (useTrueColor) {
-            const rowContent = `${BG_ADDED}${GREEN}+ ${addedNo} │ ${preserveBg(addedText, BG_ADDED)}${RESET}`;
+            const rowContent = `${p.successBg}${p.success}+ ${addedNo} │ ${preserveBg(addedText, p.successBg)}${p.reset}`;
             output.push(padToWidth(rowContent, textWidth));
           } else {
-            output.push(`${FG_ADDED}+ ${addedNo} │ ${addedText}${RESET}`);
+            output.push(`${p.success}+ ${addedNo} │ ${addedText}${p.reset}`);
           }
         }
         continue;
@@ -399,10 +390,10 @@ function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
         const raw = truncateText(line.text, lineTextW);
         const text = lang ? highlightLine(raw, lang) : raw;
         if (useTrueColor) {
-          const rowContent = `${BG_ADDED}${GREEN}+ ${no} │ ${preserveBg(text, BG_ADDED)}${RESET}`;
+          const rowContent = `${p.successBg}${p.success}+ ${no} │ ${preserveBg(text, p.successBg)}${p.reset}`;
           output.push(padToWidth(rowContent, textWidth));
         } else {
-          output.push(`${FG_ADDED}+ ${no} │ ${text}${RESET}`);
+          output.push(`${p.success}+ ${no} │ ${text}${p.reset}`);
         }
       }
     }
@@ -433,20 +424,20 @@ function renderSplit(diff: DiffResult, opts: DiffRenderOptions): string[] {
   // lineNo(noW) + space(1) + bar(1) + space(1) = noW + 3
   const textW = Math.max(1, colWidth - noW - 3);
 
-  const removedPalette: InlinePalette = { rowBg: BG_REMOVED, emphBg: BG_REMOVED_EMPH };
-  const addedPalette: InlinePalette = { rowBg: BG_ADDED, emphBg: BG_ADDED_EMPH };
+  const removedPalette: InlinePalette = { rowBg: p.errorBg, emphBg: p.errorBgEmph };
+  const addedPalette: InlinePalette = { rowBg: p.successBg, emphBg: p.successBgEmph };
   const output: string[] = [];
 
   // Column header
-  const leftHeader = padToWidth(`${DIM}${"─".repeat(colWidth)}${RESET}`, colWidth);
-  const rightHeader = padToWidth(`${DIM}${"─".repeat(colWidth)}${RESET}`, colWidth);
-  output.push(`${leftHeader} ${DIM}│${RESET} ${rightHeader}`);
+  const leftHeader = padToWidth(`${p.dim}${"─".repeat(colWidth)}${p.reset}`, colWidth);
+  const rightHeader = padToWidth(`${p.dim}${"─".repeat(colWidth)}${p.reset}`, colWidth);
+  output.push(`${leftHeader} ${p.dim}│${p.reset} ${rightHeader}`);
 
   for (let hunkIdx = 0; hunkIdx < diff.hunks.length; hunkIdx++) {
     const hunk = diff.hunks[hunkIdx];
     if (hunkIdx > 0) {
-      output.push(`${DIM}${" ".repeat(colWidth)} │ ${" ".repeat(colWidth)}${RESET}`);
-      output.push(`${DIM}${"·".repeat(colWidth)} │ ${"·".repeat(colWidth)}${RESET}`);
+      output.push(`${p.dim}${" ".repeat(colWidth)} │ ${" ".repeat(colWidth)}${p.reset}`);
+      output.push(`${p.dim}${"·".repeat(colWidth)} │ ${"·".repeat(colWidth)}${p.reset}`);
     }
 
     const rows = buildSplitRows(hunk);
@@ -486,36 +477,36 @@ function renderSplit(diff: DiffResult, opts: DiffRenderOptions): string[] {
       let rightCol: string;
 
       if (!row.left || row.left.type === "context") {
-        leftCol = padToWidth(`${DIM}${leftNo} │${RESET} ${DIM}${leftText}${RESET}`, colWidth);
+        leftCol = padToWidth(`${p.dim}${leftNo} │${p.reset} ${p.dim}${leftText}${p.reset}`, colWidth);
       } else if (row.left.type === "removed") {
         if (useTrueColor) {
           leftCol = padToWidth(
-            `${BG_REMOVED}${RED}${leftNo} │ ${preserveBg(leftText, BG_REMOVED)}${RESET}`,
+            `${p.errorBg}${p.error}${leftNo} │ ${preserveBg(leftText, p.errorBg)}${p.reset}`,
             colWidth,
           );
         } else {
-          leftCol = padToWidth(`${FG_REMOVED}${leftNo} │ ${leftText}${RESET}`, colWidth);
+          leftCol = padToWidth(`${p.error}${leftNo} │ ${leftText}${p.reset}`, colWidth);
         }
       } else {
-        leftCol = padToWidth(`${DIM}${leftNo} │${RESET} ${leftText}`, colWidth);
+        leftCol = padToWidth(`${p.dim}${leftNo} │${p.reset} ${leftText}`, colWidth);
       }
 
       if (!row.right || row.right.type === "context") {
-        rightCol = padToWidth(`${DIM}${rightNo} │${RESET} ${DIM}${rightText}${RESET}`, colWidth);
+        rightCol = padToWidth(`${p.dim}${rightNo} │${p.reset} ${p.dim}${rightText}${p.reset}`, colWidth);
       } else if (row.right.type === "added") {
         if (useTrueColor) {
           rightCol = padToWidth(
-            `${BG_ADDED}${GREEN}${rightNo} │ ${preserveBg(rightText, BG_ADDED)}${RESET}`,
+            `${p.successBg}${p.success}${rightNo} │ ${preserveBg(rightText, p.successBg)}${p.reset}`,
             colWidth,
           );
         } else {
-          rightCol = padToWidth(`${FG_ADDED}${rightNo} │ ${rightText}${RESET}`, colWidth);
+          rightCol = padToWidth(`${p.success}${rightNo} │ ${rightText}${p.reset}`, colWidth);
         }
       } else {
-        rightCol = padToWidth(`${DIM}${rightNo} │${RESET} ${rightText}`, colWidth);
+        rightCol = padToWidth(`${p.dim}${rightNo} │${p.reset} ${rightText}`, colWidth);
       }
 
-      output.push(`${leftCol} ${DIM}│${RESET} ${rightCol}`);
+      output.push(`${leftCol} ${p.dim}│${p.reset} ${rightCol}`);
     }
   }
 
@@ -593,7 +584,7 @@ function truncateText(text: string, maxWidth: number): string {
     i++;
   }
 
-  return text.slice(0, i) + RESET + "…";
+  return text.slice(0, i) + p.reset + "…";
 }
 
 // ── Public API ───────────────────────────────────────────────────
@@ -607,7 +598,7 @@ export function selectMode(width: number): DiffDisplayMode {
 
 /** Render a diff result as an array of ANSI-formatted terminal lines. */
 export function renderDiff(diff: DiffResult, opts: DiffRenderOptions): string[] {
-  if (diff.isIdentical) return [`${DIM}(no changes)${RESET}`];
+  if (diff.isIdentical) return [`${p.dim}(no changes)${p.reset}`];
 
   const mode = opts.mode ?? selectMode(opts.width);
   const maxLines = opts.maxLines ?? 50;
@@ -632,7 +623,7 @@ export function renderDiff(diff: DiffResult, opts: DiffRenderOptions): string[] 
   if (bodyLines.length > maxLines) {
     const overflow = bodyLines.length - maxLines;
     bodyLines = bodyLines.slice(0, maxLines);
-    bodyLines.push(`${DIM}… ${overflow} more lines${RESET}`);
+    bodyLines.push(`${p.dim}… ${overflow} more lines${p.reset}`);
   }
 
   return [header, ...bodyLines];

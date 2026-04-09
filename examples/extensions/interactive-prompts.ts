@@ -16,14 +16,8 @@
  */
 import { renderDiff } from "agent-shell/utils/diff-renderer.js";
 import { renderBoxFrame } from "agent-shell/utils/box-frame.js";
+import { palette as p } from "agent-shell/utils/palette.js";
 import type { ExtensionContext } from "agent-shell/types";
-
-const DIM = "\x1b[2m";
-const YELLOW = "\x1b[33m";
-const GREEN = "\x1b[32m";
-const RED = "\x1b[31m";
-const BOLD = "\x1b[1m";
-const RESET = "\x1b[0m";
 
 export default function activate({ bus }: ExtensionContext) {
   let autoApproveWrites = false;
@@ -81,13 +75,13 @@ async function promptPermission(title) {
   const boxW = Math.min(84, termW);
 
   const framed = renderBoxFrame(
-    [`${BOLD}⚠ ${title}${RESET}`],
+    [`${p.bold}⚠ ${title}${p.reset}`],
     {
       width: boxW,
       style: "rounded",
-      borderColor: YELLOW,
+      borderColor: p.warning,
       title: "Permission required",
-      footer: [`  ${DIM}[y]es / [n]o / [a]llow all${RESET}`],
+      footer: [`  ${p.dim}[y]es / [n]o / [a]llow all${p.reset}`],
     },
   );
 
@@ -136,9 +130,9 @@ async function previewDiff(opts) {
   const framed = renderBoxFrame(content, {
     width: boxW,
     style: "rounded",
-    borderColor: YELLOW,
+    borderColor: p.warning,
     title,
-    footer: [`  ${BOLD}[y] Apply  [n] Skip  [a] Don't ask again${RESET}`],
+    footer: [`  ${p.bold}[y] Apply  [n] Skip  [a] Don't ask again${p.reset}`],
   });
 
   process.stdout.write("\n");
@@ -152,13 +146,13 @@ async function previewDiff(opts) {
       process.stdin.removeListener("data", handler);
 
       if (ch === "y") {
-        process.stdout.write(`  ${GREEN}✓ Applied${RESET}\n`);
+        process.stdout.write(`  ${p.success}✓ Applied${p.reset}\n`);
         resolve("approve");
       } else if (ch === "a") {
-        process.stdout.write(`  ${GREEN}✓ Applied (auto-approve on)${RESET}\n`);
+        process.stdout.write(`  ${p.success}✓ Applied (auto-approve on)${p.reset}\n`);
         resolve("approve_all");
       } else {
-        process.stdout.write(`  ${RED}✗ Skipped${RESET}\n`);
+        process.stdout.write(`  ${p.error}✗ Skipped${p.reset}\n`);
         resolve("reject");
       }
     };

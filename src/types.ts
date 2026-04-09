@@ -1,6 +1,7 @@
 import type { EventBus } from "./event-bus.js";
 import type { ContextManager } from "./context-manager.js";
 import type { AcpClient } from "./acp-client.js";
+import type { ColorPalette } from "./utils/palette.js";
 
 export interface AgentShellConfig {
   agentCommand: string;
@@ -21,6 +22,8 @@ export interface ExtensionContext {
   contextManager: ContextManager;
   getAcpClient: () => AcpClient;
   quit: () => void;
+  /** Override color palette slots for theming. */
+  setPalette: (overrides: Partial<ColorPalette>) => void;
 }
 
 export interface TerminalSession {
