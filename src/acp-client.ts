@@ -25,12 +25,16 @@ export class AcpClient {
   private terminalCounter = 0;
   private autoApproveWrites = false;
   private fileWatcher: FileWatcher;
+  private pendingToolCalls = new Map<string, boolean>(); // Track pending tool calls
+  private agentInfo: { name: string; version: string } | null = null; // Store agent info
+  private model: string | undefined; // Store model name from config
 
   constructor(shell: Shell, tui: TUI, config: AgentShellConfig) {
     this.shell = shell;
     this.tui = tui;
     this.config = config;
     this.fileWatcher = new FileWatcher(process.cwd());
+    this.model = config.model; // Store model from config
   }
 
   async start(): Promise<void> {
@@ -96,7 +100,14 @@ export class AcpClient {
 
     this.log("Initialize successful");
 
-    // Connection info available at initResponse.agentInfo if needed
+    // Store agent info for display
+    if (initResponse.agentInfo) {
+      this.agentInfo = {
+        name: initResponse.agentInfo.name || this.config.agentCommand,
+        version: initResponse.agentInfo.version || "unknown"
+      };
+      this.log(`Agent info: ${this.agentInfo.name} v${this.agentInfo.version}`);
+    }
 
     // Create a session
     const context = this.shell.getContext();
@@ -242,6 +253,29 @@ export class AcpClient {
     return this.lastResponseText;
   }
 
+  /**
+   * Get agent information for display.
+   */
+  getAgentInfo(): { name: string; version: string } | null {
+    return this.agentInfo;
+  }
+
+  /**
+   * Get model name for display.
+   */
+  getModel(): string | undefined {
+    return this.model;
+  }
+
+  /**
+   * Check if agent is connected.
+   */
+  isConnected(): boolean {
+    // Consider connected if we have a connection and agent info
+    // Session ID may not be set yet if we're still initializing
+    return this.connection !== null && this.agentInfo !== null;
+  }
+
   private log(msg: string): void {
     if (process.env.DEBUG) {
       process.stderr.write(`[agent-shell] ${msg}\n`);
@@ -321,18 +355,27 @@ export class AcpClient {
 
       case "tool_call": {
         this.tui.stopSpinner();
+        // Use toolCallId if available, otherwise generate a simple ID
+        const toolId = update.toolCallId || `tool-${this.pendingToolCalls.size}`;
+        this.pendingToolCalls.set(toolId, true);
         this.tui.showToolCall(update.title);
         break;
       }
 
       case "tool_call_update": {
-        if (update.title) {
-          this.tui.showToolCall(update.title);
-        }
-        if (update.status === "completed") {
-          this.tui.showToolResult(0);
-        } else if (update.status === "failed") {
-          this.tui.showToolResult(1);
+        // Only show result when the tool completes, don't show tool call again
+        if (update.status === "completed" || update.status === "failed") {
+          const toolId = update.toolCallId;
+          if (toolId && this.pendingToolCalls.has(toolId)) {
+            // Only show result if we haven't already
+            this.pendingToolCalls.delete(toolId);
+            const exitCode = update.status === "completed" ? 0 : 1;
+            this.tui.showToolResult(exitCode);
+          } else if (!toolId) {
+            // Fallback for tools without ID
+            const exitCode = update.status === "completed" ? 0 : 1;
+            this.tui.showToolResult(exitCode);
+          }
         }
         break;
       }

@@ -38,6 +38,7 @@ The [Agent Client Protocol](https://agentclientprotocol.com/) decouples the shel
 - **⚡ Zero Latency** — Direct PTY access, full terminal compatibility
 - **🧠 Context Aware** — Agent sees your cwd, recent commands, and their output
 - **🎯 Multiple Agents** — Easy switching between pi-acp, claude, and other ACP agents
+- **🏷️ Agent Info Display** — Shows current agent and model next to the prompt (e.g., `pi (gpt-4o) ●`)
 
 ## Install
 
@@ -100,6 +101,7 @@ pi-acp --help  # Verify installation
 ```bash
 # Start with the default agent (pi-acp)
 npm start
+# Shows: pi ● ❯ when entering agent mode
 
 # Quick shortcuts
 npm run pi         # pi-acp
@@ -108,14 +110,19 @@ npm run claude     # Claude
 # Start with a specific agent
 npm start -- --agent pi-acp
 
-# Pass arguments to the agent
+# Pass arguments to the agent (including model)
 npm start -- --agent claude --agent-args "--model sonnet"
+# Shows: claude (sonnet) ● ❯ when entering agent mode
 
 # Use a different shell
 npm start -- --shell /bin/zsh
 
 # Set default agent via environment variable
 AGENT_SHELL_AGENT=claude npm start
+
+# Specify model for pi-acp
+npm start -- --agent pi-acp --agent-args "--provider openai --model gpt-4o"
+# Shows: pi (gpt-4o) ● ❯ when entering agent mode
 ```
 
 ### Agent environment configuration
@@ -161,12 +168,16 @@ You can also configure pi-acp by passing arguments:
 # Use a specific model
 npm start -- --agent pi-acp --agent-args "--provider openai --model gpt-4o"
 
+# The model will be displayed next to the prompt: pi (gpt-4o) ● ❯
+
 # Enable thinking mode
 npm start -- --agent pi-acp --agent-args "--thinking high"
 
 # Limit to read-only tools
 npm start -- --agent pi-acp --agent-args "--tools read,grep,find,ls"
 ```
+
+**Model Display**: When you specify a model using `--model`, it will be displayed in parentheses next to the agent name when you enter agent mode. This helps you quickly identify which model you're using.
 
 For more pi-acp options, run `pi --help` (pi-acp accepts the same arguments).
 
@@ -196,7 +207,12 @@ export GOOGLE_API_KEY="your-key"
 | `Ctrl-C` | Standard signal to shell, or cancels active agent response |
 | `Escape` | Exit agent input mode (when typing after `>`) |
 
-When you type `>` at the start of a line, agent-shell enters **agent input mode** — the prompt changes to a yellow `❯` and your text is sent to the agent on Enter. The agent's response streams inline in real-time in a bordered box with markdown rendering and syntax highlighting.
+When you type `>` at the start of a line, agent-shell enters **agent input mode** — the prompt changes to show the agent and model information (e.g., `pi (gpt-4o) ● ❯`) and your text is sent to the agent on Enter. The agent's response streams inline in real-time in a bordered box with markdown rendering and syntax highlighting.
+
+**Agent Info Display**: When entering agent mode, you'll see the current agent name and model (if specified) next to the prompt, followed by a green dot (●) indicating the connection status. For example:
+- `pi ● ❯` — pi agent without model specified
+- `pi (gpt-4o) ● ❯` — pi agent with gpt-4o model
+- `claude (sonnet) ● ❯` — claude agent with sonnet model
 
 ### Slash commands
 

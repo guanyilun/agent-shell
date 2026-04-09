@@ -5,6 +5,11 @@ import type { ShellContext, CommandRecord } from "./types.js";
 
 const MAX_HISTORY = 20;
 
+// Helper function to calculate visible string length (excluding ANSI codes)
+function visibleLen(str: string): number {
+  return str.replace(/\x1b\[[^m]*m/g, "").length;
+}
+
 export class Shell {
   private ptyProcess: pty.IPty;
   private lineBuffer = "";
@@ -27,12 +32,14 @@ export class Shell {
   private onAgentCancel: () => void;
   private onSlashCommand: (command: string) => void;
   private onPtyOutput: () => void;
+  private onShowAgentInfo: () => { info: string; model?: string }; // Callback to get agent info string and model
 
   constructor(opts: {
     onAgentRequest: (query: string) => void;
     onAgentCancel: () => void;
     onSlashCommand?: (command: string) => void;
     onPtyOutput?: () => void;
+    onShowAgentInfo?: () => { info: string; model?: string }; // Callback to get agent info string and model
     slashCommandDefs?: { name: string; description: string }[];
     cols: number;
     rows: number;
@@ -43,6 +50,7 @@ export class Shell {
     this.onAgentCancel = opts.onAgentCancel;
     this.onSlashCommand = opts.onSlashCommand ?? (() => {});
     this.onPtyOutput = opts.onPtyOutput ?? (() => {});
+    this.onShowAgentInfo = opts.onShowAgentInfo ?? (() => ({ info: "" }));
     this.slashCommandDefs = opts.slashCommandDefs ?? [];
     this.cwd = opts.cwd;
 
@@ -153,9 +161,12 @@ export class Shell {
     this.agentInputMode = true;
     this.agentInputBuffer = "";
     // Hide the shell's cursor line and show our agent prompt
-    // Move to start of line, clear it, show agent prompt
+    // Move to start of line, clear it, show agent prompt with info
+    const agentInfo = this.onShowAgentInfo();
+    const infoPrefix = agentInfo.info ? `${agentInfo.info} ` : "";
     process.stdout.write(
       "\r\x1b[2K" +
+      infoPrefix +
       "\x1b[33m\x1b[1m❯ \x1b[0m"  // yellow bold "❯ "
     );
   }
@@ -181,8 +192,13 @@ export class Shell {
     // Clear suggestion lines first, then redraw
     this.clearAutocompleteLines();
 
+    // Get agent info string
+    const agentInfo = this.onShowAgentInfo();
+    const infoPrefix = agentInfo.info ? `${agentInfo.info} ` : "";
+
     process.stdout.write(
       "\r\x1b[2K" +
+      infoPrefix +
       "\x1b[33m\x1b[1m❯ \x1b[0m" +
       "\x1b[36m" + this.agentInputBuffer + "\x1b[0m"
     );
@@ -307,8 +323,10 @@ export class Shell {
       process.stdout.write(`\x1b[${this.autocompleteLines}A`);
     }
     // Restore cursor to end of input on the prompt line
-    // "❯ " = 2 visible columns, then the typed text
-    const col = 2 + this.agentInputBuffer.length;
+    // Account for agent info length + "❯ " (2 visible columns) + typed text
+    const agentInfo = this.onShowAgentInfo();
+    const infoLength = visibleLen(agentInfo.info);
+    const col = infoLength + 2 + this.agentInputBuffer.length;
     process.stdout.write(`\r\x1b[${col}C`);
   }
 

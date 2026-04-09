@@ -137,6 +137,29 @@ export class TUI {
     process.stdout.write(`${GRAY}${message}${RESET}\n`);
   }
 
+  /**
+   * Get agent info as a compact string for display next to the prompt.
+   */
+  getAgentInfoString(agentInfo: { name: string; version: string } | null, model?: string): string {
+    if (!agentInfo) return "";
+
+    // Compact format: "pi (gpt-4o) ●" (remove -acp suffix for cleaner display)
+    const name = agentInfo.name.replace(/-acp$/, '').replace(/-/g, ' '); // Clean up name
+    let infoStr = `${DIM}${name}${RESET}`;
+
+    // Add model if available
+    if (model) {
+      // Clean up model name - remove provider prefixes only
+      const cleanModel = model
+        .replace(/^openai\//i, '')
+        .replace(/^anthropic\//i, '')
+        .replace(/^google\//i, '');
+      infoStr += ` ${DIM}(${cleanModel})${RESET}`;
+    }
+
+    return `${infoStr} ${GREEN}●${RESET}`;
+  }
+
   async promptPermission(title: string, description?: string): Promise<string | null> {
     const desc = description ? `\n  ${DIM}${description}${RESET}` : "";
     process.stdout.write(
