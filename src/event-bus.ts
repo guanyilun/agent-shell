@@ -36,10 +36,21 @@ export interface ShellEvents {
   "agent:tool-started": { title: string; toolCallId?: string };
   "agent:tool-completed": { toolCallId?: string; exitCode: number | null };
   "agent:tool-output-chunk": { chunk: string };
+
+  // Permission request (async pipe — core emits with safe default, extensions override)
+  // Generic: `kind` discriminates the scenario, `metadata` carries context,
+  // `decision` carries the response. Extensions check `kind` and handle accordingly.
+  "permission:request": {
+    kind: string;
+    title: string;
+    metadata: Record<string, unknown>;
+    decision: Record<string, unknown>;
+  };
 }
 
 type Listener<T> = (payload: T) => void;
 type PipeListener<T> = (payload: T) => T;
+type AsyncPipeListener<T> = (payload: T) => T | Promise<T>;
 
 /**
  * Typed event bus with two modes:
@@ -50,6 +61,7 @@ type PipeListener<T> = (payload: T) => T;
 export class EventBus {
   private emitter = new EventEmitter();
   private pipeListeners = new Map<string, PipeListener<any>[]>();
+  private asyncPipeListeners = new Map<string, AsyncPipeListener<any>[]>();
 
   /** Subscribe to a fire-and-forget event. */
   on<K extends keyof ShellEvents>(
@@ -102,6 +114,45 @@ export class EventBus {
     let result = payload;
     for (const fn of listeners) {
       result = fn(result);
+    }
+    return result;
+  }
+
+  /** Register an async transform listener for a pipeline event. */
+  onPipeAsync<K extends keyof ShellEvents>(
+    event: K,
+    fn: AsyncPipeListener<ShellEvents[K]>,
+  ): void {
+    let listeners = this.asyncPipeListeners.get(event);
+    if (!listeners) {
+      listeners = [];
+      this.asyncPipeListeners.set(event, listeners);
+    }
+    listeners.push(fn);
+  }
+
+  /**
+   * Emit an async pipeline event. Two phases:
+   * 1. Notify — fire regular `on` listeners synchronously (e.g., TUI flushes state)
+   * 2. Transform — run async pipe listeners in series, each receiving the
+   *    output of the previous (e.g., extension provides a permission decision)
+   *
+   * Returns the final transformed payload. If no pipe listeners are registered,
+   * returns the original payload unchanged (with safe defaults).
+   */
+  async emitPipeAsync<K extends keyof ShellEvents>(
+    event: K,
+    payload: ShellEvents[K],
+  ): Promise<ShellEvents[K]> {
+    // Phase 1: notify (lets renderers prepare for interactive I/O)
+    this.emitter.emit(event, payload);
+
+    // Phase 2: transform (extensions provide decisions)
+    const listeners = this.asyncPipeListeners.get(event);
+    if (!listeners) return payload;
+    let result = payload;
+    for (const fn of listeners) {
+      result = await fn(result);
     }
     return result;
   }

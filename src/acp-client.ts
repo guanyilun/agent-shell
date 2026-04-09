@@ -9,7 +9,6 @@ import * as path from "node:path";
 import type { EventBus } from "./event-bus.js";
 import type { ContextManager } from "./context-manager.js";
 import type { Shell } from "./shell.js";
-import type { TUI } from "./tui.js";
 import type { AgentShellConfig } from "./types.js";
 
 export class AcpClient {
@@ -19,7 +18,6 @@ export class AcpClient {
   private bus: EventBus;
   private contextManager: ContextManager;
   private shell: Shell;
-  private tui: TUI;
   private config: AgentShellConfig;
   private promptInProgress = false;
   private currentResponseText = "";
@@ -27,7 +25,6 @@ export class AcpClient {
   private terminalSessions = new Map<string, ExecutorSession>();
   private terminalDonePromises = new Map<string, Promise<void>>();
   private terminalCounter = 0;
-  private autoApproveWrites = false;
   private fileWatcher: FileWatcher;
   private pendingToolCalls = new Map<string, boolean>(); // Track pending tool calls
   private agentInfo: { name: string; version: string } | null = null; // Store agent info
@@ -37,13 +34,11 @@ export class AcpClient {
     bus: EventBus;
     contextManager: ContextManager;
     shell: Shell;
-    tui: TUI;
     config: AgentShellConfig;
   }) {
     this.bus = opts.bus;
     this.contextManager = opts.contextManager;
     this.shell = opts.shell;
-    this.tui = opts.tui;
     this.config = opts.config;
     this.fileWatcher = new FileWatcher(process.cwd());
     this.model = opts.config.model;
@@ -138,7 +133,7 @@ export class AcpClient {
    */
   async sendPrompt(query: string): Promise<void> {
     if (!this.connection || !this.sessionId) {
-      this.tui.showError("Not connected to agent");
+      this.bus.emit("agent:error", { message: "Not connected to agent" });
       return;
     }
 
@@ -383,29 +378,21 @@ export class AcpClient {
   ): Promise<acp.RequestPermissionResponse> {
     const title = params.toolCall.title ?? "Unknown action";
 
-    // Find approve/deny options
-    const approveOption = params.options.find(
-      (o) => o.kind === "allow_once" || o.kind === "allow_always"
-    );
-
-    this.shell.resumeOutput(); // Show the prompt in the terminal
-    const decision = await this.tui.promptPermission(title);
+    this.shell.resumeOutput();
+    const result = await this.bus.emitPipeAsync("permission:request", {
+      kind: "tool-call",
+      title,
+      metadata: {
+        options: params.options.map((o) => ({
+          optionId: o.optionId,
+          kind: o.kind,
+        })),
+      },
+      decision: { outcome: "cancelled" }, // default if no handler
+    });
     this.shell.pauseOutput();
 
-    if (decision === "approve" || decision === "approve_all") {
-      const selectedOption =
-        decision === "approve_all"
-          ? params.options.find((o) => o.kind === "allow_always") ?? approveOption
-          : approveOption;
-
-      if (selectedOption) {
-        return {
-          outcome: { outcome: "selected", optionId: selectedOption.optionId },
-        };
-      }
-    }
-
-    return { outcome: { outcome: "cancelled" } };
+    return { outcome: result.decision as acp.RequestPermissionOutcome };
   }
 
   // ── Terminal handlers (isolated execution via child_process) ────
@@ -567,27 +554,18 @@ export class AcpClient {
     // Identical content — nothing to do
     if (diff.isIdentical) return {};
 
-    // Show interactive diff preview (unless auto-approved)
-    if (!this.autoApproveWrites) {
-      this.tui.stopSpinner();
-      this.tui.flushCommandOutput();
-      this.tui.flushRenderer();
-      this.tui.endAgentResponse();
+    // Ask for permission — extension decides whether to prompt or auto-approve
+    this.shell.resumeOutput();
+    const result = await this.bus.emitPipeAsync("permission:request", {
+      kind: "file-write",
+      title: params.path,
+      metadata: { path: params.path, diff, content: params.content },
+      decision: { approved: false }, // default if no handler
+    });
+    this.shell.pauseOutput();
 
-      this.shell.resumeOutput();
-      const decision = await this.tui.previewDiff({
-        path: params.path,
-        diff,
-      });
-      this.shell.pauseOutput();
-
-      if (decision === "reject") {
-        throw new Error(`User rejected modification: ${params.path}`);
-      }
-      if (decision === "approve_all") {
-        this.autoApproveWrites = true;
-      }
-      // Renderer will be lazily re-created on next agent output
+    if (!(result.decision as { approved: boolean }).approved) {
+      throw new Error(`User rejected modification: ${params.path}`);
     }
 
     // Write the file
@@ -610,8 +588,6 @@ export class AcpClient {
    * and show interactive diff previews.
    */
   private async showPendingFileChanges(): Promise<void> {
-    if (this.autoApproveWrites) return;
-
     const changes = await this.fileWatcher.detectChanges();
     if (changes.length === 0) return;
 
@@ -621,24 +597,17 @@ export class AcpClient {
       const diff = computeDiff(change.before, change.after);
       if (diff.isIdentical) continue;
 
-      const decision = await this.tui.previewDiff({
-        path: change.relPath,
-        diff,
+      const result = await this.bus.emitPipeAsync("permission:request", {
+        kind: "file-write",
+        title: change.relPath,
+        metadata: { path: change.relPath, diff, content: change.after },
+        decision: { approved: false },
       });
 
-      if (decision === "approve" || decision === "approve_all") {
+      if ((result.decision as { approved: boolean }).approved) {
         this.fileWatcher.approve(change.path, change.after);
       } else {
         await this.fileWatcher.revert(change.path);
-      }
-
-      if (decision === "approve_all") {
-        this.autoApproveWrites = true;
-        // Approve remaining changes automatically
-        for (const remaining of changes.slice(changes.indexOf(change) + 1)) {
-          this.fileWatcher.approve(remaining.path, remaining.after);
-        }
-        break;
       }
     }
 
