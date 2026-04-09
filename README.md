@@ -277,41 +277,45 @@ Slash commands have tab-completion and arrow-key navigation in agent input mode.
 
 ### Shell context
 
-The agent automatically receives context about your shell session with each query:
+The agent automatically receives structured context about your shell session with each query, managed by the ContextManager:
 
-- **Current working directory** — tracked via OSC 7
-- **Recent commands and output** — commands you've run since the last agent interaction, with their output
+- **Current working directory** — tracked via OSC 7 escape sequences
+- **Recent commands and output** — truncated summaries of recent shell commands, agent queries, and tool executions
+- **Recall tool** — the agent can run `__shell_recall --search "query"` or `__shell_recall --expand 42` to retrieve full output of any past exchange
 
-This means you can run a failing command, then type `> fix this` and the agent knows exactly what happened.
+This means you can run a failing command, then type `> fix this` and the agent knows exactly what happened. For long outputs, the agent sees a truncated summary and can recall the full content on demand.
 
 ## Architecture
 
+agent-shell is an ACP **client**. The agent is a subprocess launched with stdio transport.
+
+### Design philosophy: headless core + pluggable extensions
+
+The core is a minimal, headless runtime — it manages the PTY, runs agent queries via ACP, tracks context, and executes tools. It has **zero opinions about rendering**. Everything else is an extension.
+
 ```
-┌─────────────────────────────────────────────────────┐
-│                    agent-shell                       │
-│                                                     │
-│  ┌──────────────┐       ┌────────────────────────┐  │
-│  │  Shell Layer  │       │   ACP Client Layer     │  │
-│  │              │       │                        │  │
-│  │  Real PTY    │       │  Agent subprocess      │  │
-│  │  bash under  │◄─────►│  (stdio transport)     │  │
-│  │  the hood    │       │                        │  │
-│  │              │       │  JSON-RPC 2.0          │  │
-│  │  History     │       │                        │  │
-│  │  Completion  │       │  terminal/create       │  │
-│  │  Job control │       │  fs/read_text_file     │  │
-│  │  Signals     │       │  session/update        │  │
-│  └──────────────┘       └────────────────────────┘  │
-│                                                     │
-│  ┌───────────────────────────────────────────────┐  │
-│  │              TUI / Rendering                   │  │
-│  │  Shell output: passthrough (raw terminal)     │  │
-│  │  Agent output: bordered box, markdown, syntax │  │
-│  └───────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────┘
+index.ts (wiring)
+  ├── Core infrastructure:
+  │     EventBus          — typed pub/sub + transform pipelines
+  │     Shell             — PTY lifecycle (delegates to InputHandler + OutputParser)
+  │     AcpClient         — ACP protocol, terminal execution
+  │     ContextManager    — exchange recording, context assembly
+  │
+  └── Extensions (pluggable, loaded at startup):
+        tuiRenderer       — bordered markdown rendering, spinner, tool display
+        interactivePrompts— permission dialogs, diff preview
+        slashCommands     — /help, /clear, /copy, /compact, /quit
+        fileAutocomplete  — @ file path completion
+        shellRecall       — __shell_recall terminal interception
 ```
 
-agent-shell is an ACP **client**. The agent is a subprocess launched with stdio transport.
+Extensions are factory functions that receive the EventBus and self-register. The core communicates exclusively through typed events — extensions subscribe to what they care about.
+
+**Without any extensions loaded, agent-shell still works** — PTY passthrough, agent queries, tool execution, context management all function. Output is silently dropped. This enables:
+
+- **Headless mode** — testing, CI, scripting, embedding as a library
+- **Alternative renderers** — web UI, logging backend, minimal TUI
+- **Custom features** — add commands, autocomplete providers, tool interceptors by writing an extension
 
 ### We send to the agent
 
@@ -348,16 +352,25 @@ agent-shell is an ACP **client**. The agent is a subprocess launched with stdio 
 ```
 agent-shell/
 ├── src/
-│   ├── index.ts        # Entry point, CLI arg parsing, agent connection
-│   ├── shell.ts        # PTY management, input routing, agent input mode
-│   ├── acp-client.ts   # ACP connection, request/notification handling
-│   ├── executor.ts     # Isolated command execution for terminal/* handlers
-│   ├── tui.ts          # Spinner, status, agent output rendering
-│   ├── markdown.ts     # Streaming markdown → ANSI renderer with box drawing
-│   ├── commands.ts     # Slash command definitions (/help, /clear, /copy, etc.)
-│   ├── diff.ts         # File diff computation for change previews
-│   ├── file-watcher.ts # Track file changes made by agent tools
-│   └── types.ts        # Shared interfaces
+│   ├── index.ts           # Entry point, CLI args, wiring, extension loading
+│   ├── event-bus.ts       # Typed EventBus: emit/on, emitPipe, emitPipeAsync
+│   ├── shell.ts           # PTY lifecycle + wiring (InputHandler + OutputParser)
+│   ├── input-handler.ts   # Keyboard input, agent mode, bus-driven autocomplete
+│   ├── output-parser.ts   # OSC parsing, command boundary detection
+│   ├── acp-client.ts      # ACP protocol, terminal execution, session management
+│   ├── context-manager.ts # Exchange log, context assembly, recall API
+│   ├── executor.ts        # Isolated child process execution
+│   ├── markdown.ts        # Streaming markdown → ANSI renderer
+│   ├── diff.ts            # Line-level LCS diff for file change previews
+│   ├── file-watcher.ts    # File change detection for agent tool writes
+│   ├── ansi.ts            # Shared ANSI constants + utilities
+│   ├── types.ts           # Shared type definitions
+│   └── extensions/
+│       ├── tui-renderer.ts        # Terminal rendering (markdown, spinner, tools)
+│       ├── interactive-prompts.ts # Permission dialogs + diff preview
+│       ├── slash-commands.ts      # /help, /clear, /copy, /compact, /quit
+│       ├── file-autocomplete.ts   # @ file path completion
+│       └── shell-recall.ts       # __shell_recall terminal interception
 ├── package.json
 └── tsconfig.json
 ```
@@ -397,6 +410,40 @@ npm run dev -- --agent pi-acp
 8. The agent's streaming response renders inline in a bordered markdown box with real-time output
 9. If the agent needs to run commands, it calls `terminal/create` and agent-shell executes them in isolated child processes, streaming output back
 10. When the agent finishes, normal shell operation resumes
+
+### EventBus
+
+All communication between components flows through a typed EventBus. Components emit events (shell commands, agent responses, tool calls) and extensions subscribe to events they care about. The bus supports three modes:
+
+- **emit/on** — fire-and-forget notifications (e.g., `agent:response-chunk`)
+- **emitPipe/onPipe** — synchronous transform chains (e.g., `autocomplete:request` where extensions append completion items)
+- **emitPipeAsync/onPipeAsync** — async transform chains (e.g., `permission:request` where extensions prompt the user and return a decision)
+
+### Writing extensions
+
+An extension is a factory function that receives the EventBus and self-registers:
+
+```typescript
+import type { EventBus } from "./event-bus.js";
+
+export function myExtension(bus: EventBus): void {
+  // Subscribe to events
+  bus.on("agent:response-done", (e) => {
+    console.log(`Agent responded: ${e.response.slice(0, 100)}...`);
+  });
+
+  // Provide autocomplete items
+  bus.onPipe("autocomplete:request", (payload) => {
+    if (!payload.buffer.startsWith("!")) return payload;
+    return { ...payload, items: [...payload.items, { name: "!run", description: "custom command" }] };
+  });
+}
+```
+
+Load it in `index.ts`:
+```typescript
+myExtension(bus);
+```
 
 ## Troubleshooting
 
