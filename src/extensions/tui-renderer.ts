@@ -21,10 +21,15 @@ import {
 } from "../utils/tool-display.js";
 import type { ExtensionContext } from "../types.js";
 
+const MAX_COMMAND_OUTPUT_LINES = 30;
+
 export default function activate({ bus }: ExtensionContext): void {
   let spinner: SpinnerState | null = null;
   let renderer: MarkdownRenderer | null = null;
   let commandOutputBuffer = "";
+  let commandOutputLineCount = 0;
+  let commandOutputOverflow = 0;
+  let lastCommand = "";
 
   // ── Event subscriptions ─────────────────────────────────────
 
@@ -37,9 +42,14 @@ export default function activate({ bus }: ExtensionContext): void {
   bus.on("agent:response-chunk", (e) => writeAgentText(e.text));
   bus.on("agent:response-done", () => endAgentResponse());
 
+  bus.on("agent:tool-call", (e) => {
+    lastCommand = e.tool;
+  });
+
   bus.on("agent:tool-started", (e) => {
     stopCurrentSpinner();
-    showToolCall(e.title);
+    showToolCall(e.title, lastCommand);
+    lastCommand = "";
   });
 
   bus.on("agent:tool-completed", (e) => showToolComplete(e.exitCode));
@@ -94,15 +104,18 @@ export default function activate({ bus }: ExtensionContext): void {
     flushOutput();
   }
 
-  function showToolCall(title: string): void {
+  function showToolCall(title: string, command?: string): void {
     stopCurrentSpinner();
     if (!renderer) startAgentResponse();
     renderer!.flush();
     const termW = process.stdout.columns || 80;
-    const lines = renderToolCall({ title }, termW);
+    const lines = renderToolCall({ title, command: command || undefined }, termW);
     for (const line of lines) {
       renderer!.writeLine(line);
     }
+    // Reset output tracking for the new tool
+    commandOutputLineCount = 0;
+    commandOutputOverflow = 0;
   }
 
   function showToolComplete(exitCode: number | null): void {
@@ -132,15 +145,29 @@ export default function activate({ bus }: ExtensionContext): void {
     const lines = commandOutputBuffer.split("\n");
     commandOutputBuffer = lines.pop()!;
     for (const line of lines) {
-      renderer.writeLine(`${DIM}  ${line}${RESET}`);
+      if (commandOutputLineCount < MAX_COMMAND_OUTPUT_LINES) {
+        renderer.writeLine(`${DIM}  ${line}${RESET}`);
+        commandOutputLineCount++;
+      } else {
+        commandOutputOverflow++;
+      }
     }
   }
 
   function flushCommandOutput(): void {
     if (!renderer) return;
     if (commandOutputBuffer) {
-      renderer.writeLine(`${DIM}  ${commandOutputBuffer}${RESET}`);
+      if (commandOutputLineCount < MAX_COMMAND_OUTPUT_LINES) {
+        renderer.writeLine(`${DIM}  ${commandOutputBuffer}${RESET}`);
+        commandOutputLineCount++;
+      } else {
+        commandOutputOverflow++;
+      }
       commandOutputBuffer = "";
+    }
+    if (commandOutputOverflow > 0) {
+      renderer.writeLine(`${DIM}  … ${commandOutputOverflow} more lines${RESET}`);
+      commandOutputOverflow = 0;
     }
   }
 
