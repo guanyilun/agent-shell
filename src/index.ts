@@ -7,6 +7,7 @@ import { AcpClient } from "./acp-client.js";
 import { interactivePrompts } from "./extensions/interactive-prompts.js";
 import { slashCommands } from "./extensions/slash-commands.js";
 import { fileAutocomplete } from "./extensions/file-autocomplete.js";
+import { shellRecall } from "./extensions/shell-recall.js";
 import type { AgentShellConfig } from "./types.js";
 
 function parseArgs(argv: string[]): AgentShellConfig {
@@ -180,6 +181,7 @@ async function main(): Promise<void> {
   // Load extensions that need service references
   slashCommands(bus, { getAcpClient: () => acpClient!, quit: cleanup });
   fileAutocomplete(bus, () => shell.getCwd());
+  shellRecall(bus, contextManager);
 
   // Connect to agent asynchronously (don't block shell startup)
   const connectAgent = async () => {

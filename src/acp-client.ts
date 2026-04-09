@@ -403,14 +403,19 @@ export class AcpClient {
 
     const cwd = params.cwd ?? this.contextManager.getCwd();
 
-    // Intercept __shell_recall commands — return result without spawning a process
-    if (fullCommand.trimStart().startsWith("__shell_recall")) {
+    // Let extensions intercept before spawning a real process
+    const intercept = this.bus.emitPipe("agent:terminal-intercept", {
+      command: fullCommand,
+      cwd,
+      intercepted: false,
+      output: "",
+    });
+    if (intercept.intercepted) {
       const id = `t${++this.terminalCounter}`;
-      const result = this.contextManager.handleRecallCommand(fullCommand.trim());
       const session: ExecutorSession = {
         id,
         command: fullCommand,
-        output: result,
+        output: intercept.output,
         exitCode: 0,
         done: true,
         truncated: false,

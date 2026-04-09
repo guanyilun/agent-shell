@@ -57,6 +57,14 @@ export interface ShellEvents {
   "ui:info": { message: string };
   "ui:error": { message: string };
 
+  // Terminal interception (sync pipe: extensions can intercept before execution)
+  "agent:terminal-intercept": {
+    command: string;
+    cwd: string;
+    intercepted: boolean;
+    output: string;
+  };
+
   // Autocomplete (sync pipe: extensions inspect buffer and append items)
   "autocomplete:request": {
     buffer: string;
