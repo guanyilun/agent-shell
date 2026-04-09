@@ -80,7 +80,7 @@ export default function activate({ bus }: ExtensionContext): void {
 
   bus.on("agent:tool-started", (e) => {
     stopCurrentSpinner();
-    showToolCall(e.title, lastCommand);
+    showToolCall(e.title, lastCommand, e);
     lastCommand = "";
   });
 
@@ -195,12 +195,26 @@ export default function activate({ bus }: ExtensionContext): void {
     flushOutput();
   }
 
-  function showToolCall(title: string, command?: string): void {
+  function showToolCall(
+    title: string,
+    command?: string,
+    extra?: {
+      kind?: string;
+      locations?: { path: string; line?: number | null }[];
+      rawInput?: unknown;
+    },
+  ): void {
     stopCurrentSpinner();
     if (!renderer) startAgentResponse();
     renderer!.flush();
     const termW = process.stdout.columns || 80;
-    const lines = renderToolCall({ title, command: command || undefined }, termW);
+    const lines = renderToolCall({
+      title,
+      command: command || undefined,
+      kind: extra?.kind,
+      locations: extra?.locations,
+      rawInput: extra?.rawInput,
+    }, termW);
     for (const line of lines) {
       renderer!.writeLine(line);
     }

@@ -40,8 +40,18 @@ export interface ShellEvents {
   };
 
   // Tool rendering (used by TUI for display — distinct data shape from above)
-  "agent:tool-started": { title: string; toolCallId?: string };
-  "agent:tool-completed": { toolCallId?: string; exitCode: number | null };
+  "agent:tool-started": {
+    title: string;
+    toolCallId?: string;
+    kind?: string;
+    locations?: { path: string; line?: number | null }[];
+    rawInput?: unknown;
+  };
+  "agent:tool-completed": {
+    toolCallId?: string;
+    exitCode: number | null;
+    rawOutput?: unknown;
+  };
   "agent:tool-output-chunk": { chunk: string };
 
   // Permission request (async pipe — core emits with safe default, extensions override)

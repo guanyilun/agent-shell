@@ -334,23 +334,31 @@ export class AcpClient {
       }
 
       case "tool_call": {
-        // Use toolCallId if available, otherwise generate a simple ID
         const toolId = update.toolCallId || `tool-${this.pendingToolCounter++}`;
         this.pendingToolCalls.set(toolId, true);
-        this.bus.emit("agent:tool-started", { title: update.title, toolCallId: toolId });
+        this.bus.emit("agent:tool-started", {
+          title: update.title,
+          toolCallId: toolId,
+          kind: update.kind ?? undefined,
+          locations: update.locations?.map((l) => ({ path: l.path, line: l.line })),
+          rawInput: update.rawInput,
+        });
         break;
       }
 
       case "tool_call_update": {
-        // Only show result when the tool completes, don't show tool call again
         if (update.status === "completed" || update.status === "failed") {
           const toolId = update.toolCallId;
           const exitCode = update.status === "completed" ? 0 : 1;
           if (toolId && this.pendingToolCalls.has(toolId)) {
             this.pendingToolCalls.delete(toolId);
-            this.bus.emit("agent:tool-completed", { toolCallId: toolId, exitCode });
+            this.bus.emit("agent:tool-completed", {
+              toolCallId: toolId,
+              exitCode,
+              rawOutput: update.rawOutput,
+            });
           } else if (!toolId) {
-            this.bus.emit("agent:tool-completed", { exitCode });
+            this.bus.emit("agent:tool-completed", { exitCode, rawOutput: update.rawOutput });
           }
         }
         break;
