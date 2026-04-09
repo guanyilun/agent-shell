@@ -135,6 +135,7 @@ export class Shell implements InputContext {
 
     this.setupOutput();
     this.setupInput();
+    this.setupAgentLifecycle();
   }
 
   // ── InputContext implementation (delegates to OutputParser) ──
@@ -209,23 +210,35 @@ export class Shell implements InputContext {
     });
   }
 
-  // ── Public API (used by acp-client, index.ts) ──
+  /**
+   * React to agent lifecycle events — Shell manages its own state
+   * rather than being driven by AcpClient. This means AcpClient has
+   * zero frontend knowledge; any frontend can subscribe to the same events.
+   */
+  private setupAgentLifecycle(): void {
+    this.bus.on("agent:processing-start", () => {
+      this.agentActive = true;
+      this.paused = true;
+    });
 
-  printPrompt(): void {
-    this.redrawPrompt();
+    this.bus.on("agent:processing-done", () => {
+      this.paused = false;
+      this.agentActive = false;
+      this.freshPrompt();
+    });
+
+    // Permission prompts need stdout unpaused so the interactive UI renders,
+    // then re-paused after the decision.
+    this.bus.on("permission:request", () => {
+      this.paused = false;
+    });
+    this.bus.onPipeAsync("permission:request", async (payload) => {
+      this.paused = true;
+      return payload;
+    });
   }
 
-  pauseOutput(): void {
-    this.paused = true;
-  }
-
-  resumeOutput(): void {
-    this.paused = false;
-  }
-
-  setAgentActive(active: boolean): void {
-    this.agentActive = active;
-  }
+  // ── Public API (used by index.ts) ──
 
   resize(cols: number, rows: number): void {
     this.ptyProcess.resize(cols, rows);

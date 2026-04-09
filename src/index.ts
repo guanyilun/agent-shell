@@ -120,7 +120,7 @@ async function main(): Promise<void> {
     bus,
     cols,
     rows,
-    shell: config.shell,
+    shell: config.shell || process.env.SHELL || "/bin/bash",
     cwd: process.cwd(),
     onAgentRequest: async (query: string) => {
       if (!acpClient) {
@@ -138,8 +138,6 @@ async function main(): Promise<void> {
 
       if (!agentConnected) {
         bus.emit("ui:error", { message: "Agent not connected. Please wait a moment and try again." });
-        shell.resumeOutput();
-        shell.setAgentActive(false);
         return;
       }
 
@@ -147,8 +145,6 @@ async function main(): Promise<void> {
         await acpClient.sendPrompt(query);
       } catch (err: any) {
         bus.emit("ui:error", { message: err.message });
-        shell.resumeOutput();
-        shell.setAgentActive(false);
       }
     },
     onAgentCancel: () => {
@@ -169,11 +165,11 @@ async function main(): Promise<void> {
   });
 
   // Create agent client — emits agent events, queries ContextManager for context
-  acpClient = new AcpClient({ bus, contextManager, shell, config });
+  acpClient = new AcpClient({ bus, contextManager, config });
 
   // Build extension context — shared by all extensions (built-in and user)
   const extCtx: ExtensionContext = {
-    bus, contextManager, shell,
+    bus, contextManager,
     getAcpClient: () => acpClient!,
     quit: cleanup,
   };

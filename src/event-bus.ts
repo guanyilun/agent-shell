@@ -21,6 +21,8 @@ export interface ShellEvents {
   "agent:response-done": { response: string };
 
   // Agent lifecycle
+  "agent:processing-start": Record<string, never>;
+  "agent:processing-done": Record<string, never>;
   "agent:cancelled": Record<string, never>;
   "agent:error": { message: string };
 

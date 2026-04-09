@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext } from "../types.js";
 
-export default function activate({ bus, shell }: ExtensionContext): void {
+export default function activate({ bus, contextManager }: ExtensionContext): void {
   bus.onPipe("autocomplete:request", (payload) => {
     const atPos = payload.buffer.lastIndexOf("@");
     if (atPos < 0 || (atPos > 0 && payload.buffer[atPos - 1] !== " ")) {
@@ -20,7 +20,7 @@ export default function activate({ bus, shell }: ExtensionContext): void {
       return payload;
     }
 
-    const files = listFiles(afterAt, shell.getCwd());
+    const files = listFiles(afterAt, contextManager.getCwd());
     if (files.length === 0) return payload;
     return { ...payload, items: [...payload.items, ...files] };
   });
