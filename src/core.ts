@@ -1,5 +1,5 @@
 /**
- * Core kernel — the minimum viable agent-shell.
+ * Core kernel — the minimum viable agent-sh.
  *
  * Wires up EventBus + ContextManager + AcpClient without any frontend.
  * Consumers attach their own I/O (Shell, WebSocket, REST, tests) by
@@ -10,7 +10,7 @@
  * never need a direct reference to AcpClient — they just emit events.
  *
  * Usage:
- *   import { createCore } from "agent-shell";
+ *   import { createCore } from "agent-sh";
  *   const core = createCore({ agentCommand: "pi-acp" });
  *   core.bus.on("agent:response-chunk", ({ text }) => ws.send(text));
  *   await core.start();

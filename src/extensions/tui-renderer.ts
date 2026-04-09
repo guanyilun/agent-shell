@@ -5,7 +5,7 @@
  * bordered markdown responses, spinner, tool call display, streaming
  * command output, error/info messages.
  *
- * Without this extension loaded, agent-shell runs headlessly — PTY
+ * Without this extension loaded, agent-sh runs headlessly — PTY
  * passthrough, agent queries, tool execution all function; output is
  * silently dropped. Alternative renderers (web UI, logging, minimal)
  * can subscribe to the same events.

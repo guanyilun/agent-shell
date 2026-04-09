@@ -3,7 +3,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import type { ExtensionContext } from "./types.js";
 
-const CONFIG_DIR = path.join(os.homedir(), ".agent-shell");
+const CONFIG_DIR = path.join(os.homedir(), ".agent-sh");
 const EXT_DIR = path.join(CONFIG_DIR, "extensions");
 const SETTINGS_PATH = path.join(CONFIG_DIR, "settings.json");
 
@@ -40,8 +40,8 @@ async function loadSettings(): Promise<Settings> {
  * Load extensions from three sources (merged, deduplicated):
  *
  * 1. CLI flags: -e / --extensions (npm packages or file paths)
- * 2. settings.json: ~/.agent-shell/settings.json → extensions[]
- * 3. Extensions dir: ~/.agent-shell/extensions/ (files and directories with index.{ts,js})
+ * 2. settings.json: ~/.agent-sh/settings.json → extensions[]
+ * 3. Extensions dir: ~/.agent-sh/extensions/ (files and directories with index.{ts,js})
  *
  * Extension specifiers resolve as:
  *   - File path (relative or absolute) → import directly
@@ -67,7 +67,7 @@ export async function loadExtensions(
     specifiers.push(...settings.extensions);
   }
 
-  // 3. ~/.agent-shell/extensions/ directory
+  // 3. ~/.agent-sh/extensions/ directory
   try {
     const entries = await fs.readdir(EXT_DIR, { withFileTypes: true });
     for (const entry of entries) {

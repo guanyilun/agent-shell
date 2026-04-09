@@ -1,8 +1,8 @@
-# agent-shell
+# agent-sh
 
 Not a shell that lives in an agent — an agent that lives in a shell.
 
-agent-shell is a real terminal first. Every keystroke goes to a real PTY. `cd`, pipes, vim, job control — they all just work. But type `>` at the start of a line, and you're talking to an AI agent that has full context of what you've been doing: your working directory, recent commands, their output.
+agent-sh is a real terminal first. Every keystroke goes to a real PTY. `cd`, pipes, vim, job control — they all just work. But type `>` at the start of a line, and you're talking to an AI agent that has full context of what you've been doing: your working directory, recent commands, their output.
 
 The agent connects via the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/), so you can plug in **any** ACP-compatible agent: [pi](https://github.com/svkozak/pi-acp), claude-code, codex, gemini-cli, goose, etc.
 
@@ -18,7 +18,7 @@ The agent connects via the [Agent Client Protocol (ACP)](https://agentclientprot
 
 Most AI coding tools are agent-first: the LLM drives the experience and the shell is bolted on. That means no real PTY, no job control, no interactive commands, and fragile `cd` tracking that reimplements what bash gives you for free.
 
-agent-shell starts from the opposite end. The shell is the primary interface — it's your terminal, not the agent's. The agent is a tool you reach for when you need it, not the other way around.
+agent-sh starts from the opposite end. The shell is the primary interface — it's your terminal, not the agent's. The agent is a tool you reach for when you need it, not the other way around.
 
 ### Why ACP?
 
@@ -46,17 +46,17 @@ The [Agent Client Protocol](https://agentclientprotocol.com/) decouples the shel
 ## Install
 
 ```bash
-git clone https://github.com/guanyilun/agent-shell.git
-cd agent-shell
+git clone https://github.com/guanyilun/agent-sh.git
+cd agent-sh
 npm install
 npm run build
 ```
 
 Requires Node.js 18+ and an ACP-compatible agent installed on your system.
 
-## Running agent-shell
+## Running agent-sh
 
-After building, you can run agent-shell in several ways:
+After building, you can run agent-sh in several ways:
 
 ```bash
 # Start with the default agent (pi-acp) - RECOMMENDED
@@ -73,7 +73,7 @@ node dist/index.js --agent <agent-name>
 npm start -- --agent <agent-name>
 
 # Using npx (if published to npm)
-npx agent-shell --agent <agent-name>
+npx agent-sh --agent <agent-name>
 
 # Make the built file executable and run directly
 chmod +x dist/index.js
@@ -85,7 +85,7 @@ AGENT_SHELL_AGENT=claude-agent-acp npm start
 
 ### Install ACP-compatible agents
 
-agent-shell requires an ACP-compatible agent. Here are some popular options:
+agent-sh requires an ACP-compatible agent. Here are some popular options:
 
 | Agent | Install Command | Notes |
 |-------|----------------|-------|
@@ -114,7 +114,7 @@ export ANTHROPIC_API_KEY="your-anthropic-api-key"
 # Or for OpenAI models with pi-acp:
 # export OPENAI_API_KEY="your-openai-api-key"
 
-# 3. Start agent-shell
+# 3. Start agent-sh
 npm start
 ```
 
@@ -174,16 +174,16 @@ npm start -- --agent pi-acp --agent-args "--provider anthropic --model claude-3-
 
 ### Agent environment configuration
 
-agent-shell can be configured via environment variables:
+agent-sh can be configured via environment variables:
 
 ```bash
 # Set the default agent to use
 export AGENT_SHELL_AGENT=pi-acp  # Default is pi-acp
 ```
 
-**Smart Connection**: agent-shell uses an intelligent connection system where the shell starts immediately and the agent connects in the background. If you send a query before the agent is fully connected, the system automatically waits for connection completion. This provides instant access to the shell while ensuring reliable agent communication.
+**Smart Connection**: agent-sh uses an intelligent connection system where the shell starts immediately and the agent connects in the background. If you send a query before the agent is fully connected, the system automatically waits for connection completion. This provides instant access to the shell while ensuring reliable agent communication.
 
-Many ACP agents also require API keys. Set these before starting agent-shell:
+Many ACP agents also require API keys. Set these before starting agent-sh:
 
 #### pi-acp configuration
 
@@ -260,7 +260,7 @@ export GOOGLE_API_KEY="your-key"
 | `Ctrl-T` | Toggle thinking/reasoning text display |
 | `Escape` | Exit agent input mode (when typing after `>`) |
 
-When you type `>` at the start of a line, agent-shell enters **agent input mode** — the prompt changes to show the agent and model information (e.g., `pi (gpt-4o) ● ❯`) and your text is sent to the agent on Enter. The agent's response streams inline in real-time in a bordered box with markdown rendering and syntax highlighting.
+When you type `>` at the start of a line, agent-sh enters **agent input mode** — the prompt changes to show the agent and model information (e.g., `pi (gpt-4o) ● ❯`) and your text is sent to the agent on Enter. The agent's response streams inline in real-time in a bordered box with markdown rendering and syntax highlighting.
 
 **Agent Info Display**: When entering agent mode, you'll see the current agent name and model (if specified) next to the prompt, followed by a green dot (●) indicating the connection status. For example:
 - `pi ● ❯` — pi agent without model specified
@@ -276,7 +276,7 @@ When you type `>` at the start of a line, agent-shell enters **agent input mode*
 | `/clear` | Start a new agent session |
 | `/copy` | Copy last agent response to clipboard |
 | `/compact` | Ask agent to summarize the conversation |
-| `/quit` | Exit agent-shell |
+| `/quit` | Exit agent-sh |
 
 Slash commands have tab-completion and arrow-key navigation in agent input mode.
 
@@ -292,7 +292,7 @@ This means you can run a failing command, then type `> fix this` and the agent k
 
 ## Architecture
 
-agent-shell is an ACP **client**. The agent is a subprocess launched with stdio transport.
+agent-sh is an ACP **client**. The agent is a subprocess launched with stdio transport.
 
 ### Design philosophy: headless core + pluggable frontends
 
@@ -327,7 +327,7 @@ All components communicate exclusively through typed bus events. AcpClient has n
 
 **The core works without any frontend.** This enables:
 
-- **Library usage** — `import { createCore } from "agent-shell"` to build WebSocket servers, REST APIs, Electron apps, or test harnesses
+- **Library usage** — `import { createCore } from "agent-sh"` to build WebSocket servers, REST APIs, Electron apps, or test harnesses
 - **Headless mode** — CI, scripting, embedding — no terminal needed
 - **Alternative renderers** — web UI, logging backend, minimal TUI
 - **Custom features** — add commands, autocomplete providers, tool interceptors by writing an extension
@@ -367,7 +367,7 @@ All components communicate exclusively through typed bus events. AcpClient has n
 ## Project structure
 
 ```
-agent-shell/
+agent-sh/
 ├── src/
 │   ├── index.ts            # Interactive terminal entry point (CLI args, Shell, extensions)
 │   ├── core.ts             # createCore() — frontend-agnostic kernel, library entry point
@@ -427,15 +427,15 @@ npm run dev -- --agent pi-acp
 
 ## How it works
 
-1. agent-shell spawns a real PTY running your shell (zsh or bash, with your full rc config — oh-my-zsh, p10k, aliases, plugins, PATH) and sets up raw stdin passthrough
+1. agent-sh spawns a real PTY running your shell (zsh or bash, with your full rc config — oh-my-zsh, p10k, aliases, plugins, PATH) and sets up raw stdin passthrough
 2. It launches the specified ACP agent as a subprocess with stdio transport
 3. All keyboard input goes directly to the PTY — zero latency, full terminal compatibility
 4. **Smart connection**: The agent connects asynchronously in the background while the shell starts immediately
 5. **Auto-wait**: If you send a query before the agent is fully connected, the system automatically waits for connection completion
-6. When you type `>` at the start of a line, agent-shell intercepts and enters agent input mode
+6. When you type `>` at the start of a line, agent-sh intercepts and enters agent input mode
 7. On Enter, the query (plus shell context) is sent to the agent via `session/prompt`
 8. The agent's streaming response renders inline in a bordered markdown box with real-time output
-9. If the agent needs to run commands, it calls `terminal/create` and agent-shell executes them in isolated child processes, streaming output back
+9. If the agent needs to run commands, it calls `terminal/create` and agent-sh executes them in isolated child processes, streaming output back
 10. When the agent finishes, normal shell operation resumes
 
 ### EventBus
@@ -484,12 +484,12 @@ The `ExtensionContext` provides:
 | `bus` | `EventBus` | Subscribe to events, emit events, register pipe handlers |
 | `contextManager` | `ContextManager` | Access exchange history, cwd, search, expand |
 | `getAcpClient` | `() => AcpClient` | Lazy getter for the agent client |
-| `quit` | `() => void` | Exit agent-shell |
+| `quit` | `() => void` | Exit agent-sh |
 | `setPalette` | `(overrides: Partial<ColorPalette>) => void` | Override color palette slots for theming |
 
 ### Yolo mode
 
-By default, agent-shell runs in **yolo mode** — all tool calls and file writes are auto-approved. This matches pi's design philosophy where the agent operates freely unless you explicitly add permission gates.
+By default, agent-sh runs in **yolo mode** — all tool calls and file writes are auto-approved. This matches pi's design philosophy where the agent operates freely unless you explicitly add permission gates.
 
 To add permission prompts, load the example extension:
 ```bash
@@ -497,15 +497,15 @@ To add permission prompts, load the example extension:
 npm start -- -e ./examples/extensions/interactive-prompts.ts
 
 # Permanent: copy to your extensions dir
-cp examples/extensions/interactive-prompts.ts ~/.agent-shell/extensions/
+cp examples/extensions/interactive-prompts.ts ~/.agent-sh/extensions/
 
 # Or add to settings.json
-echo '{ "extensions": ["./examples/extensions/interactive-prompts.ts"] }' > ~/.agent-shell/settings.json
+echo '{ "extensions": ["./examples/extensions/interactive-prompts.ts"] }' > ~/.agent-sh/settings.json
 ```
 
 ### Theming
 
-agent-shell uses a semantic color palette with ~10 base roles (`accent`, `success`, `warning`, `error`, `muted`, plus background variants and style modifiers). Extensions can override any slot via `setPalette()`:
+agent-sh uses a semantic color palette with ~10 base roles (`accent`, `success`, `warning`, `error`, `muted`, plus background variants and style modifiers). Extensions can override any slot via `setPalette()`:
 
 ```typescript
 // solarized-theme.ts
@@ -537,7 +537,7 @@ npm start -- -e my-ext-package -e ./local-ext.ts
 npm start -- -e my-ext-package,another-package   # comma-separated also works
 ```
 
-**2. Settings file** — `~/.agent-shell/settings.json`:
+**2. Settings file** — `~/.agent-sh/settings.json`:
 ```json
 {
   "extensions": [
@@ -548,9 +548,9 @@ npm start -- -e my-ext-package,another-package   # comma-separated also works
 }
 ```
 
-**3. Extensions directory** — files and directories in `~/.agent-shell/extensions/`:
+**3. Extensions directory** — files and directories in `~/.agent-sh/extensions/`:
 ```bash
-~/.agent-shell/extensions/
+~/.agent-sh/extensions/
 ├── my-extension.ts          # loaded directly
 ├── another.js               # JS works too
 └── complex-extension/       # directory with index file
@@ -569,7 +569,7 @@ Errors in extension loading are non-fatal — a `ui:error` is emitted and the ne
 The core can be imported directly for building custom frontends — no terminal required:
 
 ```typescript
-import { createCore } from "agent-shell";
+import { createCore } from "agent-sh";
 
 const core = createCore({ agentCommand: "pi-acp" });
 
@@ -587,7 +587,7 @@ await core.start();
 core.bus.emit("agent:submit", { query: "explain this codebase" });
 ```
 
-This works for WebSocket servers, REST APIs, Electron apps, test harnesses, or any environment where you want agent-shell's context management and ACP integration without the interactive terminal.
+This works for WebSocket servers, REST APIs, Electron apps, test harnesses, or any environment where you want agent-sh's context management and ACP integration without the interactive terminal.
 
 ## Troubleshooting
 

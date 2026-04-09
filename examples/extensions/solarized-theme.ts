@@ -4,12 +4,12 @@
  * Overrides the default color palette with Solarized Dark colors.
  *
  * Usage:
- *   agent-shell -e ./examples/extensions/solarized-theme.ts
+ *   agent-sh -e ./examples/extensions/solarized-theme.ts
  *
- *   # Or copy to ~/.agent-shell/extensions/ for permanent use:
- *   cp examples/extensions/solarized-theme.ts ~/.agent-shell/extensions/
+ *   # Or copy to ~/.agent-sh/extensions/ for permanent use:
+ *   cp examples/extensions/solarized-theme.ts ~/.agent-sh/extensions/
  */
-import type { ExtensionContext } from "agent-shell/types";
+import type { ExtensionContext } from "agent-sh/types";
 
 export default function activate({ setPalette }: ExtensionContext) {
   setPalette({

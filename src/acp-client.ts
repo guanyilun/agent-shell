@@ -91,7 +91,7 @@ export class AcpClient {
     this.log("Sending initialize request");
     const initResponse = await this.connection.initialize({
       protocolVersion: acp.PROTOCOL_VERSION,
-      clientInfo: { name: "agent-shell", version: "0.1.0" },
+      clientInfo: { name: "agent-sh", version: "0.1.0" },
       clientCapabilities: {
         terminal: true,
         fs: {
@@ -256,7 +256,7 @@ export class AcpClient {
 
   private log(msg: string): void {
     if (process.env.DEBUG) {
-      process.stderr.write(`[agent-shell] ${msg}\n`);
+      process.stderr.write(`[agent-sh] ${msg}\n`);
     }
   }
 

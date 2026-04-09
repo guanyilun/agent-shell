@@ -43,7 +43,7 @@ export class Shell implements InputContext {
     const isBash = shellName.includes("bash");
     if (!isZsh && !isBash) {
       console.warn(
-        `Warning: agent-shell only supports zsh and bash. ` +
+        `Warning: agent-sh only supports zsh and bash. ` +
         `"${opts.shell}" may not work correctly — falling back to /bin/bash.`
       );
     }
@@ -56,13 +56,13 @@ export class Shell implements InputContext {
     if (isZsh) {
       // For zsh: use ZDOTDIR to source user's real config, then append
       // our hooks via precmd_functions (additive — doesn't clobber p10k/omz).
-      this.tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-shell-"));
+      this.tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-sh-"));
       const userZdotdir = env.ZDOTDIR || env.HOME || os.homedir();
       fs.writeFileSync(path.join(this.tmpDir, ".zshrc"), [
         `ZDOTDIR="${userZdotdir}"`,
         `[ -f "${userZdotdir}/.zshrc" ] && source "${userZdotdir}/.zshrc"`,
         "",
-        "# agent-shell hooks (invisible OSC sequences for cwd + prompt detection)",
+        "# agent-sh hooks (invisible OSC sequences for cwd + prompt detection)",
         "__agent_shell_precmd() {",
         `  ${osc7Cmd}`,
         `  ${promptMarker}`,
@@ -89,12 +89,12 @@ export class Shell implements InputContext {
     } else {
       // For bash: use --rcfile to source our wrapper, which sources the user's
       // real bashrc then appends our hooks. No HOME override needed.
-      this.tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-shell-"));
+      this.tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-sh-"));
       const userHome = env.HOME || os.homedir();
       fs.writeFileSync(path.join(this.tmpDir, ".bashrc"), [
         `[ -f "${userHome}/.bashrc" ] && source "${userHome}/.bashrc"`,
         "",
-        "# agent-shell hooks (invisible OSC sequences for cwd + prompt detection)",
+        "# agent-sh hooks (invisible OSC sequences for cwd + prompt detection)",
         `PROMPT_COMMAND="\${PROMPT_COMMAND:+\$PROMPT_COMMAND;}${osc7Cmd}; ${promptMarker}"`,
         "",
         "# End-of-prompt marker: append to PS1 (\\[...\\] marks it zero-width)",

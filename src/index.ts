@@ -36,9 +36,9 @@ function parseArgs(argv: string[]): AgentShellConfig {
       const exts = argv[++i]!.split(",").map(s => s.trim());
       extensions = extensions ? [...extensions, ...exts] : exts;
     } else if (arg === "--help" || arg === "-h") {
-      console.log(`agent-shell — a shell-first terminal with ACP agent access
+      console.log(`agent-sh — a shell-first terminal with ACP agent access
 
-Usage: agent-shell [options]
+Usage: agent-sh [options]
 
 Quick Start:
   npm start           Start with default agent (pi-acp)
@@ -55,8 +55,8 @@ Options:
 Extensions:
   Extensions are loaded from (in order):
     1. -e flags:  npm packages or file paths
-    2. settings:  ~/.agent-shell/settings.json → "extensions": [...]
-    3. directory:  ~/.agent-shell/extensions/ (files or dirs with index.ts)
+    2. settings:  ~/.agent-sh/settings.json → "extensions": [...]
+    3. directory:  ~/.agent-sh/extensions/ (files or dirs with index.ts)
 
 Environment Variables:
   AGENT_SHELL_AGENT   Default agent to use (e.g., "pi-acp", "claude")
@@ -100,7 +100,7 @@ async function main(): Promise<void> {
   const { bus, client } = core;
 
   // ── Interactive frontend ──────────────────────────────────────
-  process.stdout.write(`\x1b]0;agent-shell\x07`);
+  process.stdout.write(`\x1b]0;agent-sh\x07`);
 
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;

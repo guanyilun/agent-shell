@@ -74,7 +74,7 @@ export default function activate({ bus, getAcpClient, quit }: ExtensionContext):
     },
     {
       name: "/quit",
-      description: "Exit agent-shell",
+      description: "Exit agent-sh",
       handler: () => {
         quit();
       },

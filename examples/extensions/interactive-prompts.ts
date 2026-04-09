@@ -2,22 +2,22 @@
  * Interactive permission prompts extension.
  *
  * Adds permission gates for tool calls and file writes.
- * Without this extension, agent-shell runs in yolo mode (auto-approve).
+ * Without this extension, agent-sh runs in yolo mode (auto-approve).
  *
  * Usage:
  *   # Load by short name (built-in):
- *   agent-shell --extensions interactive-prompts
+ *   agent-sh --extensions interactive-prompts
  *
- *   # Or copy to ~/.agent-shell/extensions/ for permanent use:
- *   cp examples/extensions/interactive-prompts.ts ~/.agent-shell/extensions/
+ *   # Or copy to ~/.agent-sh/extensions/ for permanent use:
+ *   cp examples/extensions/interactive-prompts.ts ~/.agent-sh/extensions/
  *
  *   # Or install as an npm package and load by name:
- *   agent-shell --extensions my-prompts-package
+ *   agent-sh --extensions my-prompts-package
  */
-import { renderDiff } from "agent-shell/utils/diff-renderer.js";
-import { renderBoxFrame } from "agent-shell/utils/box-frame.js";
-import { palette as p } from "agent-shell/utils/palette.js";
-import type { ExtensionContext } from "agent-shell/types";
+import { renderDiff } from "agent-sh/utils/diff-renderer.js";
+import { renderBoxFrame } from "agent-sh/utils/box-frame.js";
+import { palette as p } from "agent-sh/utils/palette.js";
+import type { ExtensionContext } from "agent-sh/types";
 
 export default function activate({ bus }: ExtensionContext) {
   let autoApproveWrites = false;
