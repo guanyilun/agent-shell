@@ -16,6 +16,12 @@ export interface ToolCallRender {
   title: string;
   /** Optional command string for bash-like tools. */
   command?: string;
+  /** Tool kind from ACP (read, edit, execute, search, etc.). */
+  kind?: string;
+  /** File locations affected by the tool call. */
+  locations?: { path: string; line?: number | null }[];
+  /** Raw input parameters sent to the tool. */
+  rawInput?: unknown;
 }
 
 export interface ToolResultRender {
@@ -60,6 +66,24 @@ export function selectToolDisplayMode(width: number): ToolDisplayMode {
   return "summary";
 }
 
+// ── Kind icons ──────────────────────────────────────────────────
+
+const KIND_ICONS: Record<string, string> = {
+  read: "◆",
+  edit: "✎",
+  delete: "✕",
+  move: "↗",
+  search: "⌕",
+  execute: "▶",
+  think: "◇",
+  fetch: "↓",
+  switch_mode: "⇄",
+};
+
+function kindIcon(kind?: string): string {
+  return kind ? (KIND_ICONS[kind] ?? "▶") : "▶";
+}
+
 // ── Tool call rendering ──────────────────────────────────────────
 
 export function renderToolCall(
@@ -67,24 +91,64 @@ export function renderToolCall(
   width: number,
 ): string[] {
   const mode = selectToolDisplayMode(width);
+  const icon = kindIcon(tool.kind);
 
   if (mode === "summary") {
-    const text = truncateVisible(`▶ ${tool.title}`, width);
+    const text = truncateVisible(`${icon} ${tool.title}`, width);
     return [`${p.warning}${text}${p.reset}`];
   }
 
   const lines: string[] = [];
-  lines.push(`${p.warning}${p.bold}▶ ${tool.title}${p.reset}`);
+  lines.push(`${p.warning}${p.bold}${icon} ${tool.title}${p.reset}`);
 
-  if (tool.command && mode === "full") {
-    const maxCmdW = Math.max(1, width - 4);
-    const cmd = tool.command.length > maxCmdW
-      ? tool.command.slice(0, maxCmdW - 1) + "…"
-      : tool.command;
-    lines.push(`  ${p.dim}$ ${cmd}${p.reset}`);
+  if (mode === "full") {
+    // Show file locations if available
+    if (tool.locations && tool.locations.length > 0) {
+      for (const loc of tool.locations) {
+        const lineInfo = loc.line ? `:${loc.line}` : "";
+        lines.push(`  ${p.dim}${loc.path}${lineInfo}${p.reset}`);
+      }
+    }
+
+    // Show command string for terminal tools
+    if (tool.command) {
+      const maxCmdW = Math.max(1, width - 4);
+      const cmd = tool.command.length > maxCmdW
+        ? tool.command.slice(0, maxCmdW - 1) + "…"
+        : tool.command;
+      lines.push(`  ${p.dim}$ ${cmd}${p.reset}`);
+    }
+
+    // Show raw input args for non-terminal, non-file tools
+    if (!tool.command && !tool.locations?.length && tool.rawInput) {
+      const detail = formatRawInput(tool.rawInput, width - 4);
+      if (detail) lines.push(`  ${p.dim}${detail}${p.reset}`);
+    }
   }
 
   return lines;
+}
+
+/**
+ * Format raw input parameters into a compact single-line summary.
+ */
+function formatRawInput(raw: unknown, maxWidth: number): string {
+  if (raw == null) return "";
+  if (typeof raw === "string") {
+    return raw.length > maxWidth ? raw.slice(0, maxWidth - 1) + "…" : raw;
+  }
+  if (typeof raw !== "object") return String(raw);
+
+  // Show key=value pairs for objects
+  const obj = raw as Record<string, unknown>;
+  const parts: string[] = [];
+  for (const [key, val] of Object.entries(obj)) {
+    if (val == null) continue;
+    const valStr = typeof val === "string" ? val : JSON.stringify(val);
+    parts.push(`${key}=${valStr}`);
+  }
+  const joined = parts.join("  ");
+  return joined.length > maxWidth ? joined.slice(0, maxWidth - 1) + "…" : joined;
 }
 
 // ── Tool result rendering ────────────────────────────────────────
