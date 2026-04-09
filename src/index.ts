@@ -9,6 +9,7 @@ import { interactivePrompts } from "./extensions/interactive-prompts.js";
 import { slashCommands } from "./extensions/slash-commands.js";
 import { fileAutocomplete } from "./extensions/file-autocomplete.js";
 import { shellRecall } from "./extensions/shell-recall.js";
+import { loadExtensions } from "./extension-loader.js";
 import type { AgentShellConfig } from "./types.js";
 
 function parseArgs(argv: string[]): AgentShellConfig {
@@ -17,6 +18,7 @@ function parseArgs(argv: string[]): AgentShellConfig {
   let agentCommand = defaultAgent;
   let agentArgs: string[] = [];
   let model: string | undefined;
+  let extensions: string[] | undefined;
   const shell = process.env.SHELL || "/bin/bash";
 
   for (let i = 0; i < argv.length; i++) {
@@ -32,7 +34,9 @@ function parseArgs(argv: string[]): AgentShellConfig {
         model = agentArgs[modelArgIndex + 1];
       }
     } else if (arg === "--shell" && argv[i + 1]) {
-      return { agentCommand, agentArgs, shell: argv[++i]!, model };
+      return { agentCommand, agentArgs, shell: argv[++i]!, model, extensions };
+    } else if (arg === "--extensions" && argv[i + 1]) {
+      extensions = argv[++i]!.split(",").map(s => s.trim());
     } else if (arg === "--help" || arg === "-h") {
       console.log(`agent-shell — a shell-first terminal with ACP agent access
 
@@ -47,6 +51,7 @@ Options:
   --agent <cmd>       Agent command to launch (default: $AGENT_SHELL_AGENT or "pi-acp")
   --agent-args <args> Arguments for the agent (space-separated, quoted)
   --shell <path>      Shell to use (default: $SHELL or /bin/bash)
+  --extensions <paths> Comma-separated extension module paths to load
   -h, --help          Show this help
 
 Environment Variables:
@@ -67,7 +72,7 @@ Inside the shell:
     }
   }
 
-  return { agentCommand, agentArgs, shell, model };
+  return { agentCommand, agentArgs, shell, model, extensions };
 }
 
 function formatAgentInfo(agentInfo: { name: string; version: string }, model?: string): string {
@@ -170,10 +175,16 @@ async function main(): Promise<void> {
   // Create agent client — emits agent events, queries ContextManager for context
   acpClient = new AcpClient({ bus, contextManager, shell, config });
 
-  // Load extensions that need service references
+  // Load built-in extensions that need service references
   slashCommands(bus, { getAcpClient: () => acpClient!, quit: cleanup });
   fileAutocomplete(bus, () => shell.getCwd());
   shellRecall(bus, contextManager);
+
+  // Load user/third-party extensions (from --extensions flag and ~/.agent-shell/extensions/)
+  await loadExtensions(
+    { bus, contextManager, shell, getAcpClient: () => acpClient!, quit: cleanup },
+    config.extensions,
+  );
 
   // Connect to agent asynchronously (don't block shell startup)
   const connectAgent = async () => {
