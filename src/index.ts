@@ -101,8 +101,6 @@ async function main(): Promise<void> {
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;
 
-  // Placeholder for agent — we'll create it after shell but before starting input
-  let acpClient: AcpClient | null = null;
   let agentConnected = false;
 
   // Signal handling
@@ -115,43 +113,13 @@ async function main(): Promise<void> {
     process.exit(0);
   };
 
-  // Create shell — emits events to bus, ContextManager listens
+  // Create shell — subscribes to bus events for lifecycle management
   const shell = new Shell({
     bus,
     cols,
     rows,
     shell: config.shell || process.env.SHELL || "/bin/bash",
     cwd: process.cwd(),
-    onAgentRequest: async (query: string) => {
-      if (!acpClient) {
-        bus.emit("ui:error", { message: "Agent not initialized" });
-        return;
-      }
-
-      // Wait for agent to be connected before sending prompt
-      let attempts = 0;
-      const maxAttempts = 30; // Wait up to 3 seconds (30 * 100ms)
-      while (!agentConnected && attempts < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        attempts++;
-      }
-
-      if (!agentConnected) {
-        bus.emit("ui:error", { message: "Agent not connected. Please wait a moment and try again." });
-        return;
-      }
-
-      try {
-        await acpClient.sendPrompt(query);
-      } catch (err: any) {
-        bus.emit("ui:error", { message: err.message });
-      }
-    },
-    onAgentCancel: () => {
-      if (acpClient) {
-        acpClient.cancel().catch(() => {});
-      }
-    },
     onShowAgentInfo: () => {
       if (acpClient && acpClient.isConnected()) {
         const agentInfo = acpClient.getAgentInfo();
@@ -165,7 +133,29 @@ async function main(): Promise<void> {
   });
 
   // Create agent client — emits agent events, queries ContextManager for context
-  acpClient = new AcpClient({ bus, contextManager, config });
+  const acpClient = new AcpClient({ bus, contextManager, config });
+
+  // Route bus events to agent — InputHandler emits these, core handles them
+  bus.on("agent:submit", ({ query }) => {
+    (async () => {
+      if (!agentConnected) {
+        for (let i = 0; i < 30 && !agentConnected; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+      if (!agentConnected) {
+        bus.emit("ui:error", { message: "Agent not connected. Please wait a moment and try again." });
+        return;
+      }
+      await acpClient.sendPrompt(query);
+    })().catch((err: any) => {
+      bus.emit("ui:error", { message: err.message });
+    });
+  });
+
+  bus.on("agent:cancel-request", () => {
+    acpClient.cancel().catch(() => {});
+  });
 
   // Build extension context — shared by all extensions (built-in and user)
   const extCtx: ExtensionContext = {

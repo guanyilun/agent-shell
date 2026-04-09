@@ -15,6 +15,10 @@ export interface ShellEvents {
   "shell:cwd-change": { cwd: string };
   "shell:foreground-busy": { busy: boolean };
 
+  // Agent input (frontend → core: user submitted a query or wants to cancel)
+  "agent:submit": { query: string };
+  "agent:cancel-request": Record<string, never>;
+
   // Agent interaction
   "agent:query": { query: string };
   "agent:response-chunk": { text: string };

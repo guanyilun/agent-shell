@@ -17,8 +17,6 @@ export class Shell implements InputContext {
 
   constructor(opts: {
     bus: EventBus;
-    onAgentRequest: (query: string) => void;
-    onAgentCancel: () => void;
     onShowAgentInfo?: () => { info: string; model?: string };
     cols: number;
     rows: number;
@@ -128,8 +126,6 @@ export class Shell implements InputContext {
     this.inputHandler = new InputHandler({
       ctx: this,
       bus: opts.bus,
-      onAgentRequest: opts.onAgentRequest,
-      onAgentCancel: opts.onAgentCancel,
       onShowAgentInfo: opts.onShowAgentInfo ?? (() => ({ info: "" })),
     });
 
