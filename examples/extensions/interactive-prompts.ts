@@ -8,14 +8,15 @@
  *   # Load by short name (built-in):
  *   agent-shell --extensions interactive-prompts
  *
- *   # Or copy this file to ~/.agent-shell/extensions/ for permanent use:
- *   cp examples/extensions/interactive-prompts.js ~/.agent-shell/extensions/
+ *   # Or copy to ~/.agent-shell/extensions/ for permanent use:
+ *   cp examples/extensions/interactive-prompts.ts ~/.agent-shell/extensions/
  *
- * Requires: ~/.agent-shell/package.json with { "type": "module" }
- *           and agent-shell resolvable via node_modules
+ *   # Or install as an npm package and load by name:
+ *   agent-shell --extensions my-prompts-package
  */
 import { renderDiff } from "agent-shell/utils/diff-renderer.js";
 import { renderBoxFrame } from "agent-shell/utils/box-frame.js";
+import type { ExtensionContext } from "agent-shell/types";
 
 const DIM = "\x1b[2m";
 const YELLOW = "\x1b[33m";
@@ -24,7 +25,7 @@ const RED = "\x1b[31m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 
-export default function activate({ bus }) {
+export default function activate({ bus }: ExtensionContext) {
   let autoApproveWrites = false;
 
   bus.onPipeAsync("permission:request", async (payload) => {
