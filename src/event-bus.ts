@@ -20,13 +20,22 @@ export interface ShellEvents {
   "agent:response-chunk": { text: string };
   "agent:response-done": { response: string };
 
-  // Tool execution (agent-initiated)
+  // Agent lifecycle
+  "agent:cancelled": Record<string, never>;
+  "agent:error": { message: string };
+
+  // Tool execution (agent-initiated — used by ContextManager for data recording)
   "agent:tool-call": { tool: string; args: Record<string, unknown> };
   "agent:tool-output": {
     tool: string;
     output: string;
     exitCode: number | null;
   };
+
+  // Tool rendering (used by TUI for display — distinct data shape from above)
+  "agent:tool-started": { title: string; toolCallId?: string };
+  "agent:tool-completed": { toolCallId?: string; exitCode: number | null };
+  "agent:tool-output-chunk": { chunk: string };
 }
 
 type Listener<T> = (payload: T) => void;

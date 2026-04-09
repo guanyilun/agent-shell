@@ -72,7 +72,7 @@ async function main(): Promise<void> {
   // Create foundational infrastructure
   const bus = new EventBus();
   const contextManager = new ContextManager(bus);
-  const tui = new TUI(config.agentCommand);
+  const tui = new TUI(bus);
 
   // Set terminal title
   process.stdout.write(`\x1b]0;agent-shell\x07`);

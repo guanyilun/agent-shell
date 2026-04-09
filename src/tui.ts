@@ -1,5 +1,6 @@
 import { MarkdownRenderer } from "./markdown.js";
 import type { DiffResult } from "./diff.js";
+import type { EventBus } from "./event-bus.js";
 
 const CYAN = "\x1b[36m";
 const DIM = "\x1b[2m";
@@ -23,7 +24,17 @@ export class TUI {
   private commandOutputBuffer = "";
   private isOutputting = false;
 
-  constructor(_agentName: string) {}
+  constructor(bus: EventBus) {
+    bus.on("agent:query", (e) => this.handleAgentQuery(e));
+    bus.on("agent:response-chunk", (e) => this.handleResponseChunk(e));
+    bus.on("agent:response-done", () => this.handleResponseDone());
+    bus.on("agent:tool-started", (e) => this.handleToolStarted(e));
+    bus.on("agent:tool-completed", (e) => this.handleToolCompleted(e));
+    bus.on("agent:tool-output-chunk", (e) => this.handleToolOutputChunk(e));
+    bus.on("agent:tool-output", () => this.handleToolOutput());
+    bus.on("agent:cancelled", () => this.handleCancelled());
+    bus.on("agent:error", (e) => this.handleError(e));
+  }
 
   private flushOutput(): void {
     if (process.stdout.writable) {
@@ -32,6 +43,49 @@ export class TUI {
       } catch (e) {
       }
     }
+  }
+
+  // ── Event handlers (driven by EventBus) ─────────────────────
+
+  private handleAgentQuery(e: { query: string }): void {
+    process.stdout.write(`\n${CYAN}${BOLD}❯ ${RESET}${CYAN}${e.query}${RESET}\n`);
+    this.startAgentResponse();
+    this.startSpinner();
+  }
+
+  private handleResponseChunk(e: { text: string }): void {
+    this.writeAgentText(e.text);
+  }
+
+  private handleResponseDone(): void {
+    this.endAgentResponse();
+  }
+
+  private handleToolStarted(e: { title: string }): void {
+    this.stopSpinner();
+    this.showToolCall(e.title);
+  }
+
+  private handleToolCompleted(e: { exitCode: number | null }): void {
+    this.showToolResult(e.exitCode);
+  }
+
+  private handleToolOutputChunk(e: { chunk: string }): void {
+    this.writeCommandOutput(e.chunk);
+  }
+
+  private handleToolOutput(): void {
+    this.flushCommandOutput();
+  }
+
+  private handleCancelled(): void {
+    this.stopSpinner();
+    this.showInfo("(cancelled)");
+    this.endAgentResponse();
+  }
+
+  private handleError(e: { message: string }): void {
+    this.showError(e.message);
   }
 
   // Status bar stubs — kept for interface compatibility

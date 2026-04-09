@@ -74,7 +74,7 @@ export class AcpClient {
     this.log("Agent process spawned");
 
     this.agentProcess.on("exit", (code) => {
-      this.tui.showError(`Agent process exited with code ${code}`);
+      this.bus.emit("agent:error", { message: `Agent process exited with code ${code}` });
       this.connection = null;
       this.sessionId = null;
     });
@@ -147,18 +147,10 @@ export class AcpClient {
     this.shell.pauseOutput();
     await this.fileWatcher.snapshot();
 
-    // Echo the user's query
-    const CYAN = "\x1b[36m";
-    const BOLD = "\x1b[1m";
-    const RESET = "\x1b[0m";
-    const GRAY = "\x1b[90m";
-    process.stdout.write(`\n${CYAN}${BOLD}❯ ${RESET}${CYAN}${query}${RESET}\n`);
-
     this.currentResponseText = "";
-    this.tui.startAgentResponse();
-    this.tui.startSpinner();
+    let cancelled = false;
 
-    // Emit agent query event (ContextManager records it)
+    // Emit agent query event (TUI renders echo+spinner, ContextManager records it)
     this.bus.emit("agent:query", { query });
 
     // Build structured context from ContextManager
@@ -176,25 +168,25 @@ export class AcpClient {
         ],
       });
 
-      this.tui.stopSpinner();
       this.log(`prompt resolved: stopReason=${response.stopReason}`);
 
       if (response.stopReason === "cancelled") {
-        this.tui.showInfo("(cancelled)");
+        cancelled = true;
+        this.bus.emit("agent:cancelled", {});
       }
     } catch (err) {
-      this.tui.stopSpinner();
       this.log(`prompt error: ${err}`);
-      this.tui.showError(
-        err instanceof Error ? err.message : String(err)
-      );
+      this.bus.emit("agent:error", {
+        message: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       this.log("restoring shell mode");
-      this.bus.emit("agent:response-done", {
-        response: this.currentResponseText,
-      });
+      if (!cancelled) {
+        this.bus.emit("agent:response-done", {
+          response: this.currentResponseText,
+        });
+      }
       this.lastResponseText = this.currentResponseText;
-      this.tui.endAgentResponse();
 
       // Show diff previews for files the agent modified via its own tools
       // (modifications via fs/writeTextFile are already handled inline)
@@ -226,9 +218,9 @@ export class AcpClient {
       }
     }
     // Force-recover shell regardless of prompt state
-    this.tui.stopSpinner();
-    this.tui.showInfo("(cancelled)");
-    this.tui.endAgentResponse();
+    if (this.promptInProgress) {
+      this.bus.emit("agent:cancelled", {});
+    }
     this.shell.resumeOutput();
     this.shell.setAgentActive(false);
     this.shell.printPrompt();
@@ -342,11 +334,9 @@ export class AcpClient {
 
     switch (update.sessionUpdate) {
       case "agent_message_chunk": {
-        this.tui.stopSpinner();
         const content = update.content;
         if (content.type === "text") {
           this.currentResponseText += content.text;
-          this.tui.writeAgentText(content.text);
           this.bus.emit("agent:response-chunk", { text: content.text });
         }
         break;
@@ -358,11 +348,10 @@ export class AcpClient {
       }
 
       case "tool_call": {
-        this.tui.stopSpinner();
         // Use toolCallId if available, otherwise generate a simple ID
         const toolId = update.toolCallId || `tool-${this.pendingToolCalls.size}`;
         this.pendingToolCalls.set(toolId, true);
-        this.tui.showToolCall(update.title);
+        this.bus.emit("agent:tool-started", { title: update.title, toolCallId: toolId });
         break;
       }
 
@@ -370,15 +359,12 @@ export class AcpClient {
         // Only show result when the tool completes, don't show tool call again
         if (update.status === "completed" || update.status === "failed") {
           const toolId = update.toolCallId;
+          const exitCode = update.status === "completed" ? 0 : 1;
           if (toolId && this.pendingToolCalls.has(toolId)) {
-            // Only show result if we haven't already
             this.pendingToolCalls.delete(toolId);
-            const exitCode = update.status === "completed" ? 0 : 1;
-            this.tui.showToolResult(exitCode);
+            this.bus.emit("agent:tool-completed", { toolCallId: toolId, exitCode });
           } else if (!toolId) {
-            // Fallback for tools without ID
-            const exitCode = update.status === "completed" ? 0 : 1;
-            this.tui.showToolResult(exitCode);
+            this.bus.emit("agent:tool-completed", { exitCode });
           }
         }
         break;
@@ -465,7 +451,7 @@ export class AcpClient {
       maxOutputBytes: 256 * 1024,
       onOutput: (chunk) => {
         // Stream output into the box in real-time (strip ANSI for display)
-        this.tui.writeCommandOutput(this.stripAnsi(chunk));
+        this.bus.emit("agent:tool-output-chunk", { chunk: this.stripAnsi(chunk) });
       },
     });
 
@@ -505,9 +491,6 @@ export class AcpClient {
       const done = this.terminalDonePromises.get(params.terminalId);
       if (done) await done;
     }
-
-    this.tui.flushCommandOutput();
-    this.tui.showToolResult(session.exitCode);
 
     this.bus.emit("agent:tool-output", {
       tool: session.command ?? "",
