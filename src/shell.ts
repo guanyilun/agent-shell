@@ -1,3 +1,6 @@
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import * as pty from "node-pty";
 import type { EventBus } from "./event-bus.js";
 import { InputHandler, type InputContext } from "./input-handler.js";
@@ -5,10 +8,12 @@ import { OutputParser } from "./output-parser.js";
 
 export class Shell implements InputContext {
   private ptyProcess: pty.IPty;
+  private bus: EventBus;
   private inputHandler: InputHandler;
   private outputParser: OutputParser;
   private paused = false;
   private agentActive = false;
+  private tmpDir?: string;
 
   constructor(opts: {
     bus: EventBus;
@@ -29,18 +34,69 @@ export class Shell implements InputContext {
     }
     env.AGENT_SHELL = "1";
 
-    // Use bash with a minimal config to avoid p10k/oh-my-zsh terminal
-    // control that conflicts with our status bar. We set up a custom
-    // PS1 with the ⚡ indicator and OSC 7 cwd reporting via PROMPT_COMMAND.
-    const shellBin = "/bin/bash";
+    // Spawn the user's shell with their full config (aliases, plugins, PATH,
+    // completions, etc.). The core only injects two invisible hooks:
+    //   - OSC 7: cwd tracking (required by OutputParser)
+    //   - OSC 9999: prompt marker (required for command boundary detection)
+    // Prompt theming is left entirely to the user's shell config.
+    const shellBin = opts.shell;
+    const isZsh = path.basename(shellBin).includes("zsh");
+    let shellArgs: string[];
+
     const osc7Cmd = 'printf "\\e]7;file://%s%s\\a" "$(hostname)" "$PWD"';
     const promptMarker = 'printf "\\e]9999;PROMPT\\a"';
-    const ps1 = "\\[\\033[36m\\]⚡\\[\\033[0m\\] \\[\\033[1m\\]\\W\\[\\033[0m\\] \\$ ";
 
-    env.PROMPT_COMMAND = `${osc7Cmd}; ${promptMarker}`;
-    env.PS1 = ps1;
+    if (isZsh) {
+      // For zsh: use ZDOTDIR to source user's real config, then append
+      // our hooks via precmd_functions (additive — doesn't clobber p10k/omz).
+      this.tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-shell-"));
+      const userZdotdir = env.ZDOTDIR || env.HOME || os.homedir();
+      fs.writeFileSync(path.join(this.tmpDir, ".zshrc"), [
+        `ZDOTDIR="${userZdotdir}"`,
+        `[ -f "${userZdotdir}/.zshrc" ] && source "${userZdotdir}/.zshrc"`,
+        "",
+        "# agent-shell hooks (invisible OSC sequences for cwd + prompt detection)",
+        "__agent_shell_precmd() {",
+        `  ${osc7Cmd}`,
+        `  ${promptMarker}`,
+        "}",
+        "precmd_functions+=(__agent_shell_precmd)",
+        "",
+        "# End-of-prompt marker via zle-line-init (fires after prompt is rendered)",
+        "# Chain onto existing widget (p10k uses zle-line-init) rather than clobbering",
+        'if (( ${+widgets[zle-line-init]} )); then',
+        "  zle -A zle-line-init __agent_shell_orig_line_init",
+        "  __agent_shell_line_init() {",
+        "    zle __agent_shell_orig_line_init",
+        '    printf "\\e]9998;READY\\a"',
+        "  }",
+        "else",
+        "  __agent_shell_line_init() {",
+        '    printf "\\e]9998;READY\\a"',
+        "  }",
+        "fi",
+        "zle -N zle-line-init __agent_shell_line_init",
+      ].join("\n") + "\n");
+      env.ZDOTDIR = this.tmpDir;
+      shellArgs = ["--no-globalrcs"];
+    } else {
+      // For bash: source user's bashrc, then append our hooks to PROMPT_COMMAND
+      this.tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-shell-"));
+      fs.writeFileSync(path.join(this.tmpDir, ".bashrc"), [
+        '[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"',
+        "",
+        "# agent-shell hooks (invisible OSC sequences for cwd + prompt detection)",
+        `PROMPT_COMMAND="\${PROMPT_COMMAND:+\$PROMPT_COMMAND;}${osc7Cmd}; ${promptMarker}"`,
+        "",
+        "# End-of-prompt marker: append to PS1 (\\[...\\] marks it zero-width)",
+        'case "$PS1" in *9998*) ;; *) PS1="${PS1}\\[\\e]9998;READY\\a\\]";; esac',
+      ].join("\n") + "\n");
+      env.HOME_ORIG = env.HOME || os.homedir();
+      env.HOME = this.tmpDir;
+      shellArgs = ["--rcfile", path.join(this.tmpDir, ".bashrc")];
+    }
 
-    this.ptyProcess = pty.spawn(shellBin, ["--norc", "--noprofile"], {
+    this.ptyProcess = pty.spawn(shellBin, shellArgs, {
       name: "xterm-256color",
       cols: opts.cols,
       rows: opts.rows,
@@ -48,6 +104,7 @@ export class Shell implements InputContext {
       env,
     });
 
+    this.bus = opts.bus;
     this.outputParser = new OutputParser(opts.bus, opts.cwd);
 
     this.inputHandler = new InputHandler({
@@ -80,6 +137,37 @@ export class Shell implements InputContext {
     this.ptyProcess.write(data);
   }
 
+  /**
+   * Lightweight redraw: replay just the last line of the shell's prompt
+   * (e.g. p10k's "❯ "). This works because agent input mode only overwrites
+   * the final prompt line — the path bar above is still intact. The last
+   * line is linear text (colors + chars + clear-to-end), no cursor positioning.
+   */
+  redrawPrompt(): void {
+    const result = this.bus.emitPipe("shell:redraw-prompt", {
+      cwd: this.outputParser.getCwd(),
+      handled: false,
+    });
+    if (!result.handled) {
+      const lastLine = this.outputParser.getLastPromptLine();
+      if (lastLine) {
+        process.stdout.write("\r" + lastLine);
+      } else {
+        // Fallback: send \n for a fresh prompt cycle
+        this.ptyProcess.write("\n");
+      }
+    }
+  }
+
+  /**
+   * Heavy redraw: send \n to PTY to trigger a full precmd → prompt cycle.
+   * Use this after agent responses where stdout has moved far from where
+   * zle expects the cursor. The blank line is acceptable as a separator.
+   */
+  freshPrompt(): void {
+    this.ptyProcess.write("\n");
+  }
+
   onCommandEntered(command: string, cwd: string): void {
     this.outputParser.onCommandEntered(command, cwd);
   }
@@ -106,7 +194,7 @@ export class Shell implements InputContext {
   // ── Public API (used by acp-client, index.ts) ──
 
   printPrompt(): void {
-    this.inputHandler.printPrompt();
+    this.redrawPrompt();
   }
 
   pauseOutput(): void {
@@ -131,5 +219,8 @@ export class Shell implements InputContext {
 
   kill(): void {
     this.ptyProcess.kill();
+    if (this.tmpDir) {
+      fs.rmSync(this.tmpDir, { recursive: true, force: true });
+    }
   }
 }

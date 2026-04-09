@@ -12,6 +12,8 @@ export interface InputContext {
   isAgentActive(): boolean;
   writeToPty(data: string): void;
   onCommandEntered(command: string, cwd: string): void;
+  redrawPrompt(): void;
+  freshPrompt(): void;
 }
 
 export class InputHandler {
@@ -118,13 +120,8 @@ export class InputHandler {
     this.printPrompt();
   }
 
-  /**
-   * Print the shell prompt to stdout. Used to restore the prompt
-   * after agent mode or agent response without sending anything to the PTY.
-   */
   printPrompt(): void {
-    const dir = this.ctx.getCwd().split("/").pop() || this.ctx.getCwd();
-    process.stdout.write(`\x1b[36m⚡\x1b[0m \x1b[1m${dir}\x1b[0m $ `);
+    this.ctx.redrawPrompt();
   }
 
   private renderAgentInput(): void {
@@ -298,7 +295,7 @@ export class InputHandler {
           const name = spaceIdx === -1 ? query : query.slice(0, spaceIdx);
           const args = spaceIdx === -1 ? "" : query.slice(spaceIdx + 1).trim();
           this.bus.emit("command:execute", { name, args });
-          this.printPrompt();
+          this.ctx.freshPrompt();
         } else if (query) {
           this.onAgentRequest(query);
         } else {

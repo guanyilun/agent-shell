@@ -65,6 +65,13 @@ export interface ShellEvents {
     output: string;
   };
 
+  // Prompt redraw (sync pipe: core sends \n to PTY as default fallback;
+  // extensions can set `handled: true` and write their own prompt to stdout)
+  "shell:redraw-prompt": {
+    cwd: string;
+    handled: boolean;
+  };
+
   // Autocomplete (sync pipe: extensions inspect buffer and append items)
   "autocomplete:request": {
     buffer: string;
