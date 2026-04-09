@@ -1,24 +1,27 @@
-export interface CommandRecord {
-  command: string;
-  output: string;
-}
-
-export interface ShellContext {
-  cwd: string;
-  history: CommandRecord[];
-}
+import type { EventBus } from "./event-bus.js";
+import type { ContextManager } from "./context-manager.js";
+import type { Shell } from "./shell.js";
+import type { AcpClient } from "./acp-client.js";
 
 export interface AgentShellConfig {
   agentCommand: string;
   agentArgs: string[];
   shell: string;
-  model?: string; // Model name extracted from agent args
+  model?: string;
+  extensions?: string[];
 }
 
-export type ConversationEntry =
-  | { type: "shell_command"; command: string; output: string; cwd: string }
-  | { type: "agent_query"; query: string }
-  | { type: "agent_response"; summary: string };
+/**
+ * Context passed to user/third-party extensions.
+ * Provides access to all core services via a single object.
+ */
+export interface ExtensionContext {
+  bus: EventBus;
+  contextManager: ContextManager;
+  shell: Shell;
+  getAcpClient: () => AcpClient;
+  quit: () => void;
+}
 
 export interface TerminalSession {
   id: string;
@@ -28,3 +31,49 @@ export interface TerminalSession {
   done: boolean;
   resolve?: (value: void) => void;
 }
+
+// ── Exchange types (used by ContextManager) ──────────────────────
+
+export interface ToolCallRecord {
+  tool: string;
+  args: Record<string, unknown>;
+  output: string;
+  exitCode: number | null;
+}
+
+export type Exchange =
+  | {
+      type: "shell_command";
+      id: number;
+      timestamp: number;
+      cwd: string;
+      command: string;
+      output: string;
+      exitCode: number | null;
+      outputLines: number;
+      outputBytes: number;
+    }
+  | {
+      type: "agent_query";
+      id: number;
+      timestamp: number;
+      query: string;
+    }
+  | {
+      type: "agent_response";
+      id: number;
+      timestamp: number;
+      response: string;
+      toolCalls: ToolCallRecord[];
+    }
+  | {
+      type: "tool_execution";
+      id: number;
+      timestamp: number;
+      tool: string;
+      args: Record<string, unknown>;
+      output: string;
+      exitCode: number | null;
+      outputLines: number;
+      outputBytes: number;
+    };
