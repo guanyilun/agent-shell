@@ -11,7 +11,7 @@ const MAX_CONTENT_WIDTH = 90;
  * Word-wrap a string (which may contain ANSI codes) to a maximum visible width.
  * Returns an array of lines, each fitting within `maxWidth` visible characters.
  */
-function wrapLine(text: string, maxWidth: number): string[] {
+export function wrapLine(text: string, maxWidth: number): string[] {
   if (visibleLen(text) <= maxWidth) return [text];
 
   const result: string[] = [];
