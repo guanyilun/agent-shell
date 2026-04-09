@@ -12,6 +12,7 @@ export interface AgentShellConfig {
   agentCommand: string;
   agentArgs: string[];
   shell: string;
+  model?: string; // Model name extracted from agent args
 }
 
 export type ConversationEntry =
