@@ -1,0 +1,548 @@
+/**
+ * Diff renderer with width-adaptive presentation modes and inline highlighting.
+ *
+ * Returns string[] (one per terminal line) — never writes to stdout.
+ * Supports unified, split (side-by-side), and summary modes.
+ * Uses token-level LCS for word-level inline diff highlighting.
+ */
+import type { DiffResult, DiffHunk, DiffLine } from "./diff.js";
+import { GREEN, RED, DIM, BOLD, RESET, GRAY, visibleLen } from "./ansi.js";
+import { wrapLine } from "./markdown.js";
+
+// ── Types ────────────────────────────────────────────────────────
+
+export type DiffDisplayMode = "split" | "unified" | "summary";
+
+export interface DiffRenderOptions {
+  /** Available terminal width (columns). */
+  width: number;
+  /** Force a specific display mode instead of auto-detecting from width. */
+  mode?: DiffDisplayMode;
+  /** Maximum number of output lines before truncation. Default 50. */
+  maxLines?: number;
+  /** File path to show in the header. */
+  filePath?: string;
+  /** Use true-color (24-bit) backgrounds. Default true. */
+  trueColor?: boolean;
+}
+
+// ── Constants ────────────────────────────────────────────────────
+
+const SPLIT_MIN_WIDTH = 120;
+const UNIFIED_MIN_WIDTH = 40;
+
+// True-color backgrounds (RGB)
+const BG_ADDED = "\x1b[48;2;0;60;0m";
+const BG_REMOVED = "\x1b[48;2;50;0;0m";
+const BG_ADDED_EMPH = "\x1b[48;2;0;112;0m";
+const BG_REMOVED_EMPH = "\x1b[48;2;90;0;0m";
+
+// Foreground-only fallbacks
+const FG_ADDED = GREEN;
+const FG_REMOVED = RED;
+
+// ── Token-level LCS for inline highlighting ──────────────────────
+
+interface Token {
+  text: string;
+  kind: "word" | "space" | "punct";
+}
+
+function tokenize(line: string): Token[] {
+  const tokens: Token[] = [];
+  const re = /(\s+)|([A-Za-z0-9_]+)|([^\s\w])/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    if (m[1]) tokens.push({ text: m[1], kind: "space" });
+    else if (m[2]) tokens.push({ text: m[2], kind: "word" });
+    else if (m[3]) tokens.push({ text: m[3], kind: "punct" });
+  }
+  return tokens;
+}
+
+function tokenLcs(
+  a: Token[],
+  b: Token[],
+): { oldMatch: boolean[]; newMatch: boolean[] } {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () =>
+    new Array<number>(n + 1).fill(0),
+  );
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] =
+        a[i - 1].text === b[j - 1].text
+          ? dp[i - 1][j - 1] + 1
+          : Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+
+  // Backtrack to mark matched tokens
+  const oldMatch = new Array<boolean>(m).fill(false);
+  const newMatch = new Array<boolean>(n).fill(false);
+  let i = m;
+  let j = n;
+  while (i > 0 && j > 0) {
+    if (a[i - 1].text === b[j - 1].text) {
+      oldMatch[i - 1] = true;
+      newMatch[j - 1] = true;
+      i--;
+      j--;
+    } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+      i--;
+    } else {
+      j--;
+    }
+  }
+
+  return { oldMatch, newMatch };
+}
+
+/**
+ * Rewrite full ANSI resets (\x1b[0m) to foreground-only resets,
+ * preserving the given background color across the line.
+ */
+function preserveBg(text: string, bg: string): string {
+  return text.replace(/\x1b\[0m/g, `\x1b[39m${bg}`);
+}
+
+/**
+ * Pad a rendered line with spaces to fill the given visible width,
+ * ensuring background color spans the full column.
+ */
+function padToWidth(text: string, targetWidth: number): string {
+  const vis = visibleLen(text);
+  if (vis >= targetWidth) return text;
+  return text + " ".repeat(targetWidth - vis);
+}
+
+interface InlinePalette {
+  rowBg: string;
+  emphBg: string;
+}
+
+function highlightInlineChanges(
+  oldLine: string,
+  newLine: string,
+  oldPalette: InlinePalette,
+  newPalette: InlinePalette,
+  useTrueColor: boolean,
+): { old: string; new: string } {
+  if (!useTrueColor) {
+    return { old: oldLine, new: newLine };
+  }
+
+  const oldTokens = tokenize(oldLine);
+  const newTokens = tokenize(newLine);
+
+  // Skip if either side is trivially small
+  if (oldTokens.length === 0 || newTokens.length === 0) {
+    return { old: oldLine, new: newLine };
+  }
+
+  // Safety guard: skip if LCS matrix would be too large
+  if (oldTokens.length * newTokens.length > 50000) {
+    return { old: oldLine, new: newLine };
+  }
+
+  const { oldMatch, newMatch } = tokenLcs(oldTokens, newTokens);
+
+  const buildHighlighted = (
+    tokens: Token[],
+    matched: boolean[],
+    palette: InlinePalette,
+  ): string => {
+    let result = "";
+    for (let i = 0; i < tokens.length; i++) {
+      if (matched[i]) {
+        result += palette.rowBg + tokens[i].text;
+      } else {
+        result += palette.emphBg + tokens[i].text;
+      }
+    }
+    return result;
+  };
+
+  return {
+    old: buildHighlighted(oldTokens, oldMatch, oldPalette),
+    new: buildHighlighted(newTokens, newMatch, newPalette),
+  };
+}
+
+// ── Change pair detection ────────────────────────────────────────
+
+interface ChangePair {
+  removed: DiffLine;
+  added: DiffLine;
+  removedIdx: number;
+  addedIdx: number;
+}
+
+/**
+ * Scan a hunk for adjacent removed/added runs and pair them 1:1.
+ * Returns a set of line indices that are part of a change pair.
+ */
+function findChangePairs(hunk: DiffHunk): Map<number, ChangePair> {
+  const pairs = new Map<number, ChangePair>();
+  const lines = hunk.lines;
+  let i = 0;
+
+  while (i < lines.length) {
+    // Find a run of removed lines
+    const removedStart = i;
+    while (i < lines.length && lines[i].type === "removed") i++;
+    const removedEnd = i;
+
+    // Find a run of added lines immediately after
+    const addedStart = i;
+    while (i < lines.length && lines[i].type === "added") i++;
+    const addedEnd = i;
+
+    // Pair them 1:1
+    const removedCount = removedEnd - removedStart;
+    const addedCount = addedEnd - addedStart;
+    const pairCount = Math.min(removedCount, addedCount);
+
+    for (let k = 0; k < pairCount; k++) {
+      const pair: ChangePair = {
+        removed: lines[removedStart + k],
+        added: lines[addedStart + k],
+        removedIdx: removedStart + k,
+        addedIdx: addedStart + k,
+      };
+      pairs.set(removedStart + k, pair);
+      pairs.set(addedStart + k, pair);
+    }
+
+    // If no removed/added run was found, advance past context lines
+    if (removedCount === 0 && addedCount === 0) {
+      i++;
+    }
+  }
+
+  return pairs;
+}
+
+// ── Header ───────────────────────────────────────────────────────
+
+function buildHeader(diff: DiffResult, filePath?: string): string {
+  const path = filePath ?? "";
+  if (diff.isNewFile) {
+    return `${BOLD}new: ${path}${RESET}  ${DIM}(+${diff.added} lines)${RESET}`;
+  }
+  return `${BOLD}${path}${RESET}  ${DIM}(+${diff.added} / -${diff.removed})${RESET}`;
+}
+
+// ── Summary mode ─────────────────────────────────────────────────
+
+function renderSummary(diff: DiffResult): string[] {
+  if (diff.isIdentical) return [`${DIM}(no changes)${RESET}`];
+  if (diff.isNewFile) return [`${GREEN}+${diff.added} lines${RESET} ${DIM}(new file)${RESET}`];
+  return [`${GREEN}+${diff.added}${RESET} ${RED}-${diff.removed}${RESET}`];
+}
+
+// ── Unified mode ─────────────────────────────────────────────────
+
+function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
+  const useTrueColor = opts.trueColor !== false;
+  const textWidth = opts.width;
+  const output: string[] = [];
+
+  // Compute max line number width across all hunks
+  let maxNo = 0;
+  for (const hunk of diff.hunks) {
+    for (const line of hunk.lines) {
+      const n = line.oldNo ?? line.newNo ?? 0;
+      if (n > maxNo) maxNo = n;
+    }
+  }
+  const noW = Math.max(String(maxNo).length, 1);
+  // sign(1) + space(1) + lineNo(noW) + space(1) + bar(1) + space(1) = noW + 5
+  const gutterW = noW + 5;
+  const lineTextW = Math.max(1, textWidth - gutterW);
+
+  const removedPalette: InlinePalette = { rowBg: BG_REMOVED, emphBg: BG_REMOVED_EMPH };
+  const addedPalette: InlinePalette = { rowBg: BG_ADDED, emphBg: BG_ADDED_EMPH };
+
+  for (let hunkIdx = 0; hunkIdx < diff.hunks.length; hunkIdx++) {
+    const hunk = diff.hunks[hunkIdx];
+    if (hunkIdx > 0) {
+      output.push(`  ${DIM}⋯${RESET}`);
+    }
+
+    const pairs = findChangePairs(hunk);
+    // Track which added lines have been rendered as part of a pair
+    const renderedAsPartOfPair = new Set<number>();
+
+    for (let i = 0; i < hunk.lines.length; i++) {
+      const line = hunk.lines[i];
+      const no = String(line.oldNo ?? line.newNo ?? "").padStart(noW);
+
+      if (line.type === "context") {
+        const text = truncateText(line.text, lineTextW);
+        output.push(`  ${DIM}${no} │${RESET} ${DIM}${text}${RESET}`);
+        continue;
+      }
+
+      if (line.type === "removed") {
+        const pair = pairs.get(i);
+        let removedText = truncateText(line.text, lineTextW);
+        let addedText: string | null = null;
+        let addedNo: string | null = null;
+
+        if (pair && pair.removedIdx === i) {
+          // This removed line has a matching added line — compute inline diff
+          const highlighted = highlightInlineChanges(
+            line.text,
+            pair.added.text,
+            removedPalette,
+            addedPalette,
+            useTrueColor,
+          );
+          removedText = truncateText(
+            useTrueColor ? highlighted.old : line.text,
+            lineTextW,
+          );
+          addedText = truncateText(
+            useTrueColor ? highlighted.new : pair.added.text,
+            lineTextW,
+          );
+          addedNo = String(pair.added.newNo ?? "").padStart(noW);
+          renderedAsPartOfPair.add(pair.addedIdx);
+        }
+
+        if (useTrueColor) {
+          const rowContent = `${BG_REMOVED}${RED}- ${no} │ ${preserveBg(removedText, BG_REMOVED)}${RESET}`;
+          output.push(padToWidth(rowContent, textWidth));
+        } else {
+          output.push(`${FG_REMOVED}- ${no} │ ${removedText}${RESET}`);
+        }
+
+        // Emit the paired added line right after
+        if (addedText !== null && addedNo !== null) {
+          if (useTrueColor) {
+            const rowContent = `${BG_ADDED}${GREEN}+ ${addedNo} │ ${preserveBg(addedText, BG_ADDED)}${RESET}`;
+            output.push(padToWidth(rowContent, textWidth));
+          } else {
+            output.push(`${FG_ADDED}+ ${addedNo} │ ${addedText}${RESET}`);
+          }
+        }
+        continue;
+      }
+
+      if (line.type === "added") {
+        if (renderedAsPartOfPair.has(i)) continue;
+
+        const text = truncateText(line.text, lineTextW);
+        if (useTrueColor) {
+          const rowContent = `${BG_ADDED}${GREEN}+ ${no} │ ${preserveBg(text, BG_ADDED)}${RESET}`;
+          output.push(padToWidth(rowContent, textWidth));
+        } else {
+          output.push(`${FG_ADDED}+ ${no} │ ${text}${RESET}`);
+        }
+      }
+    }
+  }
+
+  return output;
+}
+
+// ── Split (side-by-side) mode ────────────────────────────────────
+
+function renderSplit(diff: DiffResult, opts: DiffRenderOptions): string[] {
+  const useTrueColor = opts.trueColor !== false;
+  const totalWidth = opts.width;
+  // 3 chars for " │ " separator
+  const colWidth = Math.floor((totalWidth - 3) / 2);
+
+  // Compute max line number width
+  let maxNo = 0;
+  for (const hunk of diff.hunks) {
+    for (const line of hunk.lines) {
+      const n = line.oldNo ?? line.newNo ?? 0;
+      if (n > maxNo) maxNo = n;
+    }
+  }
+  const noW = Math.max(String(maxNo).length, 1);
+  // lineNo(noW) + space(1) + bar(1) + space(1) = noW + 3
+  const textW = Math.max(1, colWidth - noW - 3);
+
+  const removedPalette: InlinePalette = { rowBg: BG_REMOVED, emphBg: BG_REMOVED_EMPH };
+  const addedPalette: InlinePalette = { rowBg: BG_ADDED, emphBg: BG_ADDED_EMPH };
+  const output: string[] = [];
+
+  // Column header
+  const leftHeader = padToWidth(`${DIM}${"─".repeat(colWidth)}${RESET}`, colWidth);
+  const rightHeader = padToWidth(`${DIM}${"─".repeat(colWidth)}${RESET}`, colWidth);
+  output.push(`${leftHeader} ${DIM}│${RESET} ${rightHeader}`);
+
+  for (let hunkIdx = 0; hunkIdx < diff.hunks.length; hunkIdx++) {
+    const hunk = diff.hunks[hunkIdx];
+    if (hunkIdx > 0) {
+      output.push(`${DIM}${" ".repeat(colWidth)} │ ${" ".repeat(colWidth)}${RESET}`);
+      output.push(`${DIM}${"·".repeat(colWidth)} │ ${"·".repeat(colWidth)}${RESET}`);
+    }
+
+    // Build paired rows for split view
+    const rows = buildSplitRows(hunk);
+
+    for (const row of rows) {
+      const leftNo = row.left
+        ? String(row.left.oldNo ?? row.left.newNo ?? "").padStart(noW)
+        : " ".repeat(noW);
+      const rightNo = row.right
+        ? String(row.right.newNo ?? row.right.oldNo ?? "").padStart(noW)
+        : " ".repeat(noW);
+
+      let leftText = row.left ? truncateText(row.left.text, textW) : "";
+      let rightText = row.right ? truncateText(row.right.text, textW) : "";
+
+      // Apply inline highlighting for change pairs
+      if (row.left && row.right && row.left.type === "removed" && row.right.type === "added") {
+        const highlighted = highlightInlineChanges(
+          row.left.text,
+          row.right.text,
+          removedPalette,
+          addedPalette,
+          useTrueColor,
+        );
+        leftText = truncateText(useTrueColor ? highlighted.old : row.left.text, textW);
+        rightText = truncateText(useTrueColor ? highlighted.new : row.right.text, textW);
+      }
+
+      let leftCol: string;
+      let rightCol: string;
+
+      if (!row.left || row.left.type === "context") {
+        // Context or empty left
+        leftCol = padToWidth(`${DIM}${leftNo} │${RESET} ${DIM}${leftText}${RESET}`, colWidth);
+      } else if (row.left.type === "removed") {
+        if (useTrueColor) {
+          leftCol = padToWidth(
+            `${BG_REMOVED}${RED}${leftNo} │ ${preserveBg(leftText, BG_REMOVED)}${RESET}`,
+            colWidth,
+          );
+        } else {
+          leftCol = padToWidth(`${FG_REMOVED}${leftNo} │ ${leftText}${RESET}`, colWidth);
+        }
+      } else {
+        leftCol = padToWidth(`${DIM}${leftNo} │${RESET} ${leftText}`, colWidth);
+      }
+
+      if (!row.right || row.right.type === "context") {
+        rightCol = padToWidth(`${DIM}${rightNo} │${RESET} ${DIM}${rightText}${RESET}`, colWidth);
+      } else if (row.right.type === "added") {
+        if (useTrueColor) {
+          rightCol = padToWidth(
+            `${BG_ADDED}${GREEN}${rightNo} │ ${preserveBg(rightText, BG_ADDED)}${RESET}`,
+            colWidth,
+          );
+        } else {
+          rightCol = padToWidth(`${FG_ADDED}${rightNo} │ ${rightText}${RESET}`, colWidth);
+        }
+      } else {
+        rightCol = padToWidth(`${DIM}${rightNo} │${RESET} ${rightText}`, colWidth);
+      }
+
+      output.push(`${leftCol} ${DIM}│${RESET} ${rightCol}`);
+    }
+  }
+
+  return output;
+}
+
+interface SplitRow {
+  left: DiffLine | null;
+  right: DiffLine | null;
+}
+
+function buildSplitRows(hunk: DiffHunk): SplitRow[] {
+  const rows: SplitRow[] = [];
+  const lines = hunk.lines;
+  let i = 0;
+
+  while (i < lines.length) {
+    if (lines[i].type === "context") {
+      rows.push({ left: lines[i], right: lines[i] });
+      i++;
+      continue;
+    }
+
+    // Collect a run of removed lines
+    const removed: DiffLine[] = [];
+    while (i < lines.length && lines[i].type === "removed") {
+      removed.push(lines[i]);
+      i++;
+    }
+
+    // Collect a run of added lines
+    const added: DiffLine[] = [];
+    while (i < lines.length && lines[i].type === "added") {
+      added.push(lines[i]);
+      i++;
+    }
+
+    // Pair them side by side
+    const maxLen = Math.max(removed.length, added.length);
+    for (let k = 0; k < maxLen; k++) {
+      rows.push({
+        left: k < removed.length ? removed[k] : null,
+        right: k < added.length ? added[k] : null,
+      });
+    }
+  }
+
+  return rows;
+}
+
+// ── Utilities ────────────────────────────────────────────────────
+
+function truncateText(text: string, maxWidth: number): string {
+  if (maxWidth <= 0) return "";
+  if (text.length <= maxWidth) return text;
+  if (maxWidth <= 1) return "…";
+  return text.slice(0, maxWidth - 1) + "…";
+}
+
+// ── Public API ───────────────────────────────────────────────────
+
+/** Select display mode based on available terminal width. */
+export function selectMode(width: number): DiffDisplayMode {
+  if (width >= SPLIT_MIN_WIDTH) return "split";
+  if (width >= UNIFIED_MIN_WIDTH) return "unified";
+  return "summary";
+}
+
+/** Render a diff result as an array of ANSI-formatted terminal lines. */
+export function renderDiff(diff: DiffResult, opts: DiffRenderOptions): string[] {
+  if (diff.isIdentical) return [`${DIM}(no changes)${RESET}`];
+
+  const mode = opts.mode ?? selectMode(opts.width);
+  const maxLines = opts.maxLines ?? 50;
+
+  const header = buildHeader(diff, opts.filePath);
+
+  if (mode === "summary") {
+    return [header, ...renderSummary(diff)];
+  }
+
+  let bodyLines: string[];
+  switch (mode) {
+    case "split":
+      bodyLines = renderSplit(diff, opts);
+      break;
+    case "unified":
+      bodyLines = renderUnified(diff, opts);
+      break;
+  }
+
+  // Truncation
+  if (bodyLines.length > maxLines) {
+    const overflow = bodyLines.length - maxLines;
+    bodyLines = bodyLines.slice(0, maxLines);
+    bodyLines.push(`${DIM}… ${overflow} more lines${RESET}`);
+  }
+
+  return [header, ...bodyLines];
+}

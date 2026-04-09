@@ -13,6 +13,7 @@
  * extensions could auto-approve, show a web UI, apply policy rules, etc.
  */
 import type { DiffResult } from "../utils/diff.js";
+import { renderDiff } from "../utils/diff-renderer.js";
 import { DIM, YELLOW, GREEN, RED, BOLD, RESET, visibleLen } from "../utils/ansi.js";
 import type { ExtensionContext } from "../types.js";
 
@@ -114,19 +115,9 @@ async function previewDiff(opts: {
     );
   };
 
-  let totalLines = 0;
-  let maxNo = 0;
-  for (const hunk of opts.diff.hunks) {
-    totalLines += hunk.lines.length;
-    for (const line of hunk.lines) {
-      const n = line.oldNo ?? line.newNo ?? 0;
-      if (n > maxNo) maxNo = n;
-    }
-  }
-  const noW = String(maxNo).length;
-  const textMax = contentW - noW - 6;
-
   process.stdout.write("\n");
+
+  // Header
   const stats = opts.diff.isNewFile
     ? `(+${opts.diff.added} lines)`
     : `(+${opts.diff.added} / -${opts.diff.removed})`;
@@ -140,39 +131,17 @@ async function previewDiff(opts: {
 
   boxed("");
 
-  let shown = 0;
-  let hunkIdx = 0;
-  for (const hunk of opts.diff.hunks) {
-    if (shown >= MAX_DISPLAY) break;
-    if (hunkIdx > 0) boxed(`  ${DIM}⋯${R}`);
-
-    for (const line of hunk.lines) {
-      if (shown >= MAX_DISPLAY) break;
-      shown++;
-
-      const no = String(line.oldNo ?? line.newNo ?? "").padStart(noW);
-      const sign =
-        line.type === "removed"
-          ? `${RED}-${R}`
-          : line.type === "added"
-            ? `${GREEN}+${R}`
-            : " ";
-      const color =
-        line.type === "removed" ? RED
-        : line.type === "added" ? GREEN
-        : DIM;
-      const text =
-        line.text.length > textMax
-          ? line.text.slice(0, textMax - 1) + "…"
-          : line.text;
-
-      boxed(`${sign} ${DIM}${no}${R} ${DIM}│${R} ${color}${text}${R}`);
-    }
-    hunkIdx++;
-  }
-
-  if (totalLines > MAX_DISPLAY) {
-    boxed(`  ${DIM}⋯ ${totalLines - MAX_DISPLAY} more lines${R}`);
+  // Render diff with the new renderer
+  const diffLines = renderDiff(opts.diff, {
+    width: contentW,
+    filePath: opts.path,
+    maxLines: MAX_DISPLAY,
+    trueColor: true,
+    mode: "unified",
+  });
+  // Skip the header line from renderDiff (we already rendered our own)
+  for (const line of diffLines.slice(1)) {
+    boxed(line);
   }
 
   boxed("");
