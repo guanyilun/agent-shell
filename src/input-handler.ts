@@ -27,6 +27,10 @@ export class InputHandler {
   private autocompleteIndex = 0;
   private autocompleteItems: { name: string; description: string }[] = [];
   private autocompleteLines = 0;
+  private history: string[] = [];
+  private historyIndex = -1; // -1 = not browsing history
+  private savedBuffer = ""; // buffer saved when entering history
+  private escapeTimer: ReturnType<typeof setTimeout> | null = null;
   private bus: EventBus;
   private onShowAgentInfo: () => { info: string; model?: string };
 
@@ -235,11 +239,33 @@ export class InputHandler {
   }
 
   private handleAgentInput(data: string): void {
+    // Clear any pending escape timer — new data arrived
+    if (this.escapeTimer) {
+      clearTimeout(this.escapeTimer);
+      this.escapeTimer = null;
+    }
+
     const actions = this.editor.feed(data);
+
+    // If the editor is waiting for more escape sequence data, set a short
+    // timer — if nothing arrives, treat it as a bare Escape keypress
+    if (this.editor.hasPendingEscape()) {
+      this.escapeTimer = setTimeout(() => {
+        this.escapeTimer = null;
+        const flushed = this.editor.flushPendingEscape();
+        if (flushed.length > 0) this.processAgentActions(flushed);
+      }, 50);
+    }
+
+    this.processAgentActions(actions);
+  }
+
+  private processAgentActions(actions: ReturnType<typeof this.editor.feed>): void {
 
     for (const act of actions) {
       switch (act.action) {
         case "changed":
+          this.historyIndex = -1;
           this.autocompleteIndex = 0;
           this.renderAgentInput();
           break;
@@ -249,6 +275,14 @@ export class InputHandler {
             this.applyAutocomplete();
           }
           const query = act.buffer.trim();
+          if (query) {
+            // Add to history (avoid consecutive duplicates)
+            if (this.history.length === 0 || this.history[this.history.length - 1] !== query) {
+              this.history.push(query);
+            }
+          }
+          this.historyIndex = -1;
+          this.savedBuffer = "";
           this.clearAutocompleteLines();
           process.stdout.write("\r\x1b[2K");
           this.agentInputMode = false;
@@ -297,6 +331,16 @@ export class InputHandler {
             this.clearAutocompleteLines();
             this.writeAgentPromptLine();
             this.renderAutocomplete();
+          } else if (this.history.length > 0) {
+            if (this.historyIndex === -1) {
+              this.savedBuffer = this.editor.buffer;
+              this.historyIndex = this.history.length - 1;
+            } else if (this.historyIndex > 0) {
+              this.historyIndex--;
+            }
+            this.editor.buffer = this.history[this.historyIndex]!;
+            this.editor.cursor = this.editor.buffer.length;
+            this.renderAgentInput();
           }
           break;
 
@@ -309,6 +353,16 @@ export class InputHandler {
             this.clearAutocompleteLines();
             this.writeAgentPromptLine();
             this.renderAutocomplete();
+          } else if (this.historyIndex !== -1) {
+            if (this.historyIndex < this.history.length - 1) {
+              this.historyIndex++;
+              this.editor.buffer = this.history[this.historyIndex]!;
+            } else {
+              this.historyIndex = -1;
+              this.editor.buffer = this.savedBuffer;
+            }
+            this.editor.cursor = this.editor.buffer.length;
+            this.renderAgentInput();
           }
           break;
       }

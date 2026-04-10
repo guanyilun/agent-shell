@@ -22,9 +22,16 @@ export type LineEditAction =
 export class LineEditor {
   buffer = "";
   cursor = 0;
+  private pendingSeq = ""; // buffered incomplete escape sequence
 
   /** Process raw terminal input, return actions for the consumer. */
   feed(data: string): LineEditAction[] {
+    // If we had a pending incomplete escape sequence, prepend it
+    if (this.pendingSeq) {
+      data = this.pendingSeq + data;
+      this.pendingSeq = "";
+    }
+
     const actions: LineEditAction[] = [];
     let i = 0;
 
@@ -35,17 +42,51 @@ export class LineEditor {
       if (ch === "\x1b") {
         const next = data[i + 1];
 
-        // Bare Escape (nothing follows in this chunk)
+        // Incomplete escape — buffer and wait for next feed()
         if (next == null) {
-          actions.push({ action: "cancel" });
+          this.pendingSeq = "\x1b";
           i++;
           continue;
         }
 
         // CSI sequence: \x1b[...
         if (next === "[") {
-          const { consumed } = this.handleCSI(data, i, actions);
-          i += consumed;
+          const { consumed, incomplete } = this.handleCSI(data, i, actions);
+          if (incomplete) {
+            this.pendingSeq = data.slice(i, i + consumed);
+            i += consumed;
+          } else {
+            i += consumed;
+          }
+          continue;
+        }
+
+        // SS3 sequence: \x1bO... (application cursor mode — arrow keys, Home, End)
+        if (next === "O") {
+          const ss3Final = data[i + 2];
+          if (ss3Final == null) {
+            // Incomplete — buffer for next feed()
+            this.pendingSeq = data.slice(i, i + 2);
+            i += 2;
+            continue;
+          }
+          i += 3; // consume \x1b O <final>
+          switch (ss3Final) {
+            case "A": actions.push({ action: "arrow-up" }); break;
+            case "B": actions.push({ action: "arrow-down" }); break;
+            case "C":
+              if (this.cursor < this.buffer.length) { this.cursor++; actions.push({ action: "changed" }); }
+              break;
+            case "D":
+              if (this.cursor > 0) { this.cursor--; actions.push({ action: "changed" }); }
+              break;
+            case "H": // Home
+              if (this.cursor > 0) { this.cursor = 0; actions.push({ action: "changed" }); }
+              break;
+            case "F": // End
+              if (this.cursor < this.buffer.length) { this.cursor = this.buffer.length; actions.push({ action: "changed" }); }
+              break;
+          }
           continue;
         }
 
@@ -153,22 +194,36 @@ export class LineEditor {
     return actions;
   }
 
+  /** Check if there's a pending incomplete escape sequence. */
+  hasPendingEscape(): boolean {
+    return this.pendingSeq.length > 0;
+  }
+
+  /** Flush a pending sequence — treat bare \x1b as cancel, discard incomplete CSI. */
+  flushPendingEscape(): LineEditAction[] {
+    if (!this.pendingSeq) return [];
+    const wasBarEscape = this.pendingSeq === "\x1b";
+    this.pendingSeq = "";
+    return wasBarEscape ? [{ action: "cancel" }] : [];
+  }
+
   clear(): void {
     this.buffer = "";
     this.cursor = 0;
+    this.pendingSeq = "";
   }
 
   // ── CSI sequence handling ───────────────────────────────────
 
   /**
    * Parse and handle a CSI sequence (\x1b[...) starting at `start`.
-   * Returns the number of bytes consumed.
+   * Returns the number of bytes consumed and whether the sequence was incomplete.
    */
   private handleCSI(
     data: string,
     start: number,
     actions: LineEditAction[],
-  ): { consumed: number } {
+  ): { consumed: number; incomplete?: boolean } {
     // Skip \x1b[
     let j = start + 2;
     // Accumulate parameter bytes (0x20-0x3F: digits, semicolons, etc.)
@@ -177,8 +232,12 @@ export class LineEditor {
       params += data[j];
       j++;
     }
-    const final = j < data.length ? data[j]! : "";
-    const consumed = j - start + (final ? 1 : 0);
+    // If we ran out of data before the final byte, sequence is incomplete
+    if (j >= data.length) {
+      return { consumed: j - start, incomplete: true };
+    }
+    const final = data[j]!;
+    const consumed = j - start + 1;
 
     // Dispatch on final byte
     switch (final) {
