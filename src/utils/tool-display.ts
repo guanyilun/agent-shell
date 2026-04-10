@@ -121,8 +121,34 @@ export function renderToolCall(
 
     // Show raw input args for non-terminal, non-file tools
     if (!tool.command && !tool.locations?.length && tool.rawInput) {
-      const detail = formatRawInput(tool.rawInput, width - 4);
-      if (detail) lines.push(`  ${p.dim}${detail}${p.reset}`);
+      const raw = tool.rawInput as Record<string, unknown>;
+      if (raw && typeof raw === "object") {
+        // command field → show as command line
+        if (typeof raw.command === "string") {
+          const maxCmdW = Math.max(1, width - 4);
+          const cmd = raw.command.length > maxCmdW
+            ? raw.command.slice(0, maxCmdW - 1) + "…"
+            : raw.command;
+          lines.push(`  ${p.dim}$ ${cmd}${p.reset}`);
+        }
+        // operation field → compact summary (e.g. "expand #1,2" or "search foo")
+        else if (typeof raw.operation === "string") {
+          let summary = raw.operation;
+          if (raw.ids && Array.isArray(raw.ids)) {
+            summary += ` #${(raw.ids as number[]).join(",")}`;
+          }
+          if (typeof raw.query === "string") {
+            summary += ` "${raw.query}"`;
+          }
+          lines.push(`  ${p.dim}${summary}${p.reset}`);
+        } else {
+          const detail = formatRawInput(tool.rawInput, width - 4);
+          if (detail) lines.push(`  ${p.dim}${detail}${p.reset}`);
+        }
+      } else {
+        const detail = formatRawInput(tool.rawInput, width - 4);
+        if (detail) lines.push(`  ${p.dim}${detail}${p.reset}`);
+      }
     }
   }
 

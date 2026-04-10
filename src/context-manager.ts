@@ -5,15 +5,15 @@ const DEFAULT_WINDOW_SIZE = 20;
 const DEFAULT_BUDGET = 16384; // ~4K tokens at ~4 chars/token
 
 // Truncation thresholds (in lines)
-const SHELL_TRUNCATE_THRESHOLD = 30;
-const SHELL_HEAD_LINES = 10;
-const SHELL_TAIL_LINES = 10;
+const SHELL_TRUNCATE_THRESHOLD = 10;
+const SHELL_HEAD_LINES = 5;
+const SHELL_TAIL_LINES = 5;
 const AGENT_RESPONSE_TRUNCATE_THRESHOLD = 20;
 const AGENT_RESPONSE_HEAD_LINES = 15;
 const TOOL_TRUNCATE_THRESHOLD = 20;
 const TOOL_HEAD_LINES = 5;
 const TOOL_TAIL_LINES = 5;
-const RECALL_EXPAND_MAX_LINES = 500;
+const RECALL_EXPAND_MAX_LINES = 100;
 
 export class ContextManager {
   private exchanges: Exchange[] = [];
@@ -164,9 +164,10 @@ export class ContextManager {
   }
 
   /**
-   * Return full untruncated content for specific exchange IDs.
+   * Return content for specific exchange IDs.
+   * Optional start/end restrict to a line range (1-indexed).
    */
-  expand(ids: number[]): string {
+  expand(ids: number[], start?: number, end?: number): string {
     const results: string[] = [];
     for (const id of ids) {
       const ex = this.exchanges.find((e) => e.id === id);
@@ -174,7 +175,28 @@ export class ContextManager {
         results.push(`#${id}: not found`);
         continue;
       }
-      results.push(this.formatExchangeFull(ex));
+      const text = this.formatExchangeFull(ex);
+      const lines = text.split("\n");
+      const total = lines.length;
+
+      if (start != null || end != null) {
+        // Line range requested
+        const s = Math.max(0, (start ?? 1) - 1);
+        const e = end ?? total;
+        results.push(
+          lines.slice(s, e).join("\n") +
+          `\n[showing lines ${s + 1}-${Math.min(e, total)} of ${total}]`,
+        );
+      } else if (total > RECALL_EXPAND_MAX_LINES) {
+        // Too large — tell the agent to narrow down
+        results.push(
+          `#${ex.id}: output is ${total} lines, too large to expand fully. ` +
+          `Use start/end params to select a line range (e.g. start=1, end=50), ` +
+          `or use search with a regex to find specific content.`,
+        );
+      } else {
+        results.push(text);
+      }
     }
     return results.join("\n\n");
   }
@@ -332,7 +354,7 @@ export class ContextManager {
   private formatExchangeTruncated(ex: Exchange): string {
     switch (ex.type) {
       case "shell_command": {
-        let s = `#${ex.id} [shell] $ ${ex.command}\n`;
+        let s = `#${ex.id} [shell cwd:${ex.cwd}] $ ${ex.command}\n`;
         if (ex.output) s += indent(ex.output, "  ") + "\n";
         if (ex.exitCode !== null) s += `  exit ${ex.exitCode}\n`;
         return s;
@@ -357,21 +379,10 @@ export class ContextManager {
     }
   }
 
-  private truncateForRecall(text: string): string {
-    const lines = text.split("\n");
-    if (lines.length <= RECALL_EXPAND_MAX_LINES) return text;
-    const half = RECALL_EXPAND_MAX_LINES / 2;
-    return (
-      lines.slice(0, half).join("\n") +
-      `\n[... ${lines.length - RECALL_EXPAND_MAX_LINES} more lines ...]\n` +
-      lines.slice(-half).join("\n")
-    );
-  }
-
   private formatExchangeFull(ex: Exchange): string {
     switch (ex.type) {
       case "shell_command": {
-        const output = this.truncateForRecall(ex.output);
+        const output = ex.output;
         let s = `#${ex.id} [shell] $ ${ex.command} (${ex.outputLines} lines, ${ex.outputBytes} bytes)\n`;
         if (output) s += output + "\n";
         if (ex.exitCode !== null) s += `exit ${ex.exitCode}\n`;
@@ -382,9 +393,8 @@ export class ContextManager {
       case "agent_response":
         return `#${ex.id} [agent]\n${ex.response}`;
       case "tool_execution": {
-        const output = this.truncateForRecall(ex.output);
         let s = `#${ex.id} [tool] ${ex.tool} (${ex.outputLines} lines, ${ex.outputBytes} bytes)\n`;
-        if (output) s += output + "\n";
+        if (ex.output) s += ex.output + "\n";
         if (ex.exitCode !== null) s += `exit ${ex.exitCode}\n`;
         return s;
       }
@@ -394,7 +404,7 @@ export class ContextManager {
   private exchangeOneLiner(ex: Exchange): string {
     switch (ex.type) {
       case "shell_command":
-        return `#${ex.id} shell: ${ex.command} (${ex.outputLines} lines, exit ${ex.exitCode ?? "?"})`;
+        return `#${ex.id} shell [cwd:${ex.cwd}]: ${ex.command} (${ex.outputLines} total lines, exit ${ex.exitCode ?? "?"})`;
       case "agent_query":
         return `#${ex.id} query: ${ex.query}`;
       case "agent_response": {
