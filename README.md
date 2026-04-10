@@ -85,6 +85,7 @@ When typing after `>`, full readline-style keybindings are available:
 
 | Key | Action |
 |---|---|
+| `↑` / `↓` | Browse query history (persisted across sessions) |
 | `Ctrl-A` / `Home` | Move to start of line |
 | `Ctrl-E` / `End` | Move to end of line |
 | `Ctrl-B` / `←` | Move back one character |
@@ -105,6 +106,12 @@ When typing after `>`, full readline-style keybindings are available:
 | `/copy` | Copy last agent response to clipboard |
 | `/compact` | Ask agent to summarize the conversation |
 | `/quit` | Exit agent-sh |
+
+## Configuration
+
+agent-sh stores settings and history in `~/.agent-sh/`. Behavior is configurable via `~/.agent-sh/settings.json` — context window size, truncation thresholds, display limits, and more. All fields are optional with sensible defaults.
+
+See the [Usage Guide](docs/usage.md#configuration) for the full settings reference.
 
 ## Development
 

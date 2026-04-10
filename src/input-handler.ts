@@ -1,7 +1,12 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { visibleLen } from "./utils/ansi.js";
 import { palette as p } from "./utils/palette.js";
 import { LineEditor } from "./utils/line-editor.js";
+import { CONFIG_DIR, getSettings } from "./settings.js";
 import type { EventBus } from "./event-bus.js";
+
+const HISTORY_FILE = path.join(CONFIG_DIR, "history");
 
 /**
  * Narrow contract between InputHandler and its host (Shell).
@@ -42,6 +47,27 @@ export class InputHandler {
     this.ctx = opts.ctx;
     this.bus = opts.bus;
     this.onShowAgentInfo = opts.onShowAgentInfo;
+    this.loadHistory();
+  }
+
+  private loadHistory(): void {
+    try {
+      const data = fs.readFileSync(HISTORY_FILE, "utf-8");
+      this.history = data.split("\n").filter(Boolean);
+    } catch {
+      // No history file yet
+    }
+  }
+
+  private saveHistory(): void {
+    try {
+      const { historySize } = getSettings();
+      fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
+      const lines = this.history.slice(-historySize);
+      fs.writeFileSync(HISTORY_FILE, lines.join("\n") + "\n");
+    } catch {
+      // Non-critical — ignore write failures
+    }
   }
 
   /** Write the agent prompt line with cursor at the correct position. */
@@ -279,6 +305,7 @@ export class InputHandler {
             // Add to history (avoid consecutive duplicates)
             if (this.history.length === 0 || this.history[this.history.length - 1] !== query) {
               this.history.push(query);
+              this.saveHistory();
             }
           }
           this.historyIndex = -1;

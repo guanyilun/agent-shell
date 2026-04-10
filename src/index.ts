@@ -248,8 +248,8 @@ async function main(): Promise<void> {
   fileAutocomplete(extCtx);
   shellRecall(extCtx);
 
-  // Shell-exec: start the Unix domain socket bridge so the MCP server can
-  // route user_shell tool calls to the PTY via the EventBus.
+  // Shell-exec: start the Unix domain socket bridge so agent extensions
+  // and MCP servers can route tool calls to the PTY via the EventBus.
   const tmpDir = shell.getTmpDir();
   if (tmpDir) {
     if (process.env.DEBUG) {

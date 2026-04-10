@@ -191,12 +191,13 @@ agent-sh exposes a Unix socket that external tools connect to. Two discovery pat
 
 ### Pi extension setup
 
+Copy the pi extension to your pi extensions directory:
+
 ```bash
-# From wherever pi-user-shell lives
-pi install ./pi-user-shell
+cp examples/pi-agent-sh.ts ~/.pi/agent/extensions/pi-agent-sh/index.ts
 ```
 
-Once installed, the agent can use `user_shell` alongside its built-in tools. Ask it to `cd` somewhere and your shell prompt will reflect the change.
+This registers three tools for pi: `shell_cwd` (query real cwd), `user_shell` (execute in live PTY), and `shell_recall` (search/browse session history). Ask the agent to `cd` somewhere and your shell prompt will reflect the change.
 
 ### Writing your own socket client
 
@@ -207,6 +208,41 @@ The socket speaks JSON-RPC 2.0 (newline-delimited). See [Architecture — Socket
 echo '{"jsonrpc":"2.0","id":1,"method":"shell/cwd","params":{}}' | socat - UNIX-CONNECT:$AGENT_SH_SOCKET
 ```
 
+## Configuration
+
+agent-sh stores settings and query history in `~/.agent-sh/`. Configure behavior via `~/.agent-sh/settings.json` — all fields are optional with sensible defaults:
+
+```json
+{
+  "extensions": [],
+  "historySize": 500,
+  "contextWindowSize": 20,
+  "contextBudget": 16384,
+  "shellTruncateThreshold": 10,
+  "shellHeadLines": 5,
+  "shellTailLines": 5,
+  "recallExpandMaxLines": 100,
+  "maxCommandOutputLines": 30,
+  "diffMaxLines": 20,
+  "enableMcp": true
+}
+```
+
+| Setting | Default | Description |
+|---|---|---|
+| `extensions` | `[]` | Extensions to load (npm packages or file paths) |
+| `historySize` | `500` | Max agent query history entries (persisted across sessions in `~/.agent-sh/history`) |
+| `contextWindowSize` | `20` | Recent exchanges included in agent context |
+| `contextBudget` | `16384` | Context budget in bytes (~4K tokens) |
+| `shellTruncateThreshold` | `10` | Shell output lines before truncation |
+| `shellHeadLines` / `shellTailLines` | `5` / `5` | Lines kept from start/end of truncated output |
+| `recallExpandMaxLines` | `100` | Max lines for recall expand before requiring line ranges |
+| `maxCommandOutputLines` | `30` | Max command output lines shown inline in TUI |
+| `diffMaxLines` | `20` | Max diff lines shown before "ctrl+o to expand" |
+| `enableMcp` | `true` | Register MCP server for bridge tools (disable if agent doesn't use MCP) |
+
+The file doesn't need to exist — all defaults apply automatically. Settings are loaded once at startup.
+
 ## Shell Context
 
 The agent automatically receives structured context about your shell session with each query, managed by the ContextManager:
@@ -216,3 +252,5 @@ The agent automatically receives structured context about your shell session wit
 - **Recall tool** — the agent can use the `shell_recall` MCP tool to search, expand, or browse session history (e.g., retrieve full output of a truncated exchange)
 
 This means you can run a failing command, then type `> fix this` and the agent knows exactly what happened. For long outputs, the agent sees a truncated summary and can recall the full content on demand.
+
+Context behavior (window size, truncation thresholds) is tunable via `~/.agent-sh/settings.json` — see the [Configuration](#configuration) section above.

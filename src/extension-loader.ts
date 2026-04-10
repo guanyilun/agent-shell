@@ -1,11 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import * as os from "node:os";
 import type { ExtensionContext } from "./types.js";
+import { CONFIG_DIR, getSettings } from "./settings.js";
 
-const CONFIG_DIR = path.join(os.homedir(), ".agent-sh");
 const EXT_DIR = path.join(CONFIG_DIR, "extensions");
-const SETTINGS_PATH = path.join(CONFIG_DIR, "settings.json");
 
 const TS_EXTS = [".ts", ".tsx", ".mts"];
 const SCRIPT_EXTS = [".js", ".mjs", ".ts", ".tsx", ".mts"];
@@ -23,18 +21,6 @@ async function ensureTsSupport(): Promise<void> {
   }
 }
 
-interface Settings {
-  extensions?: string[];
-}
-
-async function loadSettings(): Promise<Settings> {
-  try {
-    const raw = await fs.readFile(SETTINGS_PATH, "utf-8");
-    return JSON.parse(raw) as Settings;
-  } catch {
-    return {};
-  }
-}
 
 /**
  * Load extensions from three sources (merged, deduplicated):
@@ -62,8 +48,8 @@ export async function loadExtensions(
   }
 
   // 2. settings.json
-  const settings = await loadSettings();
-  if (settings.extensions) {
+  const settings = getSettings();
+  if (settings.extensions.length > 0) {
     specifiers.push(...settings.extensions);
   }
 

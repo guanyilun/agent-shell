@@ -1,19 +1,13 @@
 import type { EventBus } from "./event-bus.js";
 import type { Exchange, ToolCallRecord } from "./types.js";
+import { getSettings } from "./settings.js";
 
-const DEFAULT_WINDOW_SIZE = 20;
-const DEFAULT_BUDGET = 16384; // ~4K tokens at ~4 chars/token
-
-// Truncation thresholds (in lines)
-const SHELL_TRUNCATE_THRESHOLD = 10;
-const SHELL_HEAD_LINES = 5;
-const SHELL_TAIL_LINES = 5;
+// Non-configurable thresholds (agent response and tool output follow shell settings)
 const AGENT_RESPONSE_TRUNCATE_THRESHOLD = 20;
 const AGENT_RESPONSE_HEAD_LINES = 15;
 const TOOL_TRUNCATE_THRESHOLD = 20;
 const TOOL_HEAD_LINES = 5;
 const TOOL_TAIL_LINES = 5;
-const RECALL_EXPAND_MAX_LINES = 100;
 
 export class ContextManager {
   private exchanges: Exchange[] = [];
@@ -101,7 +95,8 @@ export class ContextManager {
    * Build the <shell_context> block for the agent prompt.
    * Pipeline: window → truncate → format
    */
-  getContext(budget: number = DEFAULT_BUDGET): string {
+  getContext(budget?: number): string {
+    budget ??= getSettings().contextBudget;
     let exchanges = this.applyWindow(this.exchanges);
     exchanges = this.applyTruncation(exchanges, budget);
     return this.formatContext(exchanges);
@@ -187,7 +182,7 @@ export class ContextManager {
           lines.slice(s, e).join("\n") +
           `\n[showing lines ${s + 1}-${Math.min(e, total)} of ${total}]`,
         );
-      } else if (total > RECALL_EXPAND_MAX_LINES) {
+      } else if (total > getSettings().recallExpandMaxLines) {
         // Too large — tell the agent to narrow down
         results.push(
           `#${ex.id}: output is ${total} lines, too large to expand fully. ` +
@@ -265,8 +260,9 @@ export class ContextManager {
 
   private applyWindow(
     exchanges: Exchange[],
-    windowSize: number = DEFAULT_WINDOW_SIZE,
+    windowSize?: number,
   ): Exchange[] {
+    windowSize ??= getSettings().contextWindowSize;
     return exchanges.slice(-windowSize);
   }
 
@@ -280,11 +276,12 @@ export class ContextManager {
     // Pass 1: per-type truncation
     for (const ex of result) {
       if (ex.type === "shell_command") {
+        const s = getSettings();
         ex.output = truncateOutput(
           ex.output,
-          SHELL_TRUNCATE_THRESHOLD,
-          SHELL_HEAD_LINES,
-          SHELL_TAIL_LINES,
+          s.shellTruncateThreshold,
+          s.shellHeadLines,
+          s.shellTailLines,
           ex.id,
         );
       } else if (ex.type === "agent_response") {
