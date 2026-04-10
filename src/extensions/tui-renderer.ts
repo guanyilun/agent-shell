@@ -86,7 +86,17 @@ export default function activate({ bus }: ExtensionContext): void {
   bus.on("agent:tool-started", (e) => {
     stopCurrentSpinner();
     currentToolKind = e.kind;
-    showToolCall(e.title, lastCommand, e);
+    if (e.title === "user_shell") {
+      // Minimal annotation — PTY echo will show the output
+      closeToolLine();
+      if (!renderer) startAgentResponse();
+      renderer!.flush();
+      const cmd = (e.rawInput as any)?.command || "";
+      renderer!.writeLine(`${p.dim}▶ user_shell: ${cmd}${p.reset}`);
+      hadToolCalls = true;
+    } else {
+      showToolCall(e.title, lastCommand, e);
+    }
     lastCommand = "";
   });
 
