@@ -10,7 +10,9 @@
  * silently dropped. Alternative renderers (web UI, logging, minimal)
  * can subscribe to the same events.
  */
-import { MarkdownRenderer } from "../utils/markdown.js";
+import { highlight } from "cli-highlight";
+import { MarkdownRenderer, wrapLine } from "../utils/markdown.js";
+import { createFencedBlockTransform } from "../utils/stream-transform.js";
 import { palette as p } from "../utils/palette.js";
 import {
   renderToolCall,
@@ -25,7 +27,28 @@ import type { DiffResult } from "../utils/diff.js";
 import { getSettings } from "../settings.js";
 import type { ExtensionContext } from "../types.js";
 
-export default function activate({ bus, getAcpClient }: ExtensionContext): void {
+/** Encode a PNG buffer as a terminal inline image escape sequence. */
+function encodeImageForTerminal(data: Buffer): string | null {
+  const b64 = data.toString("base64");
+  if (process.env.TERM_PROGRAM === "iTerm.app" || process.env.TERM_PROGRAM === "WezTerm") {
+    return `\x1b]1337;File=inline=1;size=${data.length};preserveAspectRatio=1:${b64}\x07`;
+  }
+  if (process.env.KITTY_WINDOW_ID || process.env.TERM_PROGRAM === "ghostty") {
+    const chunks: string[] = [];
+    for (let i = 0; i < b64.length; i += 4096) {
+      const chunk = b64.slice(i, i + 4096);
+      const isLast = i + 4096 >= b64.length;
+      chunks.push(i === 0
+        ? `\x1b_Gf=100,t=d,a=T,m=${isLast ? 0 : 1};${chunk}\x1b\\`
+        : `\x1b_Gm=${isLast ? 0 : 1};${chunk}\x1b\\`);
+    }
+    return chunks.join("");
+  }
+  return null;
+}
+
+export default function activate(ctx: ExtensionContext): void {
+  const { bus, getAcpClient, define } = ctx;
   let spinner: SpinnerState | null = null;
   let renderer: MarkdownRenderer | null = null;
   let commandOutputBuffer = "";
@@ -44,6 +67,16 @@ export default function activate({ bus, getAcpClient }: ExtensionContext): void 
     expandedLines?: string[]; // cached full render
     expanded: boolean;
   } | null = null;
+
+  // ── Register fenced block transform (code blocks → ContentBlock) ──
+  // Nobody is special — tui-renderer uses the same primitive as any extension.
+  createFencedBlockTransform(bus, {
+    open: /^```(\w*)\s*$/,
+    close: /^```\s*$/,
+    transform(match, content) {
+      return { type: "code-block", language: match[1] || "", code: content };
+    },
+  });
 
   // ── Event subscriptions ─────────────────────────────────────
 
@@ -73,7 +106,38 @@ export default function activate({ bus, getAcpClient }: ExtensionContext): void 
     }
   });
 
-  bus.on("agent:response-chunk", (e) => writeAgentText(e.text));
+  bus.on("agent:response-chunk", (e) => {
+    if (e.blocks) {
+      // Inject spacing: append \n to text blocks that precede non-text blocks
+      const blocks = e.blocks;
+      for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i]!;
+        const next = blocks[i + 1];
+        if (block.type === "text" && next && next.type !== "text") {
+          block.text += "\n";
+        }
+      }
+      for (const block of blocks) {
+        switch (block.type) {
+          case "text":
+            if (block.text) writeAgentText(block.text);
+            break;
+          case "code-block":
+            writeCodeBlock(block.language, block.code);
+            break;
+          case "image":
+            writeInlineImage(block.data);
+            break;
+          case "raw":
+            flushForRaw();
+            process.stdout.write(block.escape);
+            break;
+        }
+      }
+    } else {
+      writeAgentText(e.text);
+    }
+  });
   bus.on("agent:response-done", () => {
     isThinking = false;
     endAgentResponse();
@@ -225,6 +289,54 @@ export default function activate({ bus, getAcpClient }: ExtensionContext): void 
     if (needsGap) process.stdout.write("\n");
     renderer!.push(text);
     flushOutput();
+  }
+
+  /** Render a code block with syntax highlighting (extracted from MarkdownRenderer). */
+  // Register named handler — extensions can advise this
+  define("render:code-block", (language: string, code: string) => {
+    flushForRaw();
+    if (language) {
+      renderer!.writeLine(`${p.dim}${language}${p.reset}`);
+    }
+    let highlighted: string;
+    try {
+      highlighted = highlight(code, { language: language || undefined });
+    } catch {
+      highlighted = `${p.success}${code}${p.reset}`;
+    }
+    const termW = process.stdout.columns || 100;
+    const contentWidth = Math.min(90, termW - 2);
+    for (const line of highlighted.split("\n")) {
+      const indented = `  ${line}`;
+      const wrapped = wrapLine(indented, contentWidth);
+      for (const wl of wrapped) {
+        renderer!.writeLine(wl);
+      }
+    }
+  });
+
+  function writeCodeBlock(language: string, code: string): void {
+    ctx.call("render:code-block", language, code);
+  }
+
+  /** Flush markdown renderer and prepare for raw stdout writes. */
+  function flushForRaw(): void {
+    closeToolLine();
+    stopCurrentSpinner();
+    if (!renderer) startAgentResponse();
+    renderer!.flush();
+  }
+
+  define("render:image", (data: Buffer) => {
+    flushForRaw();
+    const escape = encodeImageForTerminal(data);
+    if (escape) {
+      process.stdout.write("  " + escape + "\n");
+    }
+  });
+
+  function writeInlineImage(data: Buffer): void {
+    ctx.call("render:image", data);
   }
 
   function showToolCall(

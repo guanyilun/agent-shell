@@ -21,6 +21,9 @@ import { ContextManager } from "./context-manager.js";
 import { AcpClient } from "./acp-client.js";
 import type { AgentShellConfig, ExtensionContext } from "./types.js";
 import { setPalette } from "./utils/palette.js";
+import * as streamTransform from "./utils/stream-transform.js";
+import * as settingsMod from "./settings.js";
+import { HandlerRegistry } from "./utils/handler-registry.js";
 
 // Re-export types that library consumers need
 export { EventBus } from "./event-bus.js";
@@ -43,6 +46,7 @@ export interface AgentShellCore {
 
 export function createCore(config: AgentShellConfig): AgentShellCore {
   const bus = new EventBus();
+  const handlers = new HandlerRegistry();
   const contextManager = new ContextManager(bus);
   const client = new AcpClient({ bus, contextManager, config });
 
@@ -91,6 +95,12 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
         getAcpClient: () => client,
         quit: opts.quit,
         setPalette,
+        createBlockTransform: (o) => streamTransform.createBlockTransform(bus, o),
+        createFencedBlockTransform: (o) => streamTransform.createFencedBlockTransform(bus, o),
+        getExtensionSettings: settingsMod.getExtensionSettings,
+        define: (name, fn) => handlers.define(name, fn),
+        advise: (name, wrapper) => handlers.advise(name, wrapper),
+        call: (name, ...args) => handlers.call(name, ...args),
       };
     },
 

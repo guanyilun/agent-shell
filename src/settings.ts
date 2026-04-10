@@ -74,6 +74,28 @@ export function getSettings(): Settings & typeof DEFAULTS {
   return { ...DEFAULTS, ...cached };
 }
 
+/**
+ * Get settings for an extension, namespaced under its key in settings.json.
+ *
+ * Example settings.json:
+ *   { "latex-images": { "dpi": 600, "fgColor": "ffffff" } }
+ *
+ * Usage in extension:
+ *   const config = getExtensionSettings("latex-images", { dpi: 300, fgColor: "d4d4d4" });
+ *   // config.dpi === 600 (overridden), config.fgColor === "ffffff" (overridden)
+ */
+export function getExtensionSettings<T extends Record<string, unknown>>(
+  namespace: string,
+  defaults: T,
+): T {
+  const all = getSettings() as unknown as Record<string, unknown>;
+  const ext = all[namespace];
+  if (ext && typeof ext === "object" && !Array.isArray(ext)) {
+    return { ...defaults, ...(ext as Partial<T>) };
+  }
+  return defaults;
+}
+
 /** Reset cached settings (for testing or after external edit). */
 export function reloadSettings(): void {
   cached = null;

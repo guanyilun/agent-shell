@@ -24,7 +24,7 @@ export interface ShellEvents {
   // Agent interaction
   "agent:query": { query: string };
   "agent:thinking-chunk": { text: string };
-  "agent:response-chunk": { text: string };
+  "agent:response-chunk": { text: string; blocks?: ContentBlock[] };
   "agent:response-done": { response: string };
 
   // Agent lifecycle
@@ -120,6 +120,14 @@ export interface ShellEvents {
     items: { name: string; description: string }[];
   };
 }
+
+// ── Content block types (used by transform pipeline) ────────────
+
+export type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "code-block"; language: string; code: string }
+  | { type: "image"; data: Buffer }
+  | { type: "raw"; escape: string };
 
 type Listener<T> = (payload: T) => void;
 type PipeListener<T> = (payload: T) => T;
