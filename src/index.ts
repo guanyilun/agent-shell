@@ -217,6 +217,11 @@ async function main(): Promise<void> {
   if (process.env.DEBUG) {
     console.error('[agent-sh] Creating Shell...');
   }
+
+  // Small delay on macOS to ensure we're fully in the foreground process group
+  // before spawning the PTY. This prevents SIGTTOU suspension.
+  await new Promise(resolve => setTimeout(resolve, 100));
+
   const shell = new Shell({
     bus,
     cols,
