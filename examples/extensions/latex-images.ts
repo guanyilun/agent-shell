@@ -115,8 +115,6 @@ export default function activate(ctx: ExtensionContext) {
     return;
   }
 
-  bus.emit("ui:info", { message: "latex-images: ready (latex + dvipng)" });
-
   // Handle inline $$...$$ display math
   ctx.createBlockTransform({
     open: "$$",
@@ -124,10 +122,7 @@ export default function activate(ctx: ExtensionContext) {
     transform(latex) {
       const png = renderEquation(latex);
       if (!png) return null;
-      return [
-        { type: "text", text: "\n" },
-        { type: "image", data: png },
-      ];
+      return { type: "image", data: png };
     },
   });
 
