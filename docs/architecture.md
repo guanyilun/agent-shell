@@ -98,6 +98,7 @@ agent-sh exposes a Unix domain socket for external tools (MCP servers, pi extens
 | `shell/exec` | `{ command }` | `{ output, cwd }` | Execute command in the user's PTY, capture output |
 | `shell/cwd` | `{}` | `{ cwd }` | Get current working directory |
 | `shell/info` | `{}` | `{ shell, agentSh }` | Get shell metadata |
+| `shell/recall` | `{ operation, query?, ids? }` | `{ result }` | Search, expand, or browse session exchange history |
 
 ### Example
 
@@ -106,7 +107,7 @@ agent-sh exposes a Unix domain socket for external tools (MCP servers, pi extens
 ← {"jsonrpc":"2.0","id":1,"result":{"output":"/Users/me/Downloads","cwd":"/Users/me/Downloads"}}
 ```
 
-The socket path is available via the `AGENT_SH_SOCKET` environment variable. The protocol is extensible — new methods (e.g. `shell/env`, `shell/recall`) can be added without breaking existing clients.
+The socket path is available via the `AGENT_SH_SOCKET` environment variable. The protocol is extensible — new methods can be added without breaking existing clients.
 
 ### How agents discover the socket
 

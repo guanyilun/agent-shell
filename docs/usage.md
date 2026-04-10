@@ -213,6 +213,6 @@ The agent automatically receives structured context about your shell session wit
 
 - **Current working directory** — tracked via OSC 7 escape sequences
 - **Recent commands and output** — truncated summaries of recent shell commands, agent queries, and tool executions
-- **Recall tool** — the agent can run `__shell_recall --search "query"` or `__shell_recall --expand 42` to retrieve full output of any past exchange
+- **Recall tool** — the agent can use the `shell_recall` MCP tool to search, expand, or browse session history (e.g., retrieve full output of a truncated exchange)
 
 This means you can run a failing command, then type `> fix this` and the agent knows exactly what happened. For long outputs, the agent sees a truncated summary and can recall the full content on demand.

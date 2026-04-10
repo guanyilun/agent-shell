@@ -190,22 +190,22 @@ export class ContextManager {
   }
 
   /**
-   * Parse and handle __shell_recall commands.
+   * Parse and handle shell_recall commands.
    */
   handleRecallCommand(command: string): string {
-    const args = command.replace(/^__shell_recall\s*/, "").trim();
+    const args = command.replace(/^_*shell_recall\s*/, "").trim();
 
     if (!args || args === "--help") {
       return [
         "Usage:",
-        "  __shell_recall                    Browse recent exchanges",
-        "  __shell_recall --search <query>   Search all exchanges",
-        "  __shell_recall --expand <id,...>   Show full content of exchanges",
+        "  shell_recall                    Browse recent exchanges",
+        "  shell_recall --search <query>   Search all exchanges",
+        "  shell_recall --expand <id,...>   Show full content of exchanges",
         "",
         "Examples:",
-        '  __shell_recall --search "test fail"',
-        "  __shell_recall --expand 41",
-        "  __shell_recall --expand 41,42,43",
+        '  shell_recall --search "test fail"',
+        "  shell_recall --expand 41",
+        "  shell_recall --expand 41,42,43",
       ].join("\n");
     }
 
@@ -289,11 +289,11 @@ export class ContextManager {
       const ex = result[i]!;
       const before = this.exchangeSize(ex);
       if (ex.type === "shell_command") {
-        ex.output = `[output omitted, use __shell_recall --expand ${ex.id}]`;
+        ex.output = `[output omitted, use shell_recall tool to expand id ${ex.id}]`;
       } else if (ex.type === "tool_execution") {
-        ex.output = `[output omitted, use __shell_recall --expand ${ex.id}]`;
+        ex.output = `[output omitted, use shell_recall tool to expand id ${ex.id}]`;
       } else if (ex.type === "agent_response") {
-        ex.response = `[response omitted, use __shell_recall --expand ${ex.id}]`;
+        ex.response = `[response omitted, use shell_recall tool to expand id ${ex.id}]`;
       }
       totalSize -= before - this.exchangeSize(ex);
     }
@@ -308,7 +308,7 @@ export class ContextManager {
     let out = "<shell_context>\n";
     out += `cwd: ${this.currentCwd}\n`;
     out += `session: ${totalCount} exchanges, ${elapsed}m elapsed\n`;
-    out += `[hint: run \`__shell_recall --search "query"\` or \`__shell_recall --expand ID\` to retrieve truncated content]\n`;
+    out += `[hint: use the shell_recall tool to retrieve truncated content — search(query) or expand(ids)]\n`;
 
     for (const ex of exchanges) {
       out += "\n" + this.formatExchangeTruncated(ex);
@@ -448,7 +448,7 @@ function truncateOutput(
   const omitted = lines.length - headLines - tailLines;
   return [
     ...lines.slice(0, headLines),
-    `[... ${omitted} lines truncated, use __shell_recall --expand ${id} to see full output ...]`,
+    `[... ${omitted} lines truncated, use shell_recall tool with expand and id ${id} to see full output ...]`,
     ...lines.slice(-tailLines),
   ].join("\n");
 }
@@ -464,7 +464,7 @@ function truncateHead(
 
   return [
     ...lines.slice(0, headLines),
-    `[... truncated, use __shell_recall --expand ${id} for full response ...]`,
+    `[... truncated, use shell_recall tool with expand and id ${id} for full response ...]`,
   ].join("\n");
 }
 

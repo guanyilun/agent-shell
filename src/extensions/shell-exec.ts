@@ -13,9 +13,10 @@
  *
  * ## Socket protocol (JSON-RPC 2.0, newline-delimited)
  *
- *   shell/exec   { command: string }  → { output, cwd }
- *   shell/cwd    {}                   → { cwd }
- *   shell/info   {}                   → { busy, shell }
+ *   shell/exec    { command: string }  → { output, cwd }
+ *   shell/cwd     {}                   → { cwd }
+ *   shell/info    {}                   → { busy, shell }
+ *   shell/recall  { operation, ... }   → { result }
  */
 
 import * as net from "node:net";
@@ -101,6 +102,30 @@ export default function activate(
           shell: process.env.SHELL || "unknown",
           agentSh: true,
         };
+
+      case "shell/recall": {
+        const operation = (params?.operation as string) || "browse";
+        switch (operation) {
+          case "search": {
+            const query = params?.query;
+            if (typeof query !== "string" || !query) {
+              throw rpcError(-32602, "Missing required parameter: query");
+            }
+            return { result: contextManager.search(query) };
+          }
+          case "expand": {
+            const ids = params?.ids;
+            if (!Array.isArray(ids) || ids.length === 0) {
+              throw rpcError(-32602, "Missing required parameter: ids (array of numbers)");
+            }
+            return { result: contextManager.expand(ids.map(Number)) };
+          }
+          case "browse":
+            return { result: contextManager.getRecentSummary() };
+          default:
+            throw rpcError(-32602, `Unknown recall operation: ${operation}`);
+        }
+      }
 
       default:
         throw rpcError(-32601, `Method not found: ${method}`);

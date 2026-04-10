@@ -52,6 +52,36 @@ const USER_SHELL_TOOL = {
   },
 };
 
+const SHELL_RECALL_TOOL = {
+  name: "shell_recall",
+  description:
+    "Retrieve past shell commands, agent responses, and tool executions from the session history. " +
+    "Use this to look up truncated output, search for previous commands or errors, " +
+    "or browse recent exchanges. Three operations: " +
+    '"search" finds exchanges matching a query, ' +
+    '"expand" retrieves full untruncated content by exchange ID, ' +
+    '"browse" lists recent exchange summaries.',
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      operation: {
+        type: "string",
+        enum: ["search", "expand", "browse"],
+        description: 'Operation to perform (default: "browse")',
+      },
+      query: {
+        type: "string",
+        description: 'Search query (required for "search" operation)',
+      },
+      ids: {
+        type: "array",
+        items: { type: "number" },
+        description: 'Exchange IDs to expand (required for "expand" operation)',
+      },
+    },
+  },
+};
+
 // ── agent-sh socket client (JSON-RPC 2.0) ──────────────────────
 
 let rpcId = 0;
@@ -119,31 +149,38 @@ async function handleRequest(id: unknown, method: string, params: any): Promise<
       break;
 
     case "tools/list":
-      sendResult(id, { tools: [USER_SHELL_TOOL] });
+      sendResult(id, { tools: [USER_SHELL_TOOL, SHELL_RECALL_TOOL] });
       break;
 
     case "tools/call": {
       const toolName = params?.name;
-      if (toolName !== "user_shell") {
-        sendError(id, -32602, `Unknown tool: ${toolName}`);
-        return;
-      }
-
-      const command = params?.arguments?.command;
-      if (!command || typeof command !== "string") {
-        sendError(id, -32602, "Missing required parameter: command");
-        return;
-      }
+      const args = params?.arguments ?? {};
 
       try {
-        const result = await callSocket("shell/exec", { command }) as { output: string; cwd: string };
+        let text: string;
+
+        if (toolName === "user_shell") {
+          const command = args.command;
+          if (!command || typeof command !== "string") {
+            sendError(id, -32602, "Missing required parameter: command");
+            return;
+          }
+          const result = await callSocket("shell/exec", { command }) as { output: string; cwd: string };
+          text = result.output || "(no output)";
+        } else if (toolName === "shell_recall") {
+          const result = await callSocket("shell/recall", {
+            operation: args.operation || "browse",
+            query: args.query,
+            ids: args.ids,
+          }) as { result: string };
+          text = result.result || "(no results)";
+        } else {
+          sendError(id, -32602, `Unknown tool: ${toolName}`);
+          return;
+        }
+
         sendResult(id, {
-          content: [
-            {
-              type: "text",
-              text: result.output || "(no output)",
-            },
-          ],
+          content: [{ type: "text", text }],
         });
       } catch (err) {
         sendResult(id, {
