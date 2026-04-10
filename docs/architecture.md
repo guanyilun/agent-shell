@@ -19,7 +19,7 @@ index.ts — interactive terminal frontend:
   │     tuiRenderer       — markdown rendering, inline diffs, thinking display, spinner
   │     slashCommands     — /help, /clear, /copy, /compact, /quit
   │     fileAutocomplete  — @ file path completion
-  │     shellRecall       — __shell_recall terminal interception
+  │     shellRecall       — shell_recall terminal interception
   │
   ├── Shared utilities:
   │     palette           — semantic color system (accent, success, warning, error, muted)
@@ -98,7 +98,7 @@ agent-sh exposes a Unix domain socket for external tools (MCP servers, pi extens
 | `shell/exec` | `{ command }` | `{ output, cwd }` | Execute command in the user's PTY, capture output |
 | `shell/cwd` | `{}` | `{ cwd }` | Get current working directory |
 | `shell/info` | `{}` | `{ shell, agentSh }` | Get shell metadata |
-| `shell/recall` | `{ operation, query?, ids? }` | `{ result }` | Search, expand, or browse session exchange history |
+| `shell/recall` | `{ operation, query?, ids?, start?, end? }` | `{ result }` | Search, expand, or browse session exchange history |
 
 ### Example
 
@@ -113,8 +113,8 @@ The socket path is available via the `AGENT_SH_SOCKET` environment variable. The
 
 Two paths, same backend:
 
-1. **MCP server** (universal) — the shell-exec extension registers an MCP server via the `session:configure` pipe. ACP agents that forward `mcpServers` (like claude-agent-acp) discover a `user_shell` tool automatically.
-2. **Agent extensions** (agent-specific) — extensions like pi-user-shell read `AGENT_SH_SOCKET` from the environment and connect directly. This is the path for pi-acp.
+1. **MCP server** (universal) — the shell-exec extension registers an MCP server via the `session:configure` pipe. ACP agents that forward `mcpServers` (like claude-agent-acp) discover `shell_cwd`, `user_shell`, and `shell_recall` tools automatically.
+2. **Agent extensions** (agent-specific) — the pi extension (`examples/pi-agent-sh.ts`, installed to `~/.pi/agent/extensions/pi-agent-sh/`) reads `AGENT_SH_SOCKET` from the environment and connects directly. This is the path for pi-acp.
 
 ## EventBus
 
@@ -137,9 +137,10 @@ agent-sh/
 │   ├── output-parser.ts    # OSC parsing, command boundary detection
 │   ├── acp-client.ts       # ACP protocol, terminal execution, session management
 │   ├── context-manager.ts  # Exchange log, context assembly, recall API
+│   ├── settings.ts         # User settings (~/.agent-sh/settings.json)
 │   ├── extension-loader.ts # Extension loading (-e, settings.json, extensions dir)
 │   ├── executor.ts         # Isolated child process execution
-│   ├── mcp-server.ts       # Standalone MCP server (user_shell tool via socket)
+│   ├── mcp-server.ts       # Standalone MCP server (shell_cwd, user_shell, shell_recall via socket)
 │   ├── types.ts            # Shared type definitions
 │   ├── utils/
 │   │   ├── palette.ts      # Semantic color palette (accent/success/warning/error/muted)
@@ -155,12 +156,13 @@ agent-sh/
 │       ├── tui-renderer.ts       # Terminal rendering (markdown, spinner, tools)
 │       ├── slash-commands.ts     # /help, /clear, /copy, /compact, /quit
 │       ├── file-autocomplete.ts  # @ file path completion
-│       ├── shell-recall.ts      # __shell_recall terminal interception
+│       ├── shell-recall.ts      # shell_recall terminal interception
 │       └── shell-exec.ts       # Unix socket server + MCP registration for PTY exec
 ├── examples/
+│   ├── pi-agent-sh.ts              # Pi extension: shell_cwd, user_shell, shell_recall tools
 │   └── extensions/
-│       ├── interactive-prompts.ts # Example: permission gates (opt-in)
-│       └── solarized-theme.ts    # Example: color theme via setPalette()
+│       ├── interactive-prompts.ts   # Example: permission gates (opt-in)
+│       └── solarized-theme.ts      # Example: color theme via setPalette()
 ├── package.json
 └── tsconfig.json
 ```
