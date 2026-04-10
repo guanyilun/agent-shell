@@ -184,60 +184,71 @@ All communication between components flows through a typed EventBus. Components 
 - **emitPipeAsync/onPipeAsync** — async transform chains (e.g., `permission:request` where extensions prompt the user and return a decision, `shell:exec-request` where Shell executes a command in the PTY)
 - **emitTransform** — transform-then-notify: runs pipe listeners to transform the payload, then emits the result to `on` listeners. Used for content streams where extensions can modify data before renderers see it.
 
+### Named Handler Registry
+
+Separate from the event bus, a **handler registry** provides Emacs-style advice for named processing steps. Built-in extensions register handlers with `define`, user extensions wrap them with `advise`:
+
+```
+ctx.define("render:code-block", defaultHandler)     ← tui-renderer
+ctx.advise("render:code-block", latexWrapper)        ← latex-images extension
+ctx.advise("render:code-block", mermaidWrapper)      ← mermaid extension
+→ Call: mermaid → latex → default (first to not call next() wins)
+```
+
+This complements the event bus: events are for **data flow** (content streaming, notifications), handlers are for **named processing steps** (render this code block, display this image). See [Extensions — Named Handlers](extensions.md#named-handlers-advice-system).
+
 ### Content Transform Pipeline
 
-Agent content streams (`agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-output-chunk`) use `emitTransform`. This creates a two-phase flow:
+Agent content streams use `emitTransform` — a two-phase emission that runs pipe listeners (transforms) first, then notifies `on` listeners (renderers) with the transformed result.
 
 ```
-AcpClient
-  → emitTransform("agent:response-chunk", { text })
-      Phase 1 (onPipe): transform extensions modify text
-        → latex-ext:    $E=mc^2$ → terminal image escape sequence
-        → diagram-ext:  ```mermaid → rendered diagram
-        → any extension can register here
-      Phase 2 (on): renderers see the final transformed text
-        → tui-renderer renders to terminal
-        → web-renderer renders to HTML
-        → logger captures for debugging
+AcpClient emitTransform("agent:response-chunk", { text })
+  │
+  │ Phase 1 — onPipe transforms (nobody is special):
+  │   createBlockTransform:        text → finds $$...$$ → image blocks
+  │   createFencedBlockTransform:  text → finds ```...``` → code-block blocks
+  │   extension onPipe:            code-block → claims latex → image blocks
+  │
+  │ Phase 2 — on renderers:
+  │   tui-renderer:  text → markdown, code-block → highlight, image → terminal protocol
+  │   (any renderer: web UI, logger, etc.)
 ```
 
-Transform extensions register with `bus.onPipe("agent:response-chunk", ...)` and modify the payload. Renderers register with `bus.on("agent:response-chunk", ...)` and consume the final result. Since `onPipe` runs first, transforms always complete before any renderer sees the content.
+The tui-renderer is just an extension. It uses the same `createFencedBlockTransform` primitive for ` ``` ` detection that any extension can use for `:::` or `~~~`. No special privileges.
 
-This means the tui-renderer is just an extension — it has no privileged access to content. A LaTeX extension, a syntax highlighter, or a diagram renderer all compose through the same bus, and any renderer (terminal, web, log) sees the same transformed output.
+### Content Blocks
 
-### Streaming Transforms
-
-Agent responses arrive as a stream of small chunks. A pattern like `$E=mc^2$` may span multiple chunks. Transform extensions handle this by **buffering** — holding back text until a pattern is complete, and releasing the safe portion:
-
-```
-chunk 1: "The energy is $E=mc"    → release "The energy is ", hold "$E=mc"
-chunk 2: "^2$ which means"        → transform "$E=mc^2$", release result + " which means"
-```
-
-The pipe supports this naturally — the extension returns only the ready-to-render portion and keeps a buffer internally. On `agent:response-done` (also piped via `emitTransform`), extensions flush any remaining buffered text.
+The pipeline carries **typed content blocks**:
 
 ```typescript
-// Streaming transform skeleton
-let buf = "";
-
-bus.onPipe("agent:response-chunk", (e) => {
-  buf += e.text;
-  const { ready, pending } = splitAtSafeBoundary(buf, /\$[^$]*\$/);
-  buf = pending;
-  return { ...e, text: ready };
-});
-
-bus.onPipe("agent:response-done", (e) => {
-  if (buf) {
-    // Pattern never closed — flush raw text
-    bus.emitTransform("agent:response-chunk", { text: buf });
-    buf = "";
-  }
-  return e;
-});
+type ContentBlock =
+  | { type: "text"; text: string }                          // markdown text
+  | { type: "code-block"; language: string; code: string }  // fenced code block
+  | { type: "image"; data: Buffer }                         // PNG → terminal image protocol
+  | { type: "raw"; escape: string }                         // raw terminal escape
 ```
 
+Extensions return content blocks from transforms. The tui-renderer dispatches each type — extensions never write to `process.stdout` directly or detect terminal protocols.
+
+### Composable Primitives
+
+Three tools, each operating on a disjoint domain. They compose regardless of registration order:
+
+| Primitive | Operates on | Produces | Use case |
+|---|---|---|---|
+| `createBlockTransform` | text blocks (inline delimiters) | any block type | `$$...$$`, `<<...>>` |
+| `createFencedBlockTransform` | text blocks (line fences) | any block type | ` ``` `, `:::`, `~~~` |
+| `bus.onPipe` directly | any block type | any block type | claim code-blocks, filter, enrich |
+
+Each primitive processes only its input type and passes everything else through. This means extensions don't need to coordinate ordering — the tool choice determines the behavior.
+
+### Streaming and Buffering
+
+Both primitives handle streaming automatically — buffering across chunk boundaries, safe boundary detection, and flush-on-done. Extension authors never manage buffers manually.
+
 Events using `emitTransform`: `agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-output-chunk`, `agent:response-done`.
+
+See [Extensions — Content Transform Pipeline](extensions.md#content-transform-pipeline) for full documentation and examples.
 
 ## Project Structure
 
@@ -264,9 +275,10 @@ agent-sh/
 │   │   ├── diff-renderer.ts# Syntax-highlighted diff display (split/unified/summary)
 │   │   ├── box-frame.ts    # Bordered TUI panels (rounded/square/double/heavy)
 │   │   ├── tool-display.ts # Width-adaptive tool call/result rendering
-│   │   ├── line-editor.ts  # Readline-style line editor (pure logic, no I/O)
-│   │   ├── file-watcher.ts # File change detection for agent tool writes
-│   │   └── markdown.ts     # Streaming markdown → ANSI renderer
+│   │   ├── line-editor.ts       # Readline-style line editor (pure logic, no I/O)
+│   │   ├── stream-transform.ts  # Block transform helper for content pipeline
+│   │   ├── file-watcher.ts      # File change detection for agent tool writes
+│   │   └── markdown.ts          # Streaming markdown → ANSI renderer
 │   └── extensions/
 │       ├── tui-renderer.ts       # Terminal rendering (markdown, spinner, tools)
 │       ├── slash-commands.ts     # /help, /clear, /copy, /compact, /quit
@@ -277,7 +289,8 @@ agent-sh/
 │   ├── pi-agent-sh.ts              # Pi extension: shell_cwd, user_shell, shell_recall tools
 │   └── extensions/
 │       ├── interactive-prompts.ts   # Example: permission gates (opt-in)
-│       └── solarized-theme.ts      # Example: color theme via setPalette()
+│       ├── solarized-theme.ts      # Example: color theme via setPalette()
+│       └── latex-images.ts         # Example: LaTeX → inline terminal images via content pipeline
 ├── package.json
 └── tsconfig.json
 ```
