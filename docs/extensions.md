@@ -93,17 +93,17 @@ Built-in extensions register named processing steps with `ctx.define`. User exte
 
 ```typescript
 // tui-renderer defines the default code block handler
-ctx.define("render:code-block", (language, code) => {
-  syntaxHighlight(language, code);
+ctx.define("render:code-block", (language, code, width) => {
+  syntaxHighlight(language, code, width);
 });
 
 // Your extension wraps it
-ctx.advise("render:code-block", (next, language, code) => {
+ctx.advise("render:code-block", (next, language, code, width) => {
   if (language === "latex") {
     renderLatexImage(code);     // handle it yourself
     return;                     // don't call next — you replaced the handler
   }
-  next(language, code);          // not yours — pass through to the original
+  next(language, code, width);   // not yours — pass through to the original
 });
 ```
 
@@ -111,26 +111,26 @@ The `next` parameter is the key. It's the previous handler (or the one before th
 
 ```typescript
 // AROUND — conditionally call the original
-ctx.advise("render:code-block", (next, lang, code) => {
+ctx.advise("render:code-block", (next, lang, code, width) => {
   if (lang === "mermaid") return renderMermaid(code);
-  return next(lang, code);
+  return next(lang, code, width);
 });
 
 // BEFORE — do something, then call the original
-ctx.advise("render:code-block", (next, lang, code) => {
+ctx.advise("render:code-block", (next, lang, code, width) => {
   console.log(`rendering: ${lang}`);
-  return next(lang, code);
+  return next(lang, code, width);
 });
 
 // AFTER — call the original, then do something
-ctx.advise("render:code-block", (next, lang, code) => {
-  const result = next(lang, code);
+ctx.advise("render:code-block", (next, lang, code, width) => {
+  const result = next(lang, code, width);
   logMetrics(lang, code.length);
   return result;
 });
 
 // OVERRIDE — replace entirely, never call next
-ctx.advise("render:code-block", (_next, lang, code) => {
+ctx.advise("render:code-block", (_next, lang, code, width) => {
   return myCustomRenderer(lang, code);
 });
 ```
@@ -141,7 +141,7 @@ The tui-renderer registers these named handlers that extensions can advise:
 
 | Handler | Arguments | Description |
 |---|---|---|
-| `render:code-block` | `(language: string, code: string)` | Render a fenced code block (default: syntax highlighting) |
+| `render:code-block` | `(language: string, code: string, width: number)` | Render a fenced code block (default: syntax highlighting) |
 | `render:image` | `(data: Buffer)` | Display an image in the terminal (default: iTerm2/Kitty protocol) |
 
 ### Multiple advisors chain
@@ -320,6 +320,97 @@ export default function activate(ctx: ExtensionContext) {
   });
 }
 ```
+
+## Rendering Architecture
+
+The tui-renderer is the built-in extension that turns events and content blocks into terminal output. Understanding its internals helps when writing extensions that advise rendering handlers or emit UI events.
+
+### How content reaches the screen
+
+```
+ContentBlock (from transform pipeline)
+    │
+    ├── text        → MarkdownRenderer.push(chunk)  → drainLines() → writer
+    ├── code-block  → ctx.call("render:code-block")  → drainLines() → writer
+    ├── image       → ctx.call("render:image")        → writer
+    └── raw         → writer.write(escape)
+```
+
+All output flows through an **OutputWriter** — an injectable interface with `write(text)` and `columns` (terminal width). The default `StdoutWriter` forwards to `process.stdout`. Extensions should never call `process.stdout.write` directly — use the render handlers or emit events instead.
+
+### The line protocol
+
+Rendering components follow a **return lines, don't write** convention:
+
+- `renderBoxFrame(content, opts)` → `string[]`
+- `renderDiff(diff, opts)` → `string[]`
+- `renderToolCall(tool, width)` → `string[]`
+- `renderSpinnerLine(state, label, opts)` → `string`
+- `MarkdownRenderer.drainLines()` → `string[]`
+
+The tui-renderer collects lines from these components and writes them through the OutputWriter. This makes every component testable in isolation — call it with arguments, assert on the returned strings.
+
+### MarkdownRenderer
+
+The `MarkdownRenderer` is a streaming line accumulator:
+
+```typescript
+const md = new MarkdownRenderer(width);  // width in columns
+md.push("Hello **world**\n");            // buffer text, process complete lines
+md.writeLine("arbitrary pre-formatted line");
+md.flush();                              // process any remaining buffered text
+const lines: string[] = md.drainLines(); // extract all accumulated lines
+```
+
+It handles heading formatting, inline styles (bold, italic, code, links), lists, blockquotes, and word-wrapping with ANSI code preservation. Lines include a 2-space left indent.
+
+`printTopBorder()` and `printBottomBorder()` add response box borders to the line buffer.
+
+### Writing a render handler
+
+The `render:code-block` and `render:image` handlers are the extension points for custom rendering. When you advise them, your handler runs inside the tui-renderer's rendering context — the `MarkdownRenderer` is active and you can push lines into it.
+
+**Replacing a code block with an image:**
+
+```typescript
+ctx.advise("render:code-block", (next, language, code, width) => {
+  if (language !== "mermaid") return next(language, code, width);
+
+  const png = renderMermaidToPng(code);
+  if (!png) return next(language, code, width);  // fallback to syntax highlight
+
+  // Use the image handler — it knows about iTerm2/Kitty/Ghostty protocols
+  ctx.call("render:image", png);
+});
+```
+
+**Replacing a code block with custom text:**
+
+```typescript
+ctx.advise("render:code-block", (next, language, code, width) => {
+  if (language !== "csv") return next(language, code, width);
+
+  // Emit formatted lines through the bus — they'll appear in the response box
+  const { bus } = ctx;
+  const table = formatCsvAsTable(code, width);
+  bus.emit("ui:info", { message: table });
+});
+```
+
+### Emitting UI events
+
+Extensions can show messages without touching the renderer directly:
+
+```typescript
+bus.emit("ui:info", { message: "Operation completed" });   // dimmed text
+bus.emit("ui:error", { message: "Something went wrong" }); // red error
+```
+
+These render outside the response box and work regardless of renderer state.
+
+### Render state
+
+The tui-renderer maintains a `RenderState` that tracks the current phase of rendering (idle, responding, tool-running), spinner state, tool output buffering, thinking display, and diff expansion. Extensions don't access this directly — they interact through the named handler system and bus events.
 
 ## Yolo Mode
 
