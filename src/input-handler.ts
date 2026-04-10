@@ -153,10 +153,15 @@ export class InputHandler {
       return;
     }
 
-    // Forward control chars that normal shell mode doesn't handle
+    // Intercept control chars for TUI (Ctrl+T, Ctrl+O) — don't pass to PTY
     if (data.length === 1 && data.charCodeAt(0) < 32 && !this.agentInputMode) {
       const code = data.charCodeAt(0);
-      // Don't intercept keys that shell mode handles: CR, Ctrl-C, Ctrl-D, Tab
+      // Keys consumed by TUI extensions
+      if (code === 0x14 || code === 0x0f) { // Ctrl+T, Ctrl+O
+        this.bus.emit("input:keypress", { key: data });
+        return;
+      }
+      // Forward other control chars that shell mode doesn't handle
       if (code !== 0x0d && code !== 0x03 && code !== 0x04 && code !== 0x09) {
         this.bus.emit("input:keypress", { key: data });
       }

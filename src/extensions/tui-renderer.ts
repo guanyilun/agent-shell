@@ -37,6 +37,7 @@ export default function activate({ bus }: ExtensionContext): void {
   let currentToolKind: string | undefined; // kind of the currently executing tool
   let isThinking = false;
   let showThinkingText = false;
+  let spinnerStartTime = 0; // preserved across spinner restarts
   let lastTruncatedDiff: {
     filePath: string;
     diff: DiffResult;
@@ -47,6 +48,7 @@ export default function activate({ bus }: ExtensionContext): void {
   // ── Event subscriptions ─────────────────────────────────────
 
   bus.on("agent:query", (e) => {
+    spinnerStartTime = 0;
     showUserQuery(e.query);
     startAgentResponse();
     startThinkingSpinner();
@@ -55,12 +57,13 @@ export default function activate({ bus }: ExtensionContext): void {
   bus.on("agent:thinking-chunk", (e) => {
     if (!isThinking) {
       isThinking = true;
-      stopCurrentSpinner();
       if (showThinkingText) {
+        stopCurrentSpinner();
         if (!renderer) startAgentResponse();
-        renderer!.writeLine(`${p.dim}${p.bold}💭 Thinking${p.reset}`);
+        renderer!.writeLine(`${p.dim}Thinking (ctrl+t to collapse)${p.reset}`);
       } else {
-        startThinkingSpinner("Thinking");
+        // Restart spinner with ctrl+t hint now that we know thinking is available
+        startThinkingSpinner();
       }
     }
     if (showThinkingText && e.text) {
@@ -90,6 +93,7 @@ export default function activate({ bus }: ExtensionContext): void {
   bus.on("agent:tool-completed", (e) => {
     showToolComplete(e.exitCode);
     currentToolKind = undefined;
+    spinnerStartTime = 0;
     startThinkingSpinner();
   });
   bus.on("agent:tool-output-chunk", (e) => writeCommandOutput(e.chunk));
@@ -269,9 +273,11 @@ export default function activate({ bus }: ExtensionContext): void {
   }
 
   function startThinkingSpinner(label = "Thinking"): void {
+    // Preserve start time if restarting (e.g. toggle), otherwise reset
+    if (!spinnerStartTime) spinnerStartTime = Date.now();
     stopCurrentSpinner();
-    const hint = label === "Thinking" ? "(ctrl+t to expand)" : undefined;
-    spinner = startSpinner(label, { hint });
+    const hint = showThinkingText ? "(ctrl+t to collapse)" : "(ctrl+t to expand)";
+    spinner = startSpinner(label, { hint, startTime: spinnerStartTime });
   }
 
   function stopCurrentSpinner(): void {
@@ -452,8 +458,31 @@ export default function activate({ bus }: ExtensionContext): void {
 
   function toggleThinkingDisplay(): void {
     showThinkingText = !showThinkingText;
-    // No visible message — the spinner label change (or thinking text appearing)
-    // is sufficient feedback. The old "Thinking display: on/off" line polluted output.
+
+    // Update spinner hint to reflect new state, even if not actively thinking
+    if (spinner) {
+      stopCurrentSpinner();
+      startThinkingSpinner();
+      return;
+    }
+
+    if (!isThinking) return;
+
+    if (showThinkingText) {
+      // Switch from spinner to streaming text
+      stopCurrentSpinner();
+      if (!renderer) startAgentResponse();
+      renderer!.writeLine(`${p.dim}Thinking (ctrl+t to collapse)${p.reset}`);
+    } else {
+      // Switch from streaming text to spinner
+      if (renderer) {
+        renderer.flush();
+        const termW = process.stdout.columns || 80;
+        const w = Math.min(80, termW);
+        renderer.writeLine(`${p.dim}${"─".repeat(w)}${p.reset}`);
+      }
+      startThinkingSpinner();
+    }
   }
 
   function showError(message: string): void {

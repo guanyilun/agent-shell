@@ -57,6 +57,8 @@ export type Exchange =
       exitCode: number | null;
       outputLines: number;
       outputBytes: number;
+      /** Who initiated this command: "user" (typed) or "agent" (via user_shell). */
+      source: "user" | "agent";
     }
   | {
       type: "agent_query";

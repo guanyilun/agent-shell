@@ -16,6 +16,7 @@ export class ContextManager {
   private sessionStart: number;
   private pendingToolCalls: ToolCallRecord[] = [];
   private firstPrompt = true;
+  private agentShellActive = false; // true while user_shell command is executing
 
   constructor(bus: EventBus) {
     this.currentCwd = process.cwd();
@@ -32,12 +33,17 @@ export class ContextManager {
         exitCode: e.exitCode,
         outputLines: lines.length,
         outputBytes: e.output.length,
+        source: this.agentShellActive ? "agent" : "user",
       });
     });
 
     bus.on("shell:cwd-change", (e) => {
       this.currentCwd = e.cwd;
     });
+
+    // Track agent-initiated shell commands (user_shell tool)
+    bus.on("shell:agent-exec-start", () => { this.agentShellActive = true; });
+    bus.on("shell:agent-exec-done", () => { this.agentShellActive = false; });
 
     // ── Subscribe to agent events ──
     bus.on("agent:query", (e) => {
@@ -366,7 +372,8 @@ export class ContextManager {
   private formatExchangeTruncated(ex: Exchange): string {
     switch (ex.type) {
       case "shell_command": {
-        let s = `#${ex.id} [shell cwd:${ex.cwd}] $ ${ex.command}\n`;
+        const label = ex.source === "agent" ? "agent → shell" : "shell";
+        let s = `#${ex.id} [${label} cwd:${ex.cwd}] $ ${ex.command}\n`;
         if (ex.output) s += indent(ex.output, "  ") + "\n";
         if (ex.exitCode !== null) s += `  exit ${ex.exitCode}\n`;
         return s;
@@ -394,8 +401,9 @@ export class ContextManager {
   private formatExchangeFull(ex: Exchange): string {
     switch (ex.type) {
       case "shell_command": {
+        const label = ex.source === "agent" ? "agent → shell" : "shell";
         const output = ex.output;
-        let s = `#${ex.id} [shell] $ ${ex.command} (${ex.outputLines} lines, ${ex.outputBytes} bytes)\n`;
+        let s = `#${ex.id} [${label}] $ ${ex.command} (${ex.outputLines} lines, ${ex.outputBytes} bytes)\n`;
         if (output) s += output + "\n";
         if (ex.exitCode !== null) s += `exit ${ex.exitCode}\n`;
         return s;
@@ -415,8 +423,10 @@ export class ContextManager {
 
   private exchangeOneLiner(ex: Exchange): string {
     switch (ex.type) {
-      case "shell_command":
-        return `#${ex.id} shell [cwd:${ex.cwd}]: ${ex.command} (${ex.outputLines} total lines, exit ${ex.exitCode ?? "?"})`;
+      case "shell_command": {
+        const label = ex.source === "agent" ? "agent → shell" : "shell";
+        return `#${ex.id} ${label} [cwd:${ex.cwd}]: ${ex.command} (${ex.outputLines} total lines, exit ${ex.exitCode ?? "?"})`;
+      }
       case "agent_query":
         return `#${ex.id} query: ${ex.query}`;
       case "agent_response": {

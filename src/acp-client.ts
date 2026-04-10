@@ -404,9 +404,10 @@ export class AcpClient {
         const toolTitle = toolId ? this.pendingToolCalls.get(toolId) : undefined;
 
         if (update.status === "completed" || update.status === "failed") {
-          // Show content only on final status, and skip for informational
-          // tools like shell_recall (output is for the agent, not the user)
-          if (toolTitle !== "shell_recall" && update.content && Array.isArray(update.content)) {
+          // Show content only on final status. Skip tools whose output the
+          // user already sees (user_shell → PTY) or is agent-only (shell_recall).
+          const skipOutput = toolTitle === "user_shell" || toolTitle === "shell_recall";
+          if (!skipOutput && update.content && Array.isArray(update.content)) {
             for (const block of update.content) {
               if (block.type === "content" && block.content?.type === "text" && block.content.text) {
                 this.bus.emit("agent:tool-output-chunk", { chunk: block.content.text });

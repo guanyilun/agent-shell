@@ -245,9 +245,10 @@ export function createSpinner(): SpinnerState {
  */
 export function startSpinner(
   label: string,
-  opts?: { color?: string; hint?: string },
+  opts?: { color?: string; hint?: string; startTime?: number },
 ): SpinnerState {
   const state = createSpinner();
+  if (opts?.startTime) state.startTime = opts.startTime;
   const color = opts?.color ?? p.accent;
 
   const hint = opts?.hint ? ` ${p.dim}${opts.hint}${p.reset}` : "";

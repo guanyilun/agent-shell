@@ -248,10 +248,12 @@ export class Shell implements InputContext {
     // stdout is paused during agent processing, so PTY output flows through
     // OutputParser (for OSC detection) but never reaches the terminal.
     this.bus.onPipeAsync("shell:exec-request", async (payload) => {
+      // Unpause stdout so the user sees the command and output in their terminal
+      this.paused = false;
+
       const output = await new Promise<{ output: string; cwd: string }>((resolve, reject) => {
         const timeout = setTimeout(() => {
           this.bus.off("shell:command-done", handler);
-          // Kill any hung command
           this.ptyProcess.write("\x03");
           reject(new Error("Shell exec timed out after 30s"));
         }, 30_000);
@@ -263,10 +265,12 @@ export class Shell implements InputContext {
         };
         this.bus.on("shell:command-done", handler);
 
-        // Start capture and write to PTY
         this.outputParser.onCommandEntered(payload.command, this.outputParser.getCwd());
         this.ptyProcess.write(payload.command + "\r");
       });
+
+      // Re-pause for remaining agent output
+      this.paused = true;
 
       return { ...payload, output: output.output, cwd: output.cwd, done: true };
     });

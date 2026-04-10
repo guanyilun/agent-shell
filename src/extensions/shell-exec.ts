@@ -77,22 +77,19 @@ export default function activate(
         return new Promise((resolve, reject) => {
           execPending = execPending.then(async () => {
             try {
+              bus.emit("shell:agent-exec-start", {});
               const result = await bus.emitPipeAsync("shell:exec-request", {
                 command,
                 output: "",
                 cwd: "",
                 done: false,
               });
-
-              // Show the command output in the TUI
-              if (result.output) {
-                bus.emit("agent:tool-output-chunk", { chunk: result.output });
-              }
+              bus.emit("shell:agent-exec-done", {});
 
               resolve({ output: result.output, cwd: result.cwd });
             } catch (err) {
+              bus.emit("shell:agent-exec-done", {});
               const message = err instanceof Error ? err.message : String(err);
-              bus.emit("agent:tool-output-chunk", { chunk: `Error: ${message}` });
               reject(rpcError(-32000, message));
             }
           });
