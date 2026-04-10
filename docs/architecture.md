@@ -184,6 +184,19 @@ All communication between components flows through a typed EventBus. Components 
 - **emitPipeAsync/onPipeAsync** — async transform chains (e.g., `permission:request` where extensions prompt the user and return a decision, `shell:exec-request` where Shell executes a command in the PTY)
 - **emitTransform** — transform-then-notify: runs pipe listeners to transform the payload, then emits the result to `on` listeners. Used for content streams where extensions can modify data before renderers see it.
 
+### Named Handler Registry
+
+Separate from the event bus, a **handler registry** provides Emacs-style advice for named processing steps. Built-in extensions register handlers with `define`, user extensions wrap them with `advise`:
+
+```
+ctx.define("render:code-block", defaultHandler)     ← tui-renderer
+ctx.advise("render:code-block", latexWrapper)        ← latex-images extension
+ctx.advise("render:code-block", mermaidWrapper)      ← mermaid extension
+→ Call: mermaid → latex → default (first to not call next() wins)
+```
+
+This complements the event bus: events are for **data flow** (content streaming, notifications), handlers are for **named processing steps** (render this code block, display this image). See [Extensions — Named Handlers](extensions.md#named-handlers-advice-system).
+
 ### Content Transform Pipeline
 
 Agent content streams use `emitTransform` — a two-phase emission that runs pipe listeners (transforms) first, then notifies `on` listeners (renderers) with the transformed result.

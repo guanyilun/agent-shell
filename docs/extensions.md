@@ -58,6 +58,9 @@ export default function activate(ctx) {
 | `createBlockTransform` | `(opts) => void` | Register an inline delimiter transform (e.g. `$$...$$`) |
 | `createFencedBlockTransform` | `(opts) => void` | Register a fenced block transform (e.g. ` ```lang...``` `) |
 | `getExtensionSettings` | `(namespace, defaults) => T` | Read extension settings from `~/.agent-sh/settings.json` |
+| `define` | `(name, fn) => void` | Register a named handler |
+| `advise` | `(name, wrapper) => void` | Wrap a named handler (receives `next` + args) |
+| `call` | `(name, ...args) => any` | Call a named handler |
 
 All utilities are provided through `ctx` — no package imports needed. Extensions work from any location (`~/.agent-sh/extensions/`, npm packages, or local files).
 
@@ -81,6 +84,93 @@ Users configure in `~/.agent-sh/settings.json`:
   "my-extension": { "maxItems": 50, "color": "red" }
 }
 ```
+
+## Named Handlers (Advice System)
+
+Built-in extensions register named processing steps with `ctx.define`. User extensions wrap them with `ctx.advise` — each advisor receives the previous handler as `next` and decides whether to call it.
+
+### How it works
+
+```typescript
+// tui-renderer defines the default code block handler
+ctx.define("render:code-block", (language, code) => {
+  syntaxHighlight(language, code);
+});
+
+// Your extension wraps it
+ctx.advise("render:code-block", (next, language, code) => {
+  if (language === "latex") {
+    renderLatexImage(code);     // handle it yourself
+    return;                     // don't call next — you replaced the handler
+  }
+  next(language, code);          // not yours — pass through to the original
+});
+```
+
+The `next` parameter is the key. It's the previous handler (or the one before that, if multiple advisors chain). What you do with it determines the behavior:
+
+```typescript
+// AROUND — conditionally call the original
+ctx.advise("render:code-block", (next, lang, code) => {
+  if (lang === "mermaid") return renderMermaid(code);
+  return next(lang, code);
+});
+
+// BEFORE — do something, then call the original
+ctx.advise("render:code-block", (next, lang, code) => {
+  console.log(`rendering: ${lang}`);
+  return next(lang, code);
+});
+
+// AFTER — call the original, then do something
+ctx.advise("render:code-block", (next, lang, code) => {
+  const result = next(lang, code);
+  logMetrics(lang, code.length);
+  return result;
+});
+
+// OVERRIDE — replace entirely, never call next
+ctx.advise("render:code-block", (_next, lang, code) => {
+  return myCustomRenderer(lang, code);
+});
+```
+
+### Available handlers
+
+The tui-renderer registers these named handlers that extensions can advise:
+
+| Handler | Arguments | Description |
+|---|---|---|
+| `render:code-block` | `(language: string, code: string)` | Render a fenced code block (default: syntax highlighting) |
+| `render:image` | `(data: Buffer)` | Display an image in the terminal (default: iTerm2/Kitty protocol) |
+
+### Multiple advisors chain
+
+Each `advise` call wraps the previous handler. Multiple extensions can advise the same handler — they nest like middleware:
+
+```
+Extension A advises render:code-block (handles mermaid)
+Extension B advises render:code-block (handles latex)
+→ Call order: B's wrapper → A's wrapper → original handler
+```
+
+If B doesn't handle it (calls `next`), A gets a chance. If A doesn't handle it either, the original runs. First advisor to not call `next` wins.
+
+### Defining your own handlers
+
+Extensions can define their own named handlers for other extensions to advise:
+
+```typescript
+// my-extension defines a handler
+ctx.define("my-ext:process-data", (data) => {
+  return defaultProcessing(data);
+});
+
+// Call it from within your extension
+const result = ctx.call("my-ext:process-data", someData);
+```
+
+Other extensions can then `advise("my-ext:process-data", ...)` to customize your behavior.
 
 ## Content Transform Pipeline
 
