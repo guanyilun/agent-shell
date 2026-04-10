@@ -245,16 +245,17 @@ export function createSpinner(): SpinnerState {
  */
 export function startSpinner(
   label: string,
-  opts?: { color?: string },
+  opts?: { color?: string; hint?: string },
 ): SpinnerState {
   const state = createSpinner();
   const color = opts?.color ?? p.accent;
 
+  const hint = opts?.hint ? ` ${p.dim}${opts.hint}${p.reset}` : "";
   state.interval = setInterval(() => {
     const frame = SPINNER_FRAMES[state.frame % SPINNER_FRAMES.length];
     const elapsed = formatElapsed(Date.now() - state.startTime);
     const timer = elapsed ? ` ${p.dim}${elapsed}${p.reset}` : "";
-    process.stdout.write(`\r  ${color}${frame} ${label}...${p.reset}${timer}\x1b[K`);
+    process.stdout.write(`\r  ${color}${frame} ${label}...${p.reset}${timer}${hint}\x1b[K`);
     state.frame++;
   }, 80);
 

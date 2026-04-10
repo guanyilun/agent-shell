@@ -35,6 +35,7 @@ export class InputHandler {
   private history: string[] = [];
   private historyIndex = -1; // -1 = not browsing history
   private savedBuffer = ""; // buffer saved when entering history
+  private promptWrappedLines = 0; // extra lines from terminal wrapping
   private escapeTimer: ReturnType<typeof setTimeout> | null = null;
   private bus: EventBus;
   private onShowAgentInfo: () => { info: string; model?: string };
@@ -72,17 +73,72 @@ export class InputHandler {
 
   /** Write the agent prompt line with cursor at the correct position. */
   private writeAgentPromptLine(showBuffer = true): void {
+    const termW = process.stdout.columns || 80;
+
+    // Move cursor to the start of the prompt area (first line of wrapped content)
+    if (this.promptWrappedLines > 0) {
+      process.stdout.write(`\x1b[${this.promptWrappedLines}A`);
+    }
+    // Clear from here to end of screen — removes current + all wrapped lines below
+    process.stdout.write("\r\x1b[J");
+
     const agentInfo = this.onShowAgentInfo();
     const infoPrefix = agentInfo.info ? `${agentInfo.info} ` : "";
     const promptPrefix = infoPrefix + p.warning + p.bold + "❯ " + p.reset;
-    const bufferText = showBuffer ? p.accent + this.editor.buffer + p.reset : "";
+    const promptVisLen = visibleLen(infoPrefix) + 2; // "❯ "
 
-    process.stdout.write("\r\x1b[2K" + promptPrefix + bufferText);
+    if (!showBuffer || !this.editor.buffer.includes("\n")) {
+      // Single-line: simple rendering
+      const bufferText = showBuffer ? p.accent + this.editor.buffer + p.reset : "";
+      process.stdout.write(promptPrefix + bufferText);
 
-    // Position cursor within the buffer (not always at end)
-    if (showBuffer && this.editor.cursor < this.editor.buffer.length) {
-      const charsAfterCursor = this.editor.buffer.length - this.editor.cursor;
-      process.stdout.write(`\x1b[${charsAfterCursor}D`);
+      const bufferVisLen = showBuffer ? this.editor.buffer.length : 0;
+      const totalVisLen = promptVisLen + bufferVisLen;
+      this.promptWrappedLines = totalVisLen > 0 ? Math.floor((totalVisLen - 1) / termW) : 0;
+
+      // Position cursor within the buffer
+      if (showBuffer && this.editor.cursor < this.editor.buffer.length) {
+        const charsAfterCursor = this.editor.buffer.length - this.editor.cursor;
+        process.stdout.write(`\x1b[${charsAfterCursor}D`);
+      }
+    } else {
+      // Multi-line: render each line with continuation indent
+      const lines = this.editor.buffer.split("\n");
+      const indent = " ".repeat(promptVisLen);
+      let totalTermLines = 0;
+
+      for (let li = 0; li < lines.length; li++) {
+        const prefix = li === 0 ? promptPrefix : indent;
+        const prefixVisLen = li === 0 ? promptVisLen : promptVisLen;
+        const lineText = lines[li]!;
+        process.stdout.write(prefix + p.accent + lineText + p.reset);
+        if (li < lines.length - 1) process.stdout.write("\n");
+
+        // Count terminal lines this logical line occupies
+        const lineVisLen = prefixVisLen + lineText.length;
+        totalTermLines += lineVisLen > 0 ? Math.ceil(lineVisLen / termW) : 1;
+      }
+      this.promptWrappedLines = totalTermLines - 1;
+
+      // Position cursor: find which line and column the cursor is on
+      let charsRemaining = this.editor.cursor;
+      let cursorLine = 0;
+      for (let li = 0; li < lines.length; li++) {
+        if (charsRemaining <= lines[li]!.length) {
+          cursorLine = li;
+          break;
+        }
+        charsRemaining -= lines[li]!.length + 1; // +1 for \n
+        cursorLine = li + 1;
+      }
+
+      // Move from end position to cursor position
+      const linesFromEnd = lines.length - 1 - cursorLine;
+      if (linesFromEnd > 0) {
+        process.stdout.write(`\x1b[${linesFromEnd}A`);
+      }
+      const cursorCol = (cursorLine === 0 ? promptVisLen : promptVisLen) + charsRemaining;
+      process.stdout.write(`\r\x1b[${cursorCol}C`);
     }
   }
 
@@ -150,6 +206,9 @@ export class InputHandler {
   private enterAgentInputMode(): void {
     this.agentInputMode = true;
     this.editor.clear();
+    // Enable kitty keyboard protocol (progressive enhancement flag 1)
+    // so Shift+Enter sends \x1b[13;2u instead of plain \r
+    process.stdout.write("\x1b[>1u");
     this.writeAgentPromptLine(false);
   }
 
@@ -157,8 +216,19 @@ export class InputHandler {
     this.dismissAutocomplete();
     this.agentInputMode = false;
     this.editor.clear();
-    process.stdout.write("\r\x1b[2K");
+    // Disable kitty keyboard protocol
+    process.stdout.write("\x1b[<u");
+    this.clearPromptArea();
     this.printPrompt();
+  }
+
+  /** Move to the start of the prompt area and clear everything below. */
+  private clearPromptArea(): void {
+    if (this.promptWrappedLines > 0) {
+      process.stdout.write(`\x1b[${this.promptWrappedLines}A`);
+    }
+    process.stdout.write("\r\x1b[J");
+    this.promptWrappedLines = 0;
   }
 
   printPrompt(): void {
@@ -311,7 +381,8 @@ export class InputHandler {
           this.historyIndex = -1;
           this.savedBuffer = "";
           this.clearAutocompleteLines();
-          process.stdout.write("\r\x1b[2K");
+          this.clearPromptArea();
+          process.stdout.write("\x1b[<u"); // disable kitty keyboard protocol
           this.agentInputMode = false;
           this.editor.clear();
           this.dismissAutocomplete();

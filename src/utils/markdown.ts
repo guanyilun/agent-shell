@@ -116,14 +116,14 @@ export class MarkdownRenderer {
   }
 
   printTopBorder(): void {
-    const w = Math.min(this.contentWidth, 40);
-    process.stdout.write(`${p.dim}${p.accent}${"─".repeat(w)}${p.reset}\n`);
+    const termW = process.stdout.columns || 80;
+    process.stdout.write(`${p.dim}${p.accent}${"─".repeat(termW)}${p.reset}\n`);
     this.firstLine = true;
   }
 
   printBottomBorder(): void {
-    const w = Math.min(this.contentWidth, 40);
-    process.stdout.write(`${p.dim}${p.accent}${"─".repeat(w)}${p.reset}\n`);
+    const termW = process.stdout.columns || 80;
+    process.stdout.write(`${p.dim}${p.accent}${"─".repeat(termW)}${p.reset}\n`);
   }
 
   private processBuffer(): void {

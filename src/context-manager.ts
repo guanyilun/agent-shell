@@ -15,6 +15,7 @@ export class ContextManager {
   private currentCwd: string;
   private sessionStart: number;
   private pendingToolCalls: ToolCallRecord[] = [];
+  private firstPrompt = true;
 
   constructor(bus: EventBus) {
     this.currentCwd = process.cwd();
@@ -253,6 +254,7 @@ export class ContextManager {
   clear(): void {
     this.exchanges = [];
     this.pendingToolCalls = [];
+    this.firstPrompt = true;
     // Don't reset nextId — IDs should be globally unique within a session
   }
 
@@ -325,9 +327,22 @@ export class ContextManager {
     const totalCount = this.exchanges.length;
 
     let out = "<shell_context>\n";
+
+    if (this.firstPrompt) {
+      out += `You are an AI assistant living inside agent-sh, a shell-first terminal.\n`;
+      out += `The user interacts with a real shell (PTY) and sends you queries inline. You are there to help them with their tasks.\n`;
+      out += `You can interact with the user's live shell using user_shell (cd, export, source, run commands — the user sees output instantly).\n`;
+      out += `You can also use your own isolated tools (bash, read, write) for internal work — these do NOT affect the user's shell.\n`;
+      out += `You can browse or search the user's session history with shell_recall.\n`;
+      out += `Your internal tool output (e.g. file reads) is not visible to the user.\n`;
+      out += `When the user wants to see something (a file, directory listing, command output), use user_shell (e.g. cat, ls) — they see the result directly in their terminal, no round-trip needed.\n`;
+      out += `Use your own internal tools (read, bash) when YOU need to reason about content to formulate a response.\n`;
+      out += `\n`;
+      this.firstPrompt = false;
+    }
+
     out += `cwd: ${this.currentCwd}\n`;
     out += `session: ${totalCount} exchanges, ${elapsed}m elapsed\n`;
-    out += `[hint: use the shell_recall tool to retrieve truncated content — search(query) or expand(ids)]\n`;
 
     for (const ex of exchanges) {
       out += "\n" + this.formatExchangeTruncated(ex);

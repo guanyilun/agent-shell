@@ -6,6 +6,12 @@
  * cursor state are public for rendering.
  */
 
+// ── Kitty protocol keycode → readable name ──────────────────────
+
+const KITTY_KEY_NAMES: Record<number, string> = {
+  9: "tab", 13: "enter", 27: "escape", 127: "backspace",
+};
+
 // ── Action types returned by feed() ─────────────────────────────
 
 export type LineEditAction =
@@ -110,78 +116,11 @@ export class LineEditor {
       }
 
       // ── Control characters ──────────────────────────────
-      if (ch === "\r") {
-        actions.push({ action: "submit", buffer: this.buffer });
+      if (ch.charCodeAt(0) < 0x20 || ch === "\x7f") {
+        const action = this.handleControl(ch);
+        if (action) actions.push(action);
         i++;
         continue;
-      }
-      if (ch === "\x03") {
-        actions.push({ action: "cancel" });
-        i++;
-        continue;
-      }
-      if (ch === "\t") {
-        actions.push({ action: "tab" });
-        i++;
-        continue;
-      }
-      if (ch === "\x7f" || ch === "\b") {
-        // Backspace
-        if (this.buffer.length === 0) {
-          actions.push({ action: "delete-empty" });
-        } else if (this.cursor > 0) {
-          this.buffer = this.buffer.slice(0, this.cursor - 1) + this.buffer.slice(this.cursor);
-          this.cursor--;
-          actions.push({ action: "changed" });
-        }
-        i++;
-        continue;
-      }
-      // Ctrl-A: home
-      if (ch === "\x01") {
-        if (this.cursor > 0) { this.cursor = 0; actions.push({ action: "changed" }); }
-        i++; continue;
-      }
-      // Ctrl-E: end
-      if (ch === "\x05") {
-        if (this.cursor < this.buffer.length) { this.cursor = this.buffer.length; actions.push({ action: "changed" }); }
-        i++; continue;
-      }
-      // Ctrl-B: back one char
-      if (ch === "\x02") {
-        if (this.cursor > 0) { this.cursor--; actions.push({ action: "changed" }); }
-        i++; continue;
-      }
-      // Ctrl-F: forward one char
-      if (ch === "\x06") {
-        if (this.cursor < this.buffer.length) { this.cursor++; actions.push({ action: "changed" }); }
-        i++; continue;
-      }
-      // Ctrl-U: delete to start of line
-      if (ch === "\x15") {
-        if (this.cursor > 0) {
-          this.buffer = this.buffer.slice(this.cursor);
-          this.cursor = 0;
-          actions.push({ action: "changed" });
-        }
-        i++; continue;
-      }
-      // Ctrl-K: delete to end of line
-      if (ch === "\x0b") {
-        if (this.cursor < this.buffer.length) {
-          this.buffer = this.buffer.slice(0, this.cursor);
-          actions.push({ action: "changed" });
-        }
-        i++; continue;
-      }
-      // Ctrl-W: delete word backward
-      if (ch === "\x17") {
-        if (this.deleteWordBackward()) actions.push({ action: "changed" });
-        i++; continue;
-      }
-      // Other control chars — ignore
-      if (ch.charCodeAt(0) < 0x20) {
-        i++; continue;
       }
 
       // ── Printable character ─────────────────────────────
@@ -211,6 +150,110 @@ export class LineEditor {
     this.buffer = "";
     this.cursor = 0;
     this.pendingSeq = "";
+  }
+
+  // ── Key bindings ────────────────────────────────────────────
+  //
+  // Single source of truth for all keybindings. Both legacy control
+  // characters and kitty protocol sequences resolve to a key name
+  // and look it up here. To add a binding, add one entry.
+
+  private readonly bindings: Record<string, () => LineEditAction | null> = {
+    "enter":         () => ({ action: "submit", buffer: this.buffer }),
+    "ctrl+c":        () => ({ action: "cancel" }),
+    "tab":           () => ({ action: "tab" }),
+    "backspace":     () => this.deleteBackward(),
+    "ctrl+d":        () => this.buffer.length === 0 ? { action: "delete-empty" } : this.deleteForward(),
+    "ctrl+a":        () => this.moveTo(0),
+    "ctrl+e":        () => this.moveTo(this.buffer.length),
+    "ctrl+b":        () => this.moveTo(this.cursor - 1),
+    "ctrl+f":        () => this.moveTo(this.cursor + 1),
+    "ctrl+u":        () => this.deleteRange(0, this.cursor),
+    "ctrl+k":        () => this.deleteRange(this.cursor, this.buffer.length),
+    "ctrl+w":        () => this.deleteWordBackward() ? { action: "changed" } : null,
+    "shift+enter":   () => this.insertAt("\n"),
+  };
+
+  /** Resolve a key name from the bindings table and execute it. */
+  private dispatch(key: string): LineEditAction | null {
+    return this.bindings[key]?.() ?? null;
+  }
+
+  // ── Legacy control character mapping ───────────────────────
+
+  /** Map a legacy control character to a key name. */
+  private static readonly CTRL_MAP: Record<string, string> = {
+    "\r": "enter", "\x03": "ctrl+c", "\t": "tab",
+    "\x7f": "backspace", "\b": "backspace",
+    "\x01": "ctrl+a", "\x02": "ctrl+b", "\x04": "ctrl+d",
+    "\x05": "ctrl+e", "\x06": "ctrl+f", "\x0b": "ctrl+k",
+    "\x15": "ctrl+u", "\x17": "ctrl+w",
+  };
+
+  private handleControl(ch: string): LineEditAction | null {
+    const key = LineEditor.CTRL_MAP[ch];
+    return key ? this.dispatch(key) : null;
+  }
+
+  // ── Kitty keyboard protocol ────────────────────────────────
+
+  /** Handle a kitty protocol CSI u sequence. Params format: "keycode;modifier". */
+  private handleKittyKey(params: string): LineEditAction | null {
+    const [kc, mod] = params.split(";").map(Number);
+    const keycode = kc!;
+    const mods = (mod ?? 1) - 1; // kitty modifier bits
+
+    // Build key name from modifier + keycode
+    const modNames: string[] = [];
+    if (mods & 4) modNames.push("ctrl");
+    if (mods & 1) modNames.push("shift");
+    if (mods & 2) modNames.push("alt");
+
+    const keyName = KITTY_KEY_NAMES[keycode] ?? String.fromCharCode(keycode);
+    const fullName = [...modNames, keyName].join("+");
+
+    // Try exact binding first, then fall back to ctrl char mapping
+    return this.dispatch(fullName)
+      ?? ((mods & 4) && keycode >= 97 && keycode <= 122
+          ? this.dispatch(`ctrl+${String.fromCharCode(keycode)}`)
+          : null)
+      ?? (mods === 0 ? this.handleControl(String.fromCharCode(keycode)) : null);
+  }
+
+  // ── Editing primitives ─────────────────────────────────────
+
+  private insertAt(ch: string): LineEditAction {
+    this.buffer = this.buffer.slice(0, this.cursor) + ch + this.buffer.slice(this.cursor);
+    this.cursor++;
+    return { action: "changed" };
+  }
+
+  private moveTo(pos: number): LineEditAction | null {
+    const clamped = Math.max(0, Math.min(pos, this.buffer.length));
+    if (clamped === this.cursor) return null;
+    this.cursor = clamped;
+    return { action: "changed" };
+  }
+
+  private deleteBackward(): LineEditAction | null {
+    if (this.buffer.length === 0) return { action: "delete-empty" };
+    if (this.cursor <= 0) return null;
+    this.buffer = this.buffer.slice(0, this.cursor - 1) + this.buffer.slice(this.cursor);
+    this.cursor--;
+    return { action: "changed" };
+  }
+
+  private deleteForward(): LineEditAction | null {
+    if (this.cursor >= this.buffer.length) return null;
+    this.buffer = this.buffer.slice(0, this.cursor) + this.buffer.slice(this.cursor + 1);
+    return { action: "changed" };
+  }
+
+  private deleteRange(start: number, end: number): LineEditAction | null {
+    if (start >= end) return null;
+    this.buffer = this.buffer.slice(0, start) + this.buffer.slice(end);
+    this.cursor = start;
+    return { action: "changed" };
   }
 
   // ── CSI sequence handling ───────────────────────────────────
@@ -267,6 +310,11 @@ export class LineEditor {
       case "F": // End
         if (this.cursor < this.buffer.length) { this.cursor = this.buffer.length; actions.push({ action: "changed" }); }
         break;
+      case "u": { // Kitty keyboard protocol: \x1b[<keycode>;<modifier>u
+        const action = this.handleKittyKey(params);
+        if (action) actions.push(action);
+        break;
+      }
       case "~": // Extended keys: Delete (3~), etc.
         if (params === "3") {
           // Delete key: delete char under cursor

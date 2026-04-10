@@ -90,6 +90,7 @@ export default function activate({ bus }: ExtensionContext): void {
   bus.on("agent:tool-completed", (e) => {
     showToolComplete(e.exitCode);
     currentToolKind = undefined;
+    startThinkingSpinner();
   });
   bus.on("agent:tool-output-chunk", (e) => writeCommandOutput(e.chunk));
   bus.on("agent:tool-output", () => flushCommandOutput());
@@ -269,7 +270,8 @@ export default function activate({ bus }: ExtensionContext): void {
 
   function startThinkingSpinner(label = "Thinking"): void {
     stopCurrentSpinner();
-    spinner = startSpinner(label);
+    const hint = label === "Thinking" ? "(ctrl+t to expand)" : undefined;
+    spinner = startSpinner(label, { hint });
   }
 
   function stopCurrentSpinner(): void {
@@ -319,10 +321,10 @@ export default function activate({ bus }: ExtensionContext): void {
       }
       commandOutputBuffer = "";
     }
-    if (commandOutputOverflow > 0) {
+    if (commandOutputOverflow > 0 && maxLines > 0) {
       renderer.writeLine(`${p.dim}  … ${commandOutputOverflow} more lines${p.reset}`);
-      commandOutputOverflow = 0;
     }
+    commandOutputOverflow = 0;
   }
 
 
@@ -450,8 +452,8 @@ export default function activate({ bus }: ExtensionContext): void {
 
   function toggleThinkingDisplay(): void {
     showThinkingText = !showThinkingText;
-    const state = showThinkingText ? "on" : "off";
-    process.stdout.write(`\n${p.dim}Thinking display: ${state}${p.reset}\n`);
+    // No visible message — the spinner label change (or thinking text appearing)
+    // is sufficient feedback. The old "Thinking display: on/off" line polluted output.
   }
 
   function showError(message: string): void {
