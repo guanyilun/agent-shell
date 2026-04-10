@@ -1,7 +1,9 @@
-import type { EventBus } from "./event-bus.js";
+import type { EventBus, ContentBlock } from "./event-bus.js";
 import type { ContextManager } from "./context-manager.js";
 import type { AcpClient } from "./acp-client.js";
 import type { ColorPalette } from "./utils/palette.js";
+
+export type { ContentBlock } from "./event-bus.js";
 
 export interface AgentShellConfig {
   agentCommand: string;

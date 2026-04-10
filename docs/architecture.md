@@ -186,56 +186,55 @@ All communication between components flows through a typed EventBus. Components 
 
 ### Content Transform Pipeline
 
-Agent content streams (`agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-output-chunk`) use `emitTransform`. This creates a two-phase flow:
+Agent content streams use `emitTransform` — a two-phase emission that runs pipe listeners (transforms) first, then notifies `on` listeners (renderers) with the transformed result.
 
 ```
 AcpClient
-  → emitTransform("agent:response-chunk", { text })
-      Phase 1 (onPipe): transform extensions modify text
-        → latex-ext:    $E=mc^2$ → terminal image escape sequence
-        → diagram-ext:  ```mermaid → rendered diagram
-        → any extension can register here
-      Phase 2 (on): renderers see the final transformed text
-        → tui-renderer renders to terminal
-        → web-renderer renders to HTML
-        → logger captures for debugging
+  → emitTransform("agent:response-chunk", { text, blocks? })
+      Phase 1 (onPipe): transform extensions
+        → createBlockTransform: buffers $$..$$, renders LaTeX → { type: "image" }
+        → any extension can register here, they chain naturally
+      Phase 2 (on): renderers see final content blocks
+        → tui-renderer: text → markdown, image → terminal protocol, raw → stdout
 ```
 
-Transform extensions register with `bus.onPipe("agent:response-chunk", ...)` and modify the payload. Renderers register with `bus.on("agent:response-chunk", ...)` and consume the final result. Since `onPipe` runs first, transforms always complete before any renderer sees the content.
+The tui-renderer is just an extension — it has no privileged access. Any renderer (terminal, web, log) sees the same transformed output.
 
-This means the tui-renderer is just an extension — it has no privileged access to content. A LaTeX extension, a syntax highlighter, or a diagram renderer all compose through the same bus, and any renderer (terminal, web, log) sees the same transformed output.
+### Content Blocks
 
-### Streaming Transforms
-
-Agent responses arrive as a stream of small chunks. A pattern like `$E=mc^2$` may span multiple chunks. Transform extensions handle this by **buffering** — holding back text until a pattern is complete, and releasing the safe portion:
-
-```
-chunk 1: "The energy is $E=mc"    → release "The energy is ", hold "$E=mc"
-chunk 2: "^2$ which means"        → transform "$E=mc^2$", release result + " which means"
-```
-
-The pipe supports this naturally — the extension returns only the ready-to-render portion and keeps a buffer internally. On `agent:response-done` (also piped via `emitTransform`), extensions flush any remaining buffered text.
+The pipeline carries **typed content blocks**, not just text:
 
 ```typescript
-// Streaming transform skeleton
-let buf = "";
+type ContentBlock =
+  | { type: "text"; text: string }   // markdown → rendered normally
+  | { type: "image"; data: Buffer }  // PNG → displayed via iTerm2/Kitty protocol
+  | { type: "raw"; escape: string }  // terminal escape → written directly to stdout
+```
 
-bus.onPipe("agent:response-chunk", (e) => {
-  buf += e.text;
-  const { ready, pending } = splitAtSafeBoundary(buf, /\$[^$]*\$/);
-  buf = pending;
-  return { ...e, text: ready };
-});
+Transform extensions return content blocks. The tui-renderer dispatches each type to the appropriate handler. This means extensions never need to write to `process.stdout` directly or worry about terminal protocol detection.
 
-bus.onPipe("agent:response-done", (e) => {
-  if (buf) {
-    // Pattern never closed — flush raw text
-    bus.emitTransform("agent:response-chunk", { text: buf });
-    buf = "";
-  }
-  return e;
+### Streaming and Buffering
+
+Agent responses arrive as small chunks that may split patterns across boundaries. The `createBlockTransform` helper handles this:
+
+```
+chunk 1: "Energy is $$E=mc"     → emit "Energy is ", hold "$$E=mc"
+chunk 2: "^2$$ which means"     → render "E=mc^2" → emit [image] + " which means"
+```
+
+```typescript
+import { createBlockTransform } from "agent-sh/utils/stream-transform";
+
+createBlockTransform(bus, {
+  open: "$$", close: "$$",
+  transform(content) {
+    const png = render(content);
+    return png ? { type: "image", data: png } : null;
+  },
 });
 ```
+
+The helper manages chunk buffering, safe boundary detection, and flush-on-done. For low-level transforms without delimiters, register directly on `bus.onPipe("agent:response-chunk", ...)`.
 
 Events using `emitTransform`: `agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-output-chunk`, `agent:response-done`.
 
@@ -264,9 +263,10 @@ agent-sh/
 │   │   ├── diff-renderer.ts# Syntax-highlighted diff display (split/unified/summary)
 │   │   ├── box-frame.ts    # Bordered TUI panels (rounded/square/double/heavy)
 │   │   ├── tool-display.ts # Width-adaptive tool call/result rendering
-│   │   ├── line-editor.ts  # Readline-style line editor (pure logic, no I/O)
-│   │   ├── file-watcher.ts # File change detection for agent tool writes
-│   │   └── markdown.ts     # Streaming markdown → ANSI renderer
+│   │   ├── line-editor.ts       # Readline-style line editor (pure logic, no I/O)
+│   │   ├── stream-transform.ts  # Block transform helper for content pipeline
+│   │   ├── file-watcher.ts      # File change detection for agent tool writes
+│   │   └── markdown.ts          # Streaming markdown → ANSI renderer
 │   └── extensions/
 │       ├── tui-renderer.ts       # Terminal rendering (markdown, spinner, tools)
 │       ├── slash-commands.ts     # /help, /clear, /copy, /compact, /quit
@@ -277,7 +277,8 @@ agent-sh/
 │   ├── pi-agent-sh.ts              # Pi extension: shell_cwd, user_shell, shell_recall tools
 │   └── extensions/
 │       ├── interactive-prompts.ts   # Example: permission gates (opt-in)
-│       └── solarized-theme.ts      # Example: color theme via setPalette()
+│       ├── solarized-theme.ts      # Example: color theme via setPalette()
+│       └── latex-images.ts         # Example: LaTeX → inline terminal images via content pipeline
 ├── package.json
 └── tsconfig.json
 ```

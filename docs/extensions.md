@@ -56,35 +56,71 @@ export default function activate(ctx) {
 
 ## Content Transforms
 
-Extensions can transform agent content before any renderer sees it. The content streams (`agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-output-chunk`) flow through a transform pipeline: `onPipe` listeners modify the payload first, then `on` listeners (renderers) receive the transformed result.
+Agent response streams flow through a **transform pipeline** before any renderer sees them. This lets extensions modify, replace, or enrich content — rendering LaTeX as images, replacing diagram blocks with graphics, filtering output, etc.
+
+The tui-renderer is itself just an extension. Transform extensions sit before it in the pipeline with no special privileges. Multiple transforms chain naturally.
+
+### Content blocks
+
+The pipeline carries typed content blocks, not just raw text:
 
 ```typescript
-// latex-render.ts — render LaTeX equations as terminal images
+type ContentBlock =
+  | { type: "text"; text: string }   // markdown text → rendered by tui-renderer
+  | { type: "image"; data: Buffer }  // PNG buffer → displayed via terminal protocol (iTerm2/Kitty)
+  | { type: "raw"; escape: string }  // raw escape sequence → written directly to stdout
+```
+
+Extensions return content blocks from transforms. The tui-renderer handles each type: text goes through the markdown renderer, images are displayed via the best available terminal protocol (iTerm2, Kitty, Ghostty, WezTerm), and raw escapes bypass all processing.
+
+### Block transforms
+
+The `createBlockTransform` helper handles the hard parts of streaming transforms — buffering across chunk boundaries, pattern matching, and flush-on-done coordination. You just define delimiters and a transform function:
+
+```typescript
+import { createBlockTransform } from "agent-sh/utils/stream-transform";
+
 export default function activate({ bus }) {
-  bus.onPipe("agent:response-chunk", (e) => {
-    // Replace inline LaTeX with rendered terminal graphics
-    const transformed = e.text.replace(
-      /\$\$(.+?)\$\$/g,
-      (_, equation) => renderLatexToKittyGraphics(equation),
-    );
-    return { ...e, text: transformed };
+  createBlockTransform(bus, {
+    open: "$$",
+    close: "$$",
+    transform(content) {
+      // content = text between delimiters (e.g. "E = mc^2")
+      // Return a ContentBlock, array of blocks, or null to keep original
+      const png = renderToPng(content);
+      return png ? { type: "image", data: png } : null;
+    },
   });
 }
 ```
 
-Since the tui-renderer is itself just an extension using `bus.on(...)`, transform extensions compose naturally — they sit in the pipe before any renderer without special privileges. Multiple transforms chain: each `onPipe` listener receives the output of the previous one.
+The helper manages:
+- **Chunk buffering** — holds back text when a delimiter might be split across chunks
+- **Safe boundaries** — only emits text that's outside any potential opening delimiter
+- **Flush on response-done** — drains remaining buffer when the response ends
 
-Use cases:
-- **LaTeX rendering** — detect `$...$` equations, render via `katex`/`latex`, emit kitty graphics escapes
-- **Diagram rendering** — detect mermaid/plantuml blocks, render to images
-- **Syntax transforms** — custom highlighting, annotation overlays
-- **Content filtering** — redact sensitive output, collapse verbose sections
+### Low-level transforms
 
-A complete working example is included at `examples/extensions/math-render.ts` — it replaces LaTeX notation with Unicode math symbols (`$\alpha^2$` → `α²`), demonstrating both stateless transforms and streaming buffering across chunks:
+For transforms that don't use delimiters (e.g. regex replacement on all text), register directly on the pipe:
+
+```typescript
+bus.onPipe("agent:response-chunk", (e) => {
+  const transformed = e.text.replace(/pattern/g, replacement);
+  return { ...e, text: transformed };
+});
+```
+
+### Example: LaTeX image rendering
+
+A complete working example is included at `examples/extensions/latex-images.ts` — it renders `$$...$$` equations as inline terminal images using the same pipeline as Emacs org-mode (`latex` → `dvipng`):
 
 ```bash
-agent-sh -e ./examples/extensions/math-render.ts
+# Requires: latex + dvipng (brew install --cask mactex)
+# Requires: iTerm2, WezTerm, Kitty, or Ghostty
+agent-sh -e ./examples/extensions/latex-images.ts
 ```
+
+The entire extension is ~100 lines — the rendering logic plus a single `createBlockTransform` call. No manual buffering, no stdout hacks, no terminal protocol detection.
 
 ## Yolo Mode
 
