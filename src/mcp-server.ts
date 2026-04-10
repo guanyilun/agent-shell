@@ -57,10 +57,10 @@ const SHELL_RECALL_TOOL = {
   description:
     "Retrieve past shell commands, agent responses, and tool executions from the session history. " +
     "Use this to look up truncated output, search for previous commands or errors, " +
-    "or browse recent exchanges. Three operations: " +
-    '"search" finds exchanges matching a query, ' +
-    '"expand" retrieves full untruncated content by exchange ID, ' +
-    '"browse" lists recent exchange summaries.',
+    "or browse recent exchanges. Operations: " +
+    '"browse" lists recent exchange summaries with line counts, ' +
+    '"search" finds exchanges matching a regex query, ' +
+    '"expand" retrieves content by exchange ID (use start/end for specific line ranges).',
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -71,12 +71,20 @@ const SHELL_RECALL_TOOL = {
       },
       query: {
         type: "string",
-        description: 'Search query (required for "search" operation)',
+        description: 'Search query — supports regex (required for "search" operation)',
       },
       ids: {
         type: "array",
         items: { type: "number" },
         description: 'Exchange IDs to expand (required for "expand" operation)',
+      },
+      start: {
+        type: "number",
+        description: "Start line number, 1-indexed (optional, for expand)",
+      },
+      end: {
+        type: "number",
+        description: "End line number, inclusive (optional, for expand)",
       },
     },
   },
@@ -172,6 +180,8 @@ async function handleRequest(id: unknown, method: string, params: any): Promise<
             operation: args.operation || "browse",
             query: args.query,
             ids: args.ids,
+            start: args.start,
+            end: args.end,
           }) as { result: string };
           text = result.result || "(no results)";
         } else {
