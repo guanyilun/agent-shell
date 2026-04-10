@@ -95,6 +95,12 @@ export default function activate({ bus }: ExtensionContext): void {
     endAgentResponse();
   });
 
+  bus.on("agent:processing-done", () => {
+    isThinking = false;
+    stopCurrentSpinner();
+    endAgentResponse();
+  });
+
   bus.on("agent:error", (e) => showError(e.message));
 
   // Flush rendering state and show inline diff for file writes

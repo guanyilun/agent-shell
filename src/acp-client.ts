@@ -25,7 +25,8 @@ export class AcpClient {
   private terminalDonePromises = new Map<string, Promise<void>>();
   private terminalCounter = 0;
   private fileWatcher: FileWatcher;
-  private pendingToolCalls = new Map<string, boolean>();
+  private pendingToolCalls = new Map<string, string>(); // toolCallId → title
+  private autoCancelled = false;
   private pendingToolCounter = 0;
   private agentInfo: { name: string; version: string } | null = null;
 
@@ -44,8 +45,16 @@ export class AcpClient {
     this.log(`Starting agent: ${this.config.agentCommand} ${this.config.agentArgs.join(" ")}`);
 
     // Spawn the agent subprocess with the user's full shell environment
-    // (includes vars from .zshrc/.bashrc that process.env may not have)
-    const agentEnv = this.config.shellEnv ?? process.env;
+    // (includes vars from .zshrc/.bashrc that process.env may not have).
+    // Merge in any runtime env vars set by extensions (e.g. AGENT_SH_SOCKET)
+    // that weren't present when shellEnv was captured at startup.
+    const baseEnv = this.config.shellEnv ?? process.env;
+    const agentEnv: Record<string, string> = { ...baseEnv } as Record<string, string>;
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined && !(k in agentEnv)) {
+        agentEnv[k] = v;
+      }
+    }
     this.agentProcess = spawn(this.config.agentCommand, this.config.agentArgs, {
       stdio: ["pipe", "pipe", process.env.DEBUG ? "inherit" : "ignore"],
       env: agentEnv as NodeJS.ProcessEnv,
@@ -144,6 +153,7 @@ export class AcpClient {
     await this.fileWatcher.snapshot();
 
     this.currentResponseText = "";
+    this.autoCancelled = false;
     let cancelled = false;
 
     // Emit agent query event (TUI renders echo+spinner, ContextManager records it)
@@ -168,7 +178,9 @@ export class AcpClient {
 
       if (response.stopReason === "cancelled") {
         cancelled = true;
-        this.bus.emit("agent:cancelled", {});
+        if (!this.autoCancelled) {
+          this.bus.emit("agent:cancelled", {});
+        }
       }
     } catch (err) {
       this.log(`prompt error: ${err}`);
@@ -193,6 +205,18 @@ export class AcpClient {
       this.bus.emit("agent:processing-done", {});
       this.promptInProgress = false;
     }
+  }
+
+  /**
+   * Silently cancel the prompt after a shell tool completes.
+   * Unlike user-initiated cancel(), this doesn't show "(cancelled)" —
+   * the tool already ran, we just skip the unnecessary LLM follow-up.
+   */
+  private autoCancel(): void {
+    if (!this.connection || !this.sessionId || !this.promptInProgress) return;
+    this.log("auto-cancel: shell tool completed, skipping LLM follow-up");
+    this.autoCancelled = true;
+    this.connection.cancel({ sessionId: this.sessionId }).catch(() => {});
   }
 
   /**
@@ -346,7 +370,7 @@ export class AcpClient {
 
       case "tool_call": {
         const toolId = update.toolCallId || `tool-${this.pendingToolCounter++}`;
-        this.pendingToolCalls.set(toolId, true);
+        this.pendingToolCalls.set(toolId, update.title ?? "");
         this.bus.emit("agent:tool-started", {
           title: update.title,
           toolCallId: toolId,
@@ -358,17 +382,18 @@ export class AcpClient {
       }
 
       case "tool_call_update": {
-        // Stream tool output content (text from pi's internal tool results)
-        if (update.content && Array.isArray(update.content)) {
-          for (const block of update.content) {
-            if (block.type === "content" && block.content?.type === "text" && block.content.text) {
-              this.bus.emit("agent:tool-output-chunk", { chunk: block.content.text });
+        if (update.status === "completed" || update.status === "failed") {
+          // Show content only on final status — intermediate updates often
+          // contain stringified wrapper JSON (e.g. '{ "content": [] }')
+          if (update.content && Array.isArray(update.content)) {
+            for (const block of update.content) {
+              if (block.type === "content" && block.content?.type === "text" && block.content.text) {
+                this.bus.emit("agent:tool-output-chunk", { chunk: block.content.text });
+              }
             }
           }
-        }
-
-        if (update.status === "completed" || update.status === "failed") {
           const toolId = update.toolCallId;
+          const toolTitle = toolId ? this.pendingToolCalls.get(toolId) : undefined;
           const exitCode = update.status === "completed" ? 0 : 1;
           if (toolId && this.pendingToolCalls.has(toolId)) {
             this.pendingToolCalls.delete(toolId);
@@ -380,12 +405,18 @@ export class AcpClient {
           } else if (!toolId) {
             this.bus.emit("agent:tool-completed", { exitCode, rawOutput: update.rawOutput });
           }
+
+          // Auto-cancel after shell tools complete — the command already
+          // ran in the user's PTY, no need for a second LLM round trip.
+          // The result is captured in shell context / shell_recall.
+          if (toolTitle === "user_shell" && update.status === "completed") {
+            this.autoCancel();
+          }
         }
         break;
       }
 
       default:
-        // Ignore other update types for now
         break;
     }
   }

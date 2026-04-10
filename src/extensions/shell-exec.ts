@@ -118,7 +118,9 @@ export default function activate(
             if (!Array.isArray(ids) || ids.length === 0) {
               throw rpcError(-32602, "Missing required parameter: ids (array of numbers)");
             }
-            return { result: contextManager.expand(ids.map(Number)) };
+            const start = typeof params?.start === "number" ? params.start : undefined;
+            const end = typeof params?.end === "number" ? params.end : undefined;
+            return { result: contextManager.expand(ids.map(Number), start, end) };
           }
           case "browse":
             return { result: contextManager.getRecentSummary() };
