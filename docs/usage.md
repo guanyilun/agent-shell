@@ -191,12 +191,13 @@ agent-sh exposes a Unix socket that external tools connect to. Two discovery pat
 
 ### Pi extension setup
 
+Copy the pi extension to your pi extensions directory:
+
 ```bash
-# From wherever pi-user-shell lives
-pi install ./pi-user-shell
+cp examples/pi-agent-sh.ts ~/.pi/agent/extensions/pi-agent-sh/index.ts
 ```
 
-Once installed, the agent can use `user_shell` alongside its built-in tools. Ask it to `cd` somewhere and your shell prompt will reflect the change.
+This registers three tools for pi: `shell_cwd` (query real cwd), `user_shell` (execute in live PTY), and `shell_recall` (search/browse session history). Ask the agent to `cd` somewhere and your shell prompt will reflect the change.
 
 ### Writing your own socket client
 
@@ -216,3 +217,15 @@ The agent automatically receives structured context about your shell session wit
 - **Recall tool** — the agent can use the `shell_recall` MCP tool to search, expand, or browse session history (e.g., retrieve full output of a truncated exchange)
 
 This means you can run a failing command, then type `> fix this` and the agent knows exactly what happened. For long outputs, the agent sees a truncated summary and can recall the full content on demand.
+
+Context behavior is tunable via `~/.agent-sh/settings.json`:
+
+| Setting | Default | Description |
+|---|---|---|
+| `contextWindowSize` | `20` | How many recent exchanges to include |
+| `contextBudget` | `16384` | Max context size in bytes (~4K tokens) |
+| `shellTruncateThreshold` | `10` | Lines before shell output is truncated |
+| `shellHeadLines` / `shellTailLines` | `5` / `5` | Lines kept from start/end after truncation |
+| `recallExpandMaxLines` | `100` | Max lines for recall expand |
+
+See the main [README](../README.md#configuration) for the full settings reference.

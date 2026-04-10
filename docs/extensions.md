@@ -104,7 +104,7 @@ npm start -- -e my-ext-package -e ./local-ext.ts
 npm start -- -e my-ext-package,another-package   # comma-separated also works
 ```
 
-**2. Settings file** — `~/.agent-sh/settings.json`:
+**2. Settings file** — `~/.agent-sh/settings.json` (also supports other [configuration options](../README.md#configuration)):
 ```json
 {
   "extensions": [
