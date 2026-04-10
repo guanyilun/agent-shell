@@ -114,6 +114,18 @@ export class Shell implements InputContext {
       shellArgs = ["--rcfile", path.join(this.tmpDir, ".bashrc")];
     }
 
+    // Pause stdin before spawning PTY to avoid TTY contention on macOS.
+    // The PTY will become the controlling terminal for the child shell.
+    const wasRaw = process.stdin.isTTY && (process.stdin as any).isRaw;
+    if (process.stdin.isTTY) {
+      try {
+        process.stdin.setRawMode(false);
+        process.stdin.pause();
+      } catch {
+        // Ignore
+      }
+    }
+
     this.ptyProcess = pty.spawn(shellBin, shellArgs, {
       name: "xterm-256color",
       cols: opts.cols,
@@ -121,6 +133,18 @@ export class Shell implements InputContext {
       cwd: opts.cwd,
       env,
     });
+
+    // Restore stdin after PTY is created
+    if (process.stdin.isTTY) {
+      try {
+        process.stdin.resume();
+        if (wasRaw) {
+          process.stdin.setRawMode(true);
+        }
+      } catch {
+        // Ignore - will be set up later in index.ts
+      }
+    }
 
     this.bus = opts.bus;
     this.outputParser = new OutputParser(opts.bus, opts.cwd);

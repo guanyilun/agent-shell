@@ -167,10 +167,11 @@ function formatAgentInfo(
 }
 
 async function main(): Promise<void> {
-  // Ignore SIGTTOU to prevent suspension when setRawMode is called.
-  // This happens when the process is in the background and tries to
-  // modify terminal settings.
+  // Set up signal handlers before any terminal operations.
+  // Ignore SIGTTOU to prevent suspension when modifying terminal settings.
   process.on("SIGTTOU", () => {});
+  // Also ignore SIGTTIN which can occur when reading from terminal while backgrounded.
+  process.on("SIGTTIN", () => {});
 
   const config = parseArgs(process.argv.slice(2));
 
@@ -225,6 +226,11 @@ async function main(): Promise<void> {
   if (process.env.DEBUG) {
     console.error('[agent-sh] Creating Shell...');
   }
+
+  // Small delay on macOS to ensure we're fully in the foreground process group
+  // before spawning the PTY. This prevents SIGTTOU suspension.
+  await new Promise(resolve => setTimeout(resolve, 100));
+
   const shell = new Shell({
     bus,
     cols,
@@ -299,10 +305,27 @@ async function main(): Promise<void> {
   // ── Terminal lifecycle ────────────────────────────────────────
   process.on("SIGTERM", cleanup);
   process.on("SIGHUP", cleanup);
+
+  // Handle terminal stop/resume signals properly
+  process.on("SIGTSTP", () => {
+    // Handle Ctrl+Z - suspend the entire process group
+    // Restore terminal state before suspending
+    if (process.stdin.isTTY) {
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        // Ignore
+      }
+    }
+    // Re-send SIGSTOP to actually suspend
+    process.kill(process.pid!, "SIGSTOP");
+  });
+
   process.on("SIGCONT", () => {
     // Re-acquire terminal when brought back to foreground
     if (process.stdin.isTTY) {
       try {
+        // Ensure we reacquire controlling terminal
         process.stdin.setRawMode(true);
       } catch {
         // May fail if stdin is not a TTY
