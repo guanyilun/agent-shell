@@ -34,6 +34,7 @@ export default function activate({ bus }: ExtensionContext): void {
   let lastCommand = "";
   let toolLineOpen = false; // true when tool header was written without \n
   let hadToolCalls = false; // true after any tool call in current response
+  let currentToolKind: string | undefined; // kind of the currently executing tool
   let isThinking = false;
   let showThinkingText = false;
   let lastTruncatedDiff: {
@@ -81,11 +82,15 @@ export default function activate({ bus }: ExtensionContext): void {
 
   bus.on("agent:tool-started", (e) => {
     stopCurrentSpinner();
+    currentToolKind = e.kind;
     showToolCall(e.title, lastCommand, e);
     lastCommand = "";
   });
 
-  bus.on("agent:tool-completed", (e) => showToolComplete(e.exitCode));
+  bus.on("agent:tool-completed", (e) => {
+    showToolComplete(e.exitCode);
+    currentToolKind = undefined;
+  });
   bus.on("agent:tool-output-chunk", (e) => writeCommandOutput(e.chunk));
   bus.on("agent:tool-output", () => flushCommandOutput());
 
@@ -284,11 +289,14 @@ export default function activate({ bus }: ExtensionContext): void {
   function writeCommandOutput(chunk: string): void {
     if (!renderer) return;
     closeToolLine();
+    const maxLines = currentToolKind === "read"
+      ? getSettings().readOutputMaxLines
+      : getSettings().maxCommandOutputLines;
     commandOutputBuffer += chunk;
     const lines = commandOutputBuffer.split("\n");
     commandOutputBuffer = lines.pop()!;
     for (const line of lines) {
-      if (commandOutputLineCount < getSettings().maxCommandOutputLines) {
+      if (commandOutputLineCount < maxLines) {
         renderer.writeLine(`${p.dim}  ${line}${p.reset}`);
         commandOutputLineCount++;
       } else {
@@ -299,8 +307,11 @@ export default function activate({ bus }: ExtensionContext): void {
 
   function flushCommandOutput(): void {
     if (!renderer) return;
+    const maxLines = currentToolKind === "read"
+      ? getSettings().readOutputMaxLines
+      : getSettings().maxCommandOutputLines;
     if (commandOutputBuffer) {
-      if (commandOutputLineCount < getSettings().maxCommandOutputLines) {
+      if (commandOutputLineCount < maxLines) {
         renderer.writeLine(`${p.dim}  ${commandOutputBuffer}${p.reset}`);
         commandOutputLineCount++;
       } else {
