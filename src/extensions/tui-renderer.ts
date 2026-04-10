@@ -292,6 +292,12 @@ export default function activate({ bus, getAcpClient }: ExtensionContext): void 
 
   /** Render a code block with syntax highlighting (extracted from MarkdownRenderer). */
   function writeCodeBlock(language: string, code: string): void {
+    // Let extensions claim specific code blocks before default rendering
+    const result = bus.emitPipe("renderer:code-block", {
+      language, code, handled: false,
+    });
+    if (result.handled) return;
+
     flushForRaw();
     if (language) {
       renderer!.writeLine(`${p.dim}${language}${p.reset}`);

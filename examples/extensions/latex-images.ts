@@ -24,6 +24,26 @@ import type { ExtensionContext } from "agent-sh/types";
 // Settings loaded in activate() via ctx.getExtensionSettings
 let config = { dpi: 300, fgColor: "d4d4d4" };
 
+/** Encode PNG as iTerm2 or Kitty inline image escape sequence. */
+function encodeImage(data: Buffer): string {
+  const b64 = data.toString("base64");
+  if (process.env.TERM_PROGRAM === "iTerm.app" || process.env.TERM_PROGRAM === "WezTerm") {
+    return `\x1b]1337;File=inline=1;size=${data.length};preserveAspectRatio=1:${b64}\x07`;
+  }
+  if (process.env.KITTY_WINDOW_ID || process.env.TERM_PROGRAM === "ghostty") {
+    const chunks: string[] = [];
+    for (let i = 0; i < b64.length; i += 4096) {
+      const chunk = b64.slice(i, i + 4096);
+      const isLast = i + 4096 >= b64.length;
+      chunks.push(i === 0
+        ? `\x1b_Gf=100,t=d,a=T,m=${isLast ? 0 : 1};${chunk}\x1b\\`
+        : `\x1b_Gm=${isLast ? 0 : 1};${chunk}\x1b\\`);
+    }
+    return chunks.join("");
+  }
+  return "";
+}
+
 // ── LaTeX rendering via latex + dvipng ───────────────────────────
 
 const LATEX_TEMPLATE = (equation: string, fg: string) => `
@@ -111,19 +131,13 @@ export default function activate(ctx: ExtensionContext) {
     },
   });
 
-  // Handle ```latex and ```tex code blocks (produced by createFencedBlockTransform)
-  bus.onPipe("agent:response-chunk", (e) => {
-    if (!e.blocks) return e;
-    return {
-      ...e,
-      blocks: e.blocks.map((block) => {
-        if (block.type !== "code-block") return block;
-        if (block.language !== "latex" && block.language !== "tex") return block;
-        const png = renderEquation(block.code);
-        if (!png) return block; // render failed — fall through to syntax highlight
-        return { type: "image" as const, data: png };
-      }),
-    };
+  // Handle ```latex and ```tex code blocks via named renderer hook
+  bus.onPipe("renderer:code-block", (e) => {
+    if (e.language !== "latex" && e.language !== "tex") return e;
+    const png = renderEquation(e.code);
+    if (!png) return e; // render failed — fall through to syntax highlight
+    process.stdout.write("\n  " + encodeImage(png) + "\n");
+    return { ...e, handled: true };
   });
 
   process.on("exit", () => {
