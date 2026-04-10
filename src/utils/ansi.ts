@@ -11,9 +11,56 @@ export const RESET = "\x1b[0m";
 
 // ── ANSI utility functions ───────────────────────────────────
 
-/** Measure visible string length, excluding SGR (color/style) sequences. */
+/**
+ * Check if a Unicode code point is a wide character (CJK, fullwidth, emoji, etc.)
+ * Returns 2 for wide chars, 1 for normal chars.
+ */
+function charWidth(codePoint: number): number {
+  // CJK Unified Ideographs
+  if (codePoint >= 0x4e00 && codePoint <= 0x9fff) return 2;
+  // CJK Unified Ideographs Extension A
+  if (codePoint >= 0x3400 && codePoint <= 0x4dbf) return 2;
+  // Hangul Syllables
+  if (codePoint >= 0xac00 && codePoint <= 0xd7af) return 2;
+  // CJK Unified Ideographs Extension B-F and other CJK blocks
+  if (codePoint >= 0x20000 && codePoint <= 0x2ebef) return 2;
+  // Fullwidth ASCII variants
+  if (codePoint >= 0xff01 && codePoint <= 0xff5e) return 2;
+  // Halfwidth Katakana (actually narrow, skip)
+  // Fullwidth bracket forms
+  if (codePoint >= 0xff5f && codePoint <= 0xff60) return 2;
+  // Fullwidth symbol variants
+  if (codePoint >= 0xffe0 && codePoint <= 0xffe6) return 2;
+  // Japanese hiragana and katakana
+  if (codePoint >= 0x3040 && codePoint <= 0x309f) return 2;
+  if (codePoint >= 0x30a0 && codePoint <= 0x30ff) return 2;
+  // CJK symbols and punctuation
+  if (codePoint >= 0x3000 && codePoint <= 0x303f) return 2;
+  // Enclosed CJK letters and months
+  if (codePoint >= 0x3200 && codePoint <= 0x32ff) return 2;
+  // CJK compatibility
+  if (codePoint >= 0x3300 && codePoint <= 0x33ff) return 2;
+  // Hangul Jamo
+  if (codePoint >= 0x1100 && codePoint <= 0x11ff) return 2;
+  // Hangul compatibility Jamo
+  if (codePoint >= 0x3130 && codePoint <= 0x318f) return 2;
+
+  return 1;
+}
+
+/**
+ * Measure visible string length in terminal columns.
+ * Excludes SGR (color/style) sequences and accounts for CJK double-width chars.
+ */
 export function visibleLen(str: string): number {
-  return str.replace(/\x1b\[[^m]*m/g, "").length;
+  // First strip ANSI escape sequences
+  const cleanStr = str.replace(/\x1b\[[^m]*m/g, "");
+
+  let width = 0;
+  for (const char of cleanStr) {
+    width += charWidth(char.codePointAt(0) ?? 0);
+  }
+  return width;
 }
 
 /** Strip all ANSI escape sequences (SGR, OSC, CSI, private mode) and carriage returns. */
