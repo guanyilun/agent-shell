@@ -127,11 +127,11 @@ export default function activate(ctx: ExtensionContext) {
   });
 
   // Advise the code block renderer — wrap the default syntax highlighter
-  ctx.advise("render:code-block", (next, language: string, code: string) => {
-    if (language !== "latex" && language !== "tex") return next(language, code);
+  ctx.advise("render:code-block", (next, language: string, code: string, width: number) => {
+    if (language !== "latex" && language !== "tex") return next(language, code, width);
     const png = renderEquation(code);
-    if (!png) return next(language, code); // render failed — fall through
-    process.stdout.write("\n  " + encodeImage(png) + "\n");
+    if (!png) return next(language, code, width); // render failed — fall through
+    ctx.call("render:image", png);
   });
 
   process.on("exit", () => {

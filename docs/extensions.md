@@ -93,17 +93,17 @@ Built-in extensions register named processing steps with `ctx.define`. User exte
 
 ```typescript
 // tui-renderer defines the default code block handler
-ctx.define("render:code-block", (language, code) => {
-  syntaxHighlight(language, code);
+ctx.define("render:code-block", (language, code, width) => {
+  syntaxHighlight(language, code, width);
 });
 
 // Your extension wraps it
-ctx.advise("render:code-block", (next, language, code) => {
+ctx.advise("render:code-block", (next, language, code, width) => {
   if (language === "latex") {
     renderLatexImage(code);     // handle it yourself
     return;                     // don't call next — you replaced the handler
   }
-  next(language, code);          // not yours — pass through to the original
+  next(language, code, width);   // not yours — pass through to the original
 });
 ```
 
@@ -111,26 +111,26 @@ The `next` parameter is the key. It's the previous handler (or the one before th
 
 ```typescript
 // AROUND — conditionally call the original
-ctx.advise("render:code-block", (next, lang, code) => {
+ctx.advise("render:code-block", (next, lang, code, width) => {
   if (lang === "mermaid") return renderMermaid(code);
-  return next(lang, code);
+  return next(lang, code, width);
 });
 
 // BEFORE — do something, then call the original
-ctx.advise("render:code-block", (next, lang, code) => {
+ctx.advise("render:code-block", (next, lang, code, width) => {
   console.log(`rendering: ${lang}`);
-  return next(lang, code);
+  return next(lang, code, width);
 });
 
 // AFTER — call the original, then do something
-ctx.advise("render:code-block", (next, lang, code) => {
-  const result = next(lang, code);
+ctx.advise("render:code-block", (next, lang, code, width) => {
+  const result = next(lang, code, width);
   logMetrics(lang, code.length);
   return result;
 });
 
 // OVERRIDE — replace entirely, never call next
-ctx.advise("render:code-block", (_next, lang, code) => {
+ctx.advise("render:code-block", (_next, lang, code, width) => {
   return myCustomRenderer(lang, code);
 });
 ```
@@ -141,7 +141,7 @@ The tui-renderer registers these named handlers that extensions can advise:
 
 | Handler | Arguments | Description |
 |---|---|---|
-| `render:code-block` | `(language: string, code: string)` | Render a fenced code block (default: syntax highlighting) |
+| `render:code-block` | `(language: string, code: string, width: number)` | Render a fenced code block (default: syntax highlighting) |
 | `render:image` | `(data: Buffer)` | Display an image in the terminal (default: iTerm2/Kitty protocol) |
 
 ### Multiple advisors chain

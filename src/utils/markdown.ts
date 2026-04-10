@@ -77,25 +77,20 @@ export function wrapLine(text: string, maxWidth: number): string[] {
  * Streaming markdown renderer that processes chunks of text,
  * renders complete lines with ANSI formatting, and wraps output
  * in a bordered box.
+ *
+ * The renderer accumulates lines internally. Call `drainLines()` to
+ * extract them — this is the only way output leaves the renderer.
  */
-export interface MarkdownRendererOptions {
-  terminalWidth?: number;
-  /** Output function. Defaults to process.stdout.write. */
-  write?: (text: string) => void;
-}
-
 export class MarkdownRenderer {
   private buffer = "";
   private contentWidth: number;
   private firstLine = true;
-  private writeFn: (text: string) => void;
+  private pendingLines: string[] = [];
+  private width: number;
 
-  constructor(opts?: MarkdownRendererOptions | number) {
-    // Backward compat: accept bare number for terminalWidth
-    const options = typeof opts === "number" ? { terminalWidth: opts } : opts;
-    const termW = options?.terminalWidth ?? (process.stdout.columns || 100);
-    this.contentWidth = Math.min(MAX_CONTENT_WIDTH, termW - 2);
-    this.writeFn = options?.write ?? ((text: string) => process.stdout.write(text));
+  constructor(width: number) {
+    this.width = width;
+    this.contentWidth = Math.min(MAX_CONTENT_WIDTH, width - 2);
   }
 
   /**
@@ -118,14 +113,22 @@ export class MarkdownRenderer {
   }
 
   printTopBorder(): void {
-    const termW = process.stdout.columns || 80;
-    this.writeFn(`${p.dim}${p.accent}${"─".repeat(termW)}${p.reset}\n`);
+    this.pendingLines.push(`${p.dim}${p.accent}${"─".repeat(this.width)}${p.reset}`);
     this.firstLine = true;
   }
 
   printBottomBorder(): void {
-    const termW = process.stdout.columns || 80;
-    this.writeFn(`${p.dim}${p.accent}${"─".repeat(termW)}${p.reset}\n`);
+    this.pendingLines.push(`${p.dim}${p.accent}${"─".repeat(this.width)}${p.reset}`);
+  }
+
+  /**
+   * Extract and clear all accumulated lines.
+   * This is the only way output leaves the renderer.
+   */
+  drainLines(): string[] {
+    const lines = this.pendingLines;
+    this.pendingLines = [];
+    return lines;
   }
 
   private processBuffer(): void {
@@ -209,11 +212,12 @@ export class MarkdownRenderer {
   }
 
   /**
-   * Write a single line with a subtle left indent.
+   * Add a single line with a subtle left indent.
+   * The line is accumulated internally — call drainLines() to extract.
    */
   writeLine(text: string): void {
     if (this.firstLine && visibleLen(text) === 0) return;
     this.firstLine = false;
-    this.writeFn(`  ${text}\n`);
+    this.pendingLines.push(`  ${text}`);
   }
 }
