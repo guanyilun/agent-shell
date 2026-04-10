@@ -17,6 +17,7 @@ index.ts — interactive terminal frontend:
   │
   ├── Built-in extensions:
   │     tuiRenderer       — markdown rendering, inline diffs, thinking display, spinner
+  │                        (all output via OutputWriter; components return string[])
   │     slashCommands     — /help, /clear, /copy, /compact, /quit
   │     fileAutocomplete  — @ file path completion
   │     shellRecall       — shell_recall terminal interception
@@ -25,7 +26,9 @@ index.ts — interactive terminal frontend:
   │     palette           — semantic color system (accent, success, warning, error, muted)
   │     diff-renderer     — syntax-highlighted diffs (split/unified/summary)
   │     box-frame         — bordered TUI panels
-  │     tool-display      — width-adaptive tool call rendering
+  │     tool-display      — width-adaptive tool call rendering + pure spinner
+  │     output-writer     — OutputWriter interface (StdoutWriter, BufferWriter for tests)
+  │     frame-renderer    — differential line-level output (infrastructure for frame-based rendering)
   │
   └── User extensions (opt-in, loaded from -e flag / settings.json / extensions dir):
         e.g. interactive-prompts, solarized-theme
@@ -271,14 +274,16 @@ agent-sh/
 │   ├── utils/
 │   │   ├── palette.ts      # Semantic color palette (accent/success/warning/error/muted)
 │   │   ├── ansi.ts         # ANSI utility functions (visibleLen, stripAnsi)
+│   │   ├── output-writer.ts# OutputWriter interface + StdoutWriter/BufferWriter
+│   │   ├── frame-renderer.ts # Differential line-level frame renderer
 │   │   ├── diff.ts         # Line-level LCS diff for file change previews
 │   │   ├── diff-renderer.ts# Syntax-highlighted diff display (split/unified/summary)
 │   │   ├── box-frame.ts    # Bordered TUI panels (rounded/square/double/heavy)
-│   │   ├── tool-display.ts # Width-adaptive tool call/result rendering
+│   │   ├── tool-display.ts # Width-adaptive tool call/result + pure spinner line
 │   │   ├── line-editor.ts       # Readline-style line editor (pure logic, no I/O)
 │   │   ├── stream-transform.ts  # Block transform helper for content pipeline
 │   │   ├── file-watcher.ts      # File change detection for agent tool writes
-│   │   └── markdown.ts          # Streaming markdown → ANSI renderer
+│   │   └── markdown.ts          # Streaming markdown → line accumulator (drainLines)
 │   └── extensions/
 │       ├── tui-renderer.ts       # Terminal rendering (markdown, spinner, tools)
 │       ├── slash-commands.ts     # /help, /clear, /copy, /compact, /quit

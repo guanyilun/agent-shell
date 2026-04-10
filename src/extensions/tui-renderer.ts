@@ -16,16 +16,17 @@ import { createFencedBlockTransform } from "../utils/stream-transform.js";
 import { palette as p } from "../utils/palette.js";
 import {
   renderToolCall,
-  renderToolResult,
-  startSpinner,
-  stopSpinner as stopToolSpinner,
+  createSpinner,
+  renderSpinnerLine,
   type SpinnerState,
+  type SpinnerOpts,
 } from "../utils/tool-display.js";
 import { renderDiff } from "../utils/diff-renderer.js";
 import { renderBoxFrame } from "../utils/box-frame.js";
 import type { DiffResult } from "../utils/diff.js";
 import { getSettings } from "../settings.js";
 import type { ExtensionContext } from "../types.js";
+import { StdoutWriter } from "../utils/output-writer.js";
 
 /** Encode a PNG buffer as a terminal inline image escape sequence. */
 function encodeImageForTerminal(data: Buffer): string | null {
@@ -47,26 +48,70 @@ function encodeImageForTerminal(data: Buffer): string | null {
   return null;
 }
 
+// ── Render state ─────────────────────────────────────────────────
+// All mutable TUI state in one place for clarity and future
+// migration to a frame-based rendering model.
+
+interface TruncatedDiff {
+  filePath: string;
+  diff: DiffResult;
+  expandedLines?: string[];
+  expanded: boolean;
+}
+
+interface RenderState {
+  // ── Response rendering ──
+  renderer: MarkdownRenderer | null;
+  hadToolCalls: boolean;
+
+  // ── Spinner ──
+  spinner: SpinnerState | null;
+  spinnerLabel: string;
+  spinnerOpts: SpinnerOpts;
+  spinnerInterval: ReturnType<typeof setInterval> | null;
+  spinnerStartTime: number;
+
+  // ── Tool output ──
+  lastCommand: string;
+  toolLineOpen: boolean;
+  currentToolKind: string | undefined;
+  commandOutputBuffer: string;
+  commandOutputLineCount: number;
+  commandOutputOverflow: number;
+
+  // ── Thinking ──
+  isThinking: boolean;
+  showThinkingText: boolean;
+
+  // ── Diff expansion ──
+  lastTruncatedDiff: TruncatedDiff | null;
+}
+
+function createRenderState(): RenderState {
+  return {
+    renderer: null,
+    hadToolCalls: false,
+    spinner: null,
+    spinnerLabel: "",
+    spinnerOpts: {},
+    spinnerInterval: null,
+    spinnerStartTime: 0,
+    lastCommand: "",
+    toolLineOpen: false,
+    currentToolKind: undefined,
+    commandOutputBuffer: "",
+    commandOutputLineCount: 0,
+    commandOutputOverflow: 0,
+    isThinking: false,
+    showThinkingText: false,
+    lastTruncatedDiff: null,
+  };
+}
+
 export default function activate(ctx: ExtensionContext): void {
   const { bus, getAcpClient, define } = ctx;
-  let spinner: SpinnerState | null = null;
-  let renderer: MarkdownRenderer | null = null;
-  let commandOutputBuffer = "";
-  let commandOutputLineCount = 0;
-  let commandOutputOverflow = 0;
-  let lastCommand = "";
-  let toolLineOpen = false; // true when tool header was written without \n
-  let hadToolCalls = false; // true after any tool call in current response
-  let currentToolKind: string | undefined; // kind of the currently executing tool
-  let isThinking = false;
-  let showThinkingText = false;
-  let spinnerStartTime = 0; // preserved across spinner restarts
-  let lastTruncatedDiff: {
-    filePath: string;
-    diff: DiffResult;
-    expandedLines?: string[]; // cached full render
-    expanded: boolean;
-  } | null = null;
+  const writer = new StdoutWriter();
+  const s = createRenderState();
 
   // ── Register fenced block transform (code blocks → ContentBlock) ──
   // Nobody is special — tui-renderer uses the same primitive as any extension.
@@ -81,28 +126,29 @@ export default function activate(ctx: ExtensionContext): void {
   // ── Event subscriptions ─────────────────────────────────────
 
   bus.on("agent:query", (e) => {
-    spinnerStartTime = 0;
+    s.spinnerStartTime = 0;
     showUserQuery(e.query);
     startAgentResponse();
     startThinkingSpinner();
   });
 
   bus.on("agent:thinking-chunk", (e) => {
-    if (!isThinking) {
-      isThinking = true;
-      if (showThinkingText) {
+    if (!s.isThinking) {
+      s.isThinking = true;
+      if (s.showThinkingText) {
         stopCurrentSpinner();
-        if (!renderer) startAgentResponse();
-        renderer!.writeLine(`${p.dim}Thinking (ctrl+t to collapse)${p.reset}`);
+        if (!s.renderer) startAgentResponse();
+        s.renderer!.writeLine(`${p.dim}Thinking (ctrl+t to collapse)${p.reset}`);
+        drain();
       } else {
         // Restart spinner with ctrl+t hint now that we know thinking is available
         startThinkingSpinner();
       }
     }
-    if (showThinkingText && e.text) {
-      if (!renderer) startAgentResponse();
-      renderer!.push(`${p.dim}${e.text}${p.reset}`);
-      flushOutput();
+    if (s.showThinkingText && e.text) {
+      if (!s.renderer) startAgentResponse();
+      s.renderer!.push(`${p.dim}${e.text}${p.reset}`);
+      drain();
     }
   });
 
@@ -130,7 +176,7 @@ export default function activate(ctx: ExtensionContext): void {
             break;
           case "raw":
             flushForRaw();
-            process.stdout.write(block.escape);
+            writer.write(block.escape);
             break;
         }
       }
@@ -139,69 +185,66 @@ export default function activate(ctx: ExtensionContext): void {
     }
   });
   bus.on("agent:response-done", () => {
-    isThinking = false;
+    s.isThinking = false;
     endAgentResponse();
   });
 
   bus.on("agent:tool-call", (e) => {
-    lastCommand = e.tool;
+    s.lastCommand = e.tool;
   });
 
   bus.on("agent:tool-started", (e) => {
     stopCurrentSpinner();
-    currentToolKind = e.kind;
+    s.currentToolKind = e.kind;
     if (e.title === "user_shell") {
-      // Minimal annotation — PTY echo will show the output
       closeToolLine();
-      if (!renderer) startAgentResponse();
-      renderer!.flush();
+      if (!s.renderer) startAgentResponse();
+      s.renderer!.flush();
       const cmd = (e.rawInput as any)?.command || "";
-      renderer!.writeLine(`${p.dim}▶ user_shell: ${cmd}${p.reset}`);
-      hadToolCalls = true;
+      s.renderer!.writeLine(`${p.dim}▶ user_shell: ${cmd}${p.reset}`);
+      drain();
+      s.hadToolCalls = true;
     } else {
-      showToolCall(e.title, lastCommand, e);
+      showToolCall(e.title, s.lastCommand, e);
     }
-    lastCommand = "";
+    s.lastCommand = "";
   });
 
   bus.on("agent:tool-completed", (e) => {
     showToolComplete(e.exitCode);
-    currentToolKind = undefined;
-    spinnerStartTime = 0;
+    s.currentToolKind = undefined;
+    s.spinnerStartTime = 0;
     startThinkingSpinner();
   });
   bus.on("agent:tool-output-chunk", (e) => writeCommandOutput(e.chunk));
   bus.on("agent:tool-output", () => flushCommandOutput());
 
   bus.on("agent:cancelled", () => {
-    isThinking = false;
+    s.isThinking = false;
     stopCurrentSpinner();
     showInfo("(cancelled)");
     endAgentResponse();
   });
 
   bus.on("agent:processing-done", () => {
-    isThinking = false;
+    s.isThinking = false;
     stopCurrentSpinner();
     endAgentResponse();
   });
 
   bus.on("agent:error", (e) => showError(e.message));
 
-  // Flush rendering state and show inline diff for file writes
   bus.on("permission:request", (e) => {
     stopCurrentSpinner();
     flushCommandOutput();
-    renderer?.flush();
+    if (s.renderer) {
+      s.renderer.flush();
+      drain();
+    }
 
     if (e.kind === "file-write" && e.metadata?.diff) {
-      showFileDiff(
-        e.title,
-        e.metadata.diff as DiffResult,
-      );
+      showFileDiff(e.title, e.metadata.diff as DiffResult);
     } else {
-      // Non-file permission (e.g. tool-call) — end response box
-      // so interactive extensions can render their own UI
       endAgentResponse();
     }
   });
@@ -215,39 +258,39 @@ export default function activate(ctx: ExtensionContext): void {
 
   // ── Rendering functions ─────────────────────────────────────
 
-  function flushOutput(): void {
-    if (process.stdout.writable) {
-      try { process.stdout.write(""); } catch {}
+  function drain(): void {
+    if (!s.renderer) return;
+    for (const line of s.renderer.drainLines()) {
+      writer.write(line + "\n");
     }
   }
 
   function startAgentResponse(): void {
-    renderer = new MarkdownRenderer();
-    hadToolCalls = false;
-    renderer.printTopBorder();
+    s.renderer = new MarkdownRenderer(writer.columns);
+    s.hadToolCalls = false;
+    s.renderer.printTopBorder();
+    drain();
   }
 
   function endAgentResponse(): void {
     closeToolLine();
-    if (renderer) {
-      renderer.flush();
-      renderer.printBottomBorder();
-      renderer = null;
+    if (s.renderer) {
+      s.renderer.flush();
+      s.renderer.printBottomBorder();
+      drain();
+      s.renderer = null;
     }
   }
 
   function showUserQuery(query: string): void {
-    const termW = process.stdout.columns || 80;
-    const boxW = Math.min(84, termW);
-    const contentW = boxW - 4; // inside box padding
+    const boxW = Math.min(84, writer.columns);
+    const contentW = boxW - 4;
 
-    // Wrap long queries to fit within box
     const lines: string[] = [];
     for (const raw of query.split("\n")) {
       if (raw.length <= contentW) {
         lines.push(`${p.accent}${raw}${p.reset}`);
       } else {
-        // Simple word wrap
         let remaining = raw;
         while (remaining.length > contentW) {
           let breakAt = remaining.lastIndexOf(" ", contentW);
@@ -265,38 +308,36 @@ export default function activate(ctx: ExtensionContext): void {
       borderColor: p.accent,
       title: `${p.accent}${p.bold}❯${p.reset}`,
     });
-    process.stdout.write("\n");
+    writer.write("\n");
     for (const line of framed) {
-      process.stdout.write(line + "\n");
+      writer.write(line + "\n");
     }
   }
 
   function writeAgentText(text: string): void {
     closeToolLine();
-    const needsGap = hadToolCalls;
-    hadToolCalls = false;
-    if (isThinking) {
-      isThinking = false;
-      if (showThinkingText && renderer) {
-        renderer.flush();
-        const termW = process.stdout.columns || 80;
-        const w = Math.min(80, termW);
-        renderer.writeLine(`${p.dim}${"─".repeat(w)}${p.reset}`);
+    const needsGap = s.hadToolCalls;
+    s.hadToolCalls = false;
+    if (s.isThinking) {
+      s.isThinking = false;
+      if (s.showThinkingText && s.renderer) {
+        s.renderer.flush();
+        const w = Math.min(80, writer.columns);
+        s.renderer.writeLine(`${p.dim}${"─".repeat(w)}${p.reset}`);
+        drain();
       }
     }
     stopCurrentSpinner();
-    if (!renderer) startAgentResponse();
-    if (needsGap) process.stdout.write("\n");
-    renderer!.push(text);
-    flushOutput();
+    if (!s.renderer) startAgentResponse();
+    if (needsGap) writer.write("\n");
+    s.renderer!.push(text);
+    drain();
   }
 
-  /** Render a code block with syntax highlighting (extracted from MarkdownRenderer). */
-  // Register named handler — extensions can advise this
-  define("render:code-block", (language: string, code: string) => {
+  define("render:code-block", (language: string, code: string, width: number) => {
     flushForRaw();
     if (language) {
-      renderer!.writeLine(`${p.dim}${language}${p.reset}`);
+      s.renderer!.writeLine(`${p.dim}${language}${p.reset}`);
     }
     let highlighted: string;
     try {
@@ -304,34 +345,34 @@ export default function activate(ctx: ExtensionContext): void {
     } catch {
       highlighted = `${p.success}${code}${p.reset}`;
     }
-    const termW = process.stdout.columns || 100;
-    const contentWidth = Math.min(90, termW - 2);
+    const contentWidth = Math.min(90, width - 2);
     for (const line of highlighted.split("\n")) {
       const indented = `  ${line}`;
       const wrapped = wrapLine(indented, contentWidth);
       for (const wl of wrapped) {
-        renderer!.writeLine(wl);
+        s.renderer!.writeLine(wl);
       }
     }
+    drain();
   });
 
   function writeCodeBlock(language: string, code: string): void {
-    ctx.call("render:code-block", language, code);
+    ctx.call("render:code-block", language, code, writer.columns);
   }
 
-  /** Flush markdown renderer and prepare for raw stdout writes. */
   function flushForRaw(): void {
     closeToolLine();
     stopCurrentSpinner();
-    if (!renderer) startAgentResponse();
-    renderer!.flush();
+    if (!s.renderer) startAgentResponse();
+    s.renderer!.flush();
+    drain();
   }
 
   define("render:image", (data: Buffer) => {
     flushForRaw();
     const escape = encodeImageForTerminal(data);
     if (escape) {
-      process.stdout.write("  " + escape + "\n");
+      writer.write("  " + escape + "\n");
     }
   });
 
@@ -350,46 +391,45 @@ export default function activate(ctx: ExtensionContext): void {
   ): void {
     closeToolLine();
     stopCurrentSpinner();
-    if (!renderer) startAgentResponse();
-    renderer!.flush();
-    const termW = process.stdout.columns || 80;
+    if (!s.renderer) startAgentResponse();
+    s.renderer!.flush();
+    drain();
     const lines = renderToolCall({
       title,
       command: command || undefined,
       kind: extra?.kind,
       locations: extra?.locations,
       rawInput: extra?.rawInput,
-    }, termW);
-    // Write all lines except the last normally, write last without \n
+    }, writer.columns);
     for (let i = 0; i < lines.length - 1; i++) {
-      renderer!.writeLine(lines[i]!);
+      s.renderer!.writeLine(lines[i]!);
     }
+    drain();
     if (lines.length > 0) {
-      process.stdout.write(`  ${lines[lines.length - 1]}`);
-      toolLineOpen = true;
+      writer.write(`  ${lines[lines.length - 1]}`);
+      s.toolLineOpen = true;
     }
-    hadToolCalls = true;
-    // Reset output tracking for the new tool
-    commandOutputLineCount = 0;
-    commandOutputOverflow = 0;
+    s.hadToolCalls = true;
+    s.commandOutputLineCount = 0;
+    s.commandOutputOverflow = 0;
   }
 
   function showToolComplete(exitCode: number | null): void {
-    if (!renderer) return;
+    if (!s.renderer) return;
     const mark = exitCode === null
       ? `${p.muted}(timed out)${p.reset}`
       : exitCode === 0
         ? `${p.success}✓${p.reset}`
         : `${p.error}✗ exit ${exitCode}${p.reset}`;
 
-    if (toolLineOpen && commandOutputLineCount === 0) {
-      // No output written — append mark on same line as tool header
-      process.stdout.write(` ${mark}\n`);
-      toolLineOpen = false;
+    if (s.toolLineOpen && s.commandOutputLineCount === 0) {
+      writer.write(` ${mark}\n`);
+      s.toolLineOpen = false;
     } else {
       closeToolLine();
       flushCommandOutput();
-      renderer.writeLine(`  ${mark}`);
+      s.renderer.writeLine(`  ${mark}`);
+      drain();
     }
   }
 
@@ -399,70 +439,81 @@ export default function activate(ctx: ExtensionContext): void {
   }
 
   function startThinkingSpinner(): void {
-    // Preserve start time if restarting (e.g. toggle), otherwise reset
-    if (!spinnerStartTime) spinnerStartTime = Date.now();
+    if (!s.spinnerStartTime) s.spinnerStartTime = Date.now();
     stopCurrentSpinner();
     const thinking = hasThinkingMode();
-    const label = thinking ? "Thinking" : "Working";
+    s.spinnerLabel = thinking ? "Thinking" : "Working";
     const hint = thinking
-      ? (showThinkingText ? "(ctrl+t to collapse)" : "(ctrl+t to expand)")
+      ? (s.showThinkingText ? "(ctrl+t to collapse)" : "(ctrl+t to expand)")
       : "";
-    spinner = startSpinner(label, { hint: hint || undefined, startTime: spinnerStartTime });
+    s.spinnerOpts = { hint: hint || undefined, startTime: s.spinnerStartTime };
+    s.spinner = createSpinner({ startTime: s.spinnerStartTime });
+    s.spinnerInterval = setInterval(() => {
+      if (s.spinner) {
+        const line = renderSpinnerLine(s.spinner, s.spinnerLabel, s.spinnerOpts);
+        writer.write(`\r  ${line}\x1b[K`);
+      }
+    }, 80);
   }
 
   function stopCurrentSpinner(): void {
-    if (spinner) {
-      stopToolSpinner(spinner);
-      spinner = null;
+    if (s.spinnerInterval) {
+      clearInterval(s.spinnerInterval);
+      s.spinnerInterval = null;
+    }
+    if (s.spinner) {
+      writer.write("\r\x1b[2K");
+      s.spinner = null;
     }
   }
 
   function closeToolLine(): void {
-    if (toolLineOpen) {
-      process.stdout.write("\n");
-      toolLineOpen = false;
+    if (s.toolLineOpen) {
+      writer.write("\n");
+      s.toolLineOpen = false;
     }
   }
 
   function writeCommandOutput(chunk: string): void {
-    if (!renderer) return;
+    if (!s.renderer) return;
     closeToolLine();
-    const maxLines = currentToolKind === "read"
+    const maxLines = s.currentToolKind === "read"
       ? getSettings().readOutputMaxLines
       : getSettings().maxCommandOutputLines;
-    commandOutputBuffer += chunk;
-    const lines = commandOutputBuffer.split("\n");
-    commandOutputBuffer = lines.pop()!;
+    s.commandOutputBuffer += chunk;
+    const lines = s.commandOutputBuffer.split("\n");
+    s.commandOutputBuffer = lines.pop()!;
     for (const line of lines) {
-      if (commandOutputLineCount < maxLines) {
-        renderer.writeLine(`${p.dim}  ${line}${p.reset}`);
-        commandOutputLineCount++;
+      if (s.commandOutputLineCount < maxLines) {
+        s.renderer.writeLine(`${p.dim}  ${line}${p.reset}`);
+        s.commandOutputLineCount++;
       } else {
-        commandOutputOverflow++;
+        s.commandOutputOverflow++;
       }
     }
+    drain();
   }
 
   function flushCommandOutput(): void {
-    if (!renderer) return;
-    const maxLines = currentToolKind === "read"
+    if (!s.renderer) return;
+    const maxLines = s.currentToolKind === "read"
       ? getSettings().readOutputMaxLines
       : getSettings().maxCommandOutputLines;
-    if (commandOutputBuffer) {
-      if (commandOutputLineCount < maxLines) {
-        renderer.writeLine(`${p.dim}  ${commandOutputBuffer}${p.reset}`);
-        commandOutputLineCount++;
+    if (s.commandOutputBuffer) {
+      if (s.commandOutputLineCount < maxLines) {
+        s.renderer.writeLine(`${p.dim}  ${s.commandOutputBuffer}${p.reset}`);
+        s.commandOutputLineCount++;
       } else {
-        commandOutputOverflow++;
+        s.commandOutputOverflow++;
       }
-      commandOutputBuffer = "";
+      s.commandOutputBuffer = "";
     }
-    if (commandOutputOverflow > 0 && maxLines > 0) {
-      renderer.writeLine(`${p.dim}  … ${commandOutputOverflow} more lines${p.reset}`);
+    if (s.commandOutputOverflow > 0 && maxLines > 0) {
+      s.renderer.writeLine(`${p.dim}  … ${s.commandOutputOverflow} more lines${p.reset}`);
     }
-    commandOutputOverflow = 0;
+    s.commandOutputOverflow = 0;
+    drain();
   }
-
 
   function diffTitle(filePath: string, diff: DiffResult): string {
     const stats = diff.isNewFile
@@ -474,8 +525,7 @@ export default function activate(ctx: ExtensionContext): void {
   function showFileDiff(filePath: string, diff: DiffResult): void {
     if (diff.isIdentical) return;
 
-    const termW = process.stdout.columns || 80;
-    const boxW = Math.min(84, termW);
+    const boxW = Math.min(84, writer.columns);
     const contentW = boxW - 4;
 
     const diffLines = renderDiff(diff, {
@@ -490,9 +540,9 @@ export default function activate(ctx: ExtensionContext): void {
     const isTruncated = lastLine.includes("… ");
 
     if (isTruncated) {
-      lastTruncatedDiff = { filePath, diff, expanded: false };
+      s.lastTruncatedDiff = { filePath, diff, expanded: false };
     } else {
-      lastTruncatedDiff = null;
+      s.lastTruncatedDiff = null;
     }
 
     const body = diffLines.length > 1 ? ["", ...diffLines.slice(1), ""] : diffLines;
@@ -509,16 +559,17 @@ export default function activate(ctx: ExtensionContext): void {
       footer,
     });
 
-    if (!renderer) startAgentResponse();
+    if (!s.renderer) startAgentResponse();
     for (const line of framed) {
-      renderer!.writeLine(line);
+      s.renderer!.writeLine(line);
     }
+    drain();
   }
 
   function expandLastDiff(): void {
-    if (!lastTruncatedDiff) return;
+    if (!s.lastTruncatedDiff) return;
 
-    const entry = lastTruncatedDiff;
+    const entry = s.lastTruncatedDiff;
     entry.expanded = !entry.expanded;
 
     if (!entry.expanded) {
@@ -528,8 +579,7 @@ export default function activate(ctx: ExtensionContext): void {
 
     if (!entry.expandedLines) {
       const { filePath, diff } = entry;
-      const termW = process.stdout.columns || 80;
-      const boxW = Math.min(120, termW);
+      const boxW = Math.min(120, writer.columns);
       const contentW = boxW - 4;
 
       const diffLines = renderDiff(diff, {
@@ -550,16 +600,15 @@ export default function activate(ctx: ExtensionContext): void {
       });
     }
 
-    process.stdout.write("\n");
+    writer.write("\n");
     for (const line of entry.expandedLines) {
-      process.stdout.write(line + "\n");
+      writer.write(line + "\n");
     }
   }
 
-  function showFileDiffCached(entry: NonNullable<typeof lastTruncatedDiff>): void {
+  function showFileDiffCached(entry: TruncatedDiff): void {
     const { filePath, diff } = entry;
-    const termW = process.stdout.columns || 80;
-    const boxW = Math.min(84, termW);
+    const boxW = Math.min(84, writer.columns);
     const contentW = boxW - 4;
 
     const diffLines = renderDiff(diff, {
@@ -580,46 +629,44 @@ export default function activate(ctx: ExtensionContext): void {
       footer: [`  ${p.dim}ctrl+o to expand${p.reset}`],
     });
 
-    process.stdout.write("\n");
+    writer.write("\n");
     for (const line of framed) {
-      process.stdout.write(line + "\n");
+      writer.write(line + "\n");
     }
   }
 
   function toggleThinkingDisplay(): void {
-    showThinkingText = !showThinkingText;
+    s.showThinkingText = !s.showThinkingText;
 
-    // Update spinner hint to reflect new state, even if not actively thinking
-    if (spinner) {
+    if (s.spinner) {
       stopCurrentSpinner();
       startThinkingSpinner();
       return;
     }
 
-    if (!isThinking) return;
+    if (!s.isThinking) return;
 
-    if (showThinkingText) {
-      // Switch from spinner to streaming text
+    if (s.showThinkingText) {
       stopCurrentSpinner();
-      if (!renderer) startAgentResponse();
-      renderer!.writeLine(`${p.dim}Thinking (ctrl+t to collapse)${p.reset}`);
+      if (!s.renderer) startAgentResponse();
+      s.renderer!.writeLine(`${p.dim}Thinking (ctrl+t to collapse)${p.reset}`);
+      drain();
     } else {
-      // Switch from streaming text to spinner
-      if (renderer) {
-        renderer.flush();
-        const termW = process.stdout.columns || 80;
-        const w = Math.min(80, termW);
-        renderer.writeLine(`${p.dim}${"─".repeat(w)}${p.reset}`);
+      if (s.renderer) {
+        s.renderer.flush();
+        const w = Math.min(80, writer.columns);
+        s.renderer.writeLine(`${p.dim}${"─".repeat(w)}${p.reset}`);
+        drain();
       }
       startThinkingSpinner();
     }
   }
 
   function showError(message: string): void {
-    process.stdout.write(`\n${p.error}Error: ${message}${p.reset}\n`);
+    writer.write(`\n${p.error}Error: ${message}${p.reset}\n`);
   }
 
   function showInfo(message: string): void {
-    process.stdout.write(`${p.muted}${message}${p.reset}\n`);
+    writer.write(`${p.muted}${message}${p.reset}\n`);
   }
 }

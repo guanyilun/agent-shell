@@ -232,43 +232,34 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
 export interface SpinnerState {
   frame: number;
   startTime: number;
-  interval: ReturnType<typeof setInterval> | null;
 }
 
-export function createSpinner(): SpinnerState {
-  return { frame: 0, startTime: Date.now(), interval: null };
+export interface SpinnerOpts {
+  color?: string;
+  hint?: string;
+  startTime?: number;
+}
+
+export function createSpinner(opts?: { startTime?: number }): SpinnerState {
+  return { frame: 0, startTime: opts?.startTime || Date.now() };
 }
 
 /**
- * Start a spinner that writes to stdout on the current line.
- * Returns the SpinnerState for later stopping.
+ * Pure function: render the current spinner line and advance the frame.
+ * Does not write to stdout — the caller is responsible for output.
  */
-export function startSpinner(
+export function renderSpinnerLine(
+  state: SpinnerState,
   label: string,
-  opts?: { color?: string; hint?: string; startTime?: number },
-): SpinnerState {
-  const state = createSpinner();
-  if (opts?.startTime) state.startTime = opts.startTime;
+  opts?: SpinnerOpts,
+): string {
+  const frame = SPINNER_FRAMES[state.frame % SPINNER_FRAMES.length];
+  state.frame++;
   const color = opts?.color ?? p.accent;
-
+  const elapsed = formatElapsed(Date.now() - state.startTime);
+  const timer = elapsed ? ` ${p.dim}${elapsed}${p.reset}` : "";
   const hint = opts?.hint ? ` ${p.dim}${opts.hint}${p.reset}` : "";
-  state.interval = setInterval(() => {
-    const frame = SPINNER_FRAMES[state.frame % SPINNER_FRAMES.length];
-    const elapsed = formatElapsed(Date.now() - state.startTime);
-    const timer = elapsed ? ` ${p.dim}${elapsed}${p.reset}` : "";
-    process.stdout.write(`\r  ${color}${frame} ${label}...${p.reset}${timer}${hint}\x1b[K`);
-    state.frame++;
-  }, 80);
-
-  return state;
-}
-
-export function stopSpinner(state: SpinnerState): void {
-  if (state.interval) {
-    clearInterval(state.interval);
-    state.interval = null;
-    process.stdout.write("\r\x1b[2K");
-  }
+  return `${color}${frame} ${label}...${p.reset}${timer}${hint}`;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
