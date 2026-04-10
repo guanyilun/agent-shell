@@ -7,7 +7,7 @@ import { computeDiff } from "./utils/diff.js";
 import { FileWatcher } from "./utils/file-watcher.js";
 import * as path from "node:path";
 import { stripAnsi } from "./utils/ansi.js";
-import type { EventBus } from "./event-bus.js";
+import type { EventBus, ShellEvents } from "./event-bus.js";
 import type { ContextManager } from "./context-manager.js";
 import type { AgentShellConfig } from "./types.js";
 
@@ -25,7 +25,10 @@ export class AcpClient {
   private terminalDonePromises = new Map<string, Promise<void>>();
   private terminalCounter = 0;
   private fileWatcher: FileWatcher;
-  private pendingToolCalls = new Map<string, string>(); // toolCallId → title
+  private pendingToolCalls = new Map<string, {
+    title: string;
+    deferredPayload?: ShellEvents["agent:tool-started"];
+  }>();
   private autoCancelled = false;
   private pendingToolCounter = 0;
   private agentInfo: { name: string; version: string } | null = null;
@@ -184,21 +187,15 @@ export class AcpClient {
 
     try {
       this.log("sending prompt...");
-      const promptTimeoutMs = 300000; // 5 minutes timeout for LLM response
-      const response = await Promise.race([
-        this.connection.prompt({
-          sessionId: this.sessionId,
-          prompt: [
-            {
-              type: "text",
-              text: contextBlock + "\n" + query,
-            },
-          ],
-        }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Prompt timeout after ${promptTimeoutMs}ms`)), promptTimeoutMs)
-        ),
-      ]);
+      const response = await this.connection.prompt({
+        sessionId: this.sessionId,
+        prompt: [
+          {
+            type: "text",
+            text: contextBlock + "\n" + query,
+          },
+        ],
+      });
 
       this.log(`prompt resolved: stopReason=${response.stopReason}`);
 
@@ -376,8 +373,14 @@ export class AcpClient {
   private createClientHandler(): acp.Client {
     return {
       // Required: handle session update notifications (streaming)
+      // Errors must not propagate — the ACP SDK returns them as error
+      // responses to the agent, which can stall the stream.
       sessionUpdate: async (params) => {
-        this.handleSessionUpdate(params);
+        try {
+          this.handleSessionUpdate(params);
+        } catch (err) {
+          this.log(`Error in sessionUpdate handler: ${err instanceof Error ? err.stack : err}`);
+        }
       },
 
       // Required: handle permission requests
@@ -445,22 +448,36 @@ export class AcpClient {
 
       case "tool_call": {
         const toolId = update.toolCallId || `tool-${this.pendingToolCounter++}`;
-        this.pendingToolCalls.set(toolId, update.title ?? "");
-        this.bus.emit("agent:tool-started", {
+        const payload: ShellEvents["agent:tool-started"] = {
           title: update.title,
           toolCallId: toolId,
           kind: update.kind ?? undefined,
           locations: update.locations?.map((l) => ({ path: l.path, line: l.line })),
           rawInput: update.rawInput,
+        };
+        const defer = this.pendingToolCalls.size > 0;
+        this.pendingToolCalls.set(toolId, {
+          title: update.title ?? "",
+          deferredPayload: defer ? payload : undefined,
         });
+        if (!defer) {
+          this.bus.emit("agent:tool-started", payload);
+        }
         break;
       }
 
       case "tool_call_update": {
         const toolId = update.toolCallId;
-        const toolTitle = toolId ? this.pendingToolCalls.get(toolId) : undefined;
+        const toolInfo = toolId ? this.pendingToolCalls.get(toolId) : undefined;
+        const toolTitle = toolInfo?.title;
 
         if (update.status === "completed" || update.status === "failed") {
+          // Emit deferred tool-started before output (parallel tools)
+          if (toolInfo?.deferredPayload) {
+            this.bus.emit("agent:tool-started", toolInfo.deferredPayload);
+            toolInfo.deferredPayload = undefined;
+          }
+
           // Show content only on final status. Skip tools whose output the
           // user already sees (user_shell → PTY) or is agent-only (shell_recall).
           const skipOutput = toolTitle === "user_shell" || toolTitle === "shell_recall";
