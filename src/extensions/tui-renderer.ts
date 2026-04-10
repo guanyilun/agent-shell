@@ -22,9 +22,8 @@ import {
 import { renderDiff } from "../utils/diff-renderer.js";
 import { renderBoxFrame } from "../utils/box-frame.js";
 import type { DiffResult } from "../utils/diff.js";
+import { getSettings } from "../settings.js";
 import type { ExtensionContext } from "../types.js";
-
-const MAX_COMMAND_OUTPUT_LINES = 30;
 
 export default function activate({ bus }: ExtensionContext): void {
   let spinner: SpinnerState | null = null;
@@ -289,7 +288,7 @@ export default function activate({ bus }: ExtensionContext): void {
     const lines = commandOutputBuffer.split("\n");
     commandOutputBuffer = lines.pop()!;
     for (const line of lines) {
-      if (commandOutputLineCount < MAX_COMMAND_OUTPUT_LINES) {
+      if (commandOutputLineCount < getSettings().maxCommandOutputLines) {
         renderer.writeLine(`${p.dim}  ${line}${p.reset}`);
         commandOutputLineCount++;
       } else {
@@ -301,7 +300,7 @@ export default function activate({ bus }: ExtensionContext): void {
   function flushCommandOutput(): void {
     if (!renderer) return;
     if (commandOutputBuffer) {
-      if (commandOutputLineCount < MAX_COMMAND_OUTPUT_LINES) {
+      if (commandOutputLineCount < getSettings().maxCommandOutputLines) {
         renderer.writeLine(`${p.dim}  ${commandOutputBuffer}${p.reset}`);
         commandOutputLineCount++;
       } else {
@@ -315,7 +314,6 @@ export default function activate({ bus }: ExtensionContext): void {
     }
   }
 
-  const DIFF_MAX_LINES = 20;
 
   function diffTitle(filePath: string, diff: DiffResult): string {
     const stats = diff.isNewFile
@@ -334,7 +332,7 @@ export default function activate({ bus }: ExtensionContext): void {
     const diffLines = renderDiff(diff, {
       width: contentW,
       filePath,
-      maxLines: DIFF_MAX_LINES,
+      maxLines: getSettings().diffMaxLines,
       trueColor: true,
       mode: "unified",
     });
@@ -418,7 +416,7 @@ export default function activate({ bus }: ExtensionContext): void {
     const diffLines = renderDiff(diff, {
       width: contentW,
       filePath,
-      maxLines: DIFF_MAX_LINES,
+      maxLines: getSettings().diffMaxLines,
       trueColor: true,
       mode: "unified",
     });

@@ -14,13 +14,41 @@ const SETTINGS_PATH = path.join(CONFIG_DIR, "settings.json");
 export interface Settings {
   /** Extensions to load (npm packages or file paths). */
   extensions?: string[];
-  /** Max agent query history entries to keep. Default 500. */
+  /** Max agent query history entries to keep. */
   historySize?: number;
+
+  // ── Context & truncation ──────────────────────────────────
+  /** Recent exchanges included in agent context window. */
+  contextWindowSize?: number;
+  /** Context budget in bytes (~4 chars per token). */
+  contextBudget?: number;
+  /** Shell output lines before truncation kicks in. */
+  shellTruncateThreshold?: number;
+  /** Lines kept from start of truncated shell output. */
+  shellHeadLines?: number;
+  /** Lines kept from end of truncated shell output. */
+  shellTailLines?: number;
+  /** Max lines for recall expand before requiring line ranges. */
+  recallExpandMaxLines?: number;
+
+  // ── Display ───────────────────────────────────────────────
+  /** Max command output lines shown inline in TUI. */
+  maxCommandOutputLines?: number;
+  /** Max diff lines shown before "ctrl+o to expand". */
+  diffMaxLines?: number;
 }
 
 const DEFAULTS: Required<Settings> = {
   extensions: [],
   historySize: 500,
+  contextWindowSize: 20,
+  contextBudget: 16384,
+  shellTruncateThreshold: 10,
+  shellHeadLines: 5,
+  shellTailLines: 5,
+  recallExpandMaxLines: 100,
+  maxCommandOutputLines: 30,
+  diffMaxLines: 20,
 };
 
 let cached: Settings | null = null;
