@@ -33,6 +33,8 @@ export default function activate({ bus }: ExtensionContext): void {
   let commandOutputLineCount = 0;
   let commandOutputOverflow = 0;
   let lastCommand = "";
+  let toolLineOpen = false; // true when tool header was written without \n
+  let hadToolCalls = false; // true after any tool call in current response
   let isThinking = false;
   let showThinkingText = false;
   let lastTruncatedDiff: {
@@ -138,11 +140,13 @@ export default function activate({ bus }: ExtensionContext): void {
 
   function startAgentResponse(): void {
     renderer = new MarkdownRenderer();
+    hadToolCalls = false;
     process.stdout.write("\n");
     renderer.printTopBorder();
   }
 
   function endAgentResponse(): void {
+    closeToolLine();
     if (renderer) {
       renderer.flush();
       renderer.printBottomBorder();
@@ -186,6 +190,9 @@ export default function activate({ bus }: ExtensionContext): void {
   }
 
   function writeAgentText(text: string): void {
+    closeToolLine();
+    const needsGap = hadToolCalls;
+    hadToolCalls = false;
     if (isThinking) {
       isThinking = false;
       if (showThinkingText && renderer) {
@@ -197,6 +204,7 @@ export default function activate({ bus }: ExtensionContext): void {
     }
     stopCurrentSpinner();
     if (!renderer) startAgentResponse();
+    if (needsGap) process.stdout.write("\n");
     renderer!.push(text);
     flushOutput();
   }
@@ -210,6 +218,7 @@ export default function activate({ bus }: ExtensionContext): void {
       rawInput?: unknown;
     },
   ): void {
+    closeToolLine();
     stopCurrentSpinner();
     if (!renderer) startAgentResponse();
     renderer!.flush();
@@ -221,9 +230,15 @@ export default function activate({ bus }: ExtensionContext): void {
       locations: extra?.locations,
       rawInput: extra?.rawInput,
     }, termW);
-    for (const line of lines) {
-      renderer!.writeLine(line);
+    // Write all lines except the last normally, write last without \n
+    for (let i = 0; i < lines.length - 1; i++) {
+      renderer!.writeLine(lines[i]!);
     }
+    if (lines.length > 0) {
+      process.stdout.write(`  ${lines[lines.length - 1]}`);
+      toolLineOpen = true;
+    }
+    hadToolCalls = true;
     // Reset output tracking for the new tool
     commandOutputLineCount = 0;
     commandOutputOverflow = 0;
@@ -231,10 +246,20 @@ export default function activate({ bus }: ExtensionContext): void {
 
   function showToolComplete(exitCode: number | null): void {
     if (!renderer) return;
-    const termW = process.stdout.columns || 80;
-    const lines = renderToolResult({ exitCode }, termW);
-    for (const line of lines) {
-      renderer.writeLine(line);
+    const mark = exitCode === null
+      ? `${p.muted}(timed out)${p.reset}`
+      : exitCode === 0
+        ? `${p.success}✓${p.reset}`
+        : `${p.error}✗ exit ${exitCode}${p.reset}`;
+
+    if (toolLineOpen && commandOutputLineCount === 0) {
+      // No output written — append mark on same line as tool header
+      process.stdout.write(` ${mark}\n`);
+      toolLineOpen = false;
+    } else {
+      closeToolLine();
+      flushCommandOutput();
+      renderer.writeLine(`  ${mark}`);
     }
   }
 
@@ -250,8 +275,16 @@ export default function activate({ bus }: ExtensionContext): void {
     }
   }
 
+  function closeToolLine(): void {
+    if (toolLineOpen) {
+      process.stdout.write("\n");
+      toolLineOpen = false;
+    }
+  }
+
   function writeCommandOutput(chunk: string): void {
     if (!renderer) return;
+    closeToolLine();
     commandOutputBuffer += chunk;
     const lines = commandOutputBuffer.split("\n");
     commandOutputBuffer = lines.pop()!;
