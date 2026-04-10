@@ -29,27 +29,31 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default function activate(
   { bus, contextManager }: ExtensionContext,
-  opts: { socketPath: string },
+  opts: { socketPath: string; enableMcp?: boolean },
 ): void {
   const { socketPath } = opts;
 
-  // Register MCP server so ACP agents discover the user_shell tool
-  bus.onPipe("session:configure", (payload) => {
-    return {
-      ...payload,
-      mcpServers: [
-        ...payload.mcpServers,
-        {
-          name: "agent-sh",
-          command: process.execPath,
-          args: [path.join(__dirname, "..", "mcp-server.js")],
-          env: [{ name: "AGENT_SH_SOCKET", value: socketPath }],
-        },
-      ],
-    };
-  });
+  // Register MCP server so ACP agents discover the bridge tools.
+  // Skipped for agents that don't support MCP (e.g. pi-acp uses its own
+  // extension system instead — see examples/pi-agent-sh.ts).
+  if (opts.enableMcp !== false) {
+    bus.onPipe("session:configure", (payload) => {
+      return {
+        ...payload,
+        mcpServers: [
+          ...payload.mcpServers,
+          {
+            name: "agent-sh",
+            command: process.execPath,
+            args: [path.join(__dirname, "..", "mcp-server.js")],
+            env: [{ name: "AGENT_SH_SOCKET", value: socketPath }],
+          },
+        ],
+      };
+    });
+  }
 
-  // Also set AGENT_SH_SOCKET for pi extensions that connect directly
+  // Set AGENT_SH_SOCKET for agent extensions that connect directly
   process.env.AGENT_SH_SOCKET = socketPath;
 
   // Serialize shell/exec requests — only one PTY command at a time

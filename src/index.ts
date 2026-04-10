@@ -248,14 +248,17 @@ async function main(): Promise<void> {
   fileAutocomplete(extCtx);
   shellRecall(extCtx);
 
-  // Shell-exec: start the Unix domain socket bridge so the MCP server can
-  // route user_shell tool calls to the PTY via the EventBus.
+  // Shell-exec: start the Unix domain socket bridge so agent extensions
+  // and MCP servers can route tool calls to the PTY via the EventBus.
   const tmpDir = shell.getTmpDir();
   if (tmpDir) {
     if (process.env.DEBUG) {
       console.error('[agent-sh] Starting shell-exec socket server...');
     }
-    shellExec(extCtx, { socketPath: `${tmpDir}/shell.sock` });
+    // pi-acp doesn't support MCP — it uses its own extension system.
+    // Only register the MCP server for agents that forward mcpServers.
+    const isPi = config.agentCommand.includes("pi");
+    shellExec(extCtx, { socketPath: `${tmpDir}/shell.sock`, enableMcp: !isPi });
   }
 
   // Load extensions with timeout to prevent blocking startup
