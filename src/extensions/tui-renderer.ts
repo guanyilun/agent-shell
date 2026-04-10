@@ -355,10 +355,15 @@ export default function activate(ctx: ExtensionContext): void {
       s.renderer!.writeLine(`${p.dim}${language}${p.reset}`);
     }
     let highlighted: string;
-    try {
-      highlighted = highlight(code, { language: language || undefined });
-    } catch {
-      highlighted = `${p.success}${code}${p.reset}`;
+    if (!language) {
+      // No language specified — render as plain text to avoid false syntax detection
+      highlighted = code;
+    } else {
+      try {
+        highlighted = highlight(code, { language });
+      } catch {
+        highlighted = `${p.success}${code}${p.reset}`;
+      }
     }
     const contentWidth = Math.min(90, width - 2);
     for (const line of highlighted.split("\n")) {

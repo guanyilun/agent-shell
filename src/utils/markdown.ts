@@ -88,6 +88,7 @@ export class MarkdownRenderer {
   private firstLine = true;
   private pendingLines: string[] = [];
   private width: number;
+  private tableRows: string[][] = [];
 
   constructor(width: number) {
     this.width = Math.max(10, width);
@@ -111,6 +112,7 @@ export class MarkdownRenderer {
       this.processLine(this.buffer);
       this.buffer = "";
     }
+    this.flushTable();
   }
 
   printTopBorder(): void {
@@ -142,10 +144,87 @@ export class MarkdownRenderer {
   }
 
   private processLine(line: string): void {
+    // Table row detection: lines with | separators
+    if (/^\s*\|/.test(line)) {
+      const cells = parseTableRow(line);
+      if (cells) {
+        this.tableRows.push(cells);
+        return;
+      }
+    }
+
+    // Non-table line — flush any buffered table first
+    this.flushTable();
+
     const rendered = this.renderLine(line);
     const wrapped = wrapLine(rendered, this.contentWidth);
     for (const wl of wrapped) {
       this.writeLine(wl);
+    }
+  }
+
+  private flushTable(): void {
+    if (this.tableRows.length === 0) return;
+
+    const rows = this.tableRows;
+    this.tableRows = [];
+
+    // Filter out separator rows (|---|---|)
+    const sepIdx: number[] = [];
+    const dataRows: string[][] = [];
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i]!.every((c) => /^[-:]+$/.test(c.trim()) || c.trim() === "")) {
+        sepIdx.push(i);
+      } else {
+        dataRows.push(rows[i]!);
+      }
+    }
+
+    if (dataRows.length === 0) return;
+
+    // Normalize column count
+    const numCols = Math.max(...dataRows.map((r) => r.length));
+    for (const row of dataRows) {
+      while (row.length < numCols) row.push("");
+    }
+
+    // Calculate column widths from content
+    const colWidths: number[] = new Array(numCols).fill(0);
+    for (const row of dataRows) {
+      for (let c = 0; c < numCols; c++) {
+        colWidths[c] = Math.max(colWidths[c]!, row[c]!.length);
+      }
+    }
+
+    // Shrink columns proportionally if total exceeds content width
+    // Account for separators: " │ " between cols (3 chars each) + 2 outer padding
+    const separatorWidth = (numCols - 1) * 3;
+    const availableWidth = this.contentWidth - separatorWidth;
+    const totalWidth = colWidths.reduce((a, b) => a + b, 0);
+    if (totalWidth > availableWidth && availableWidth > numCols) {
+      const scale = availableWidth / totalWidth;
+      for (let c = 0; c < numCols; c++) {
+        colWidths[c] = Math.max(1, Math.floor(colWidths[c]! * scale));
+      }
+    }
+
+    // Render rows
+    const hasHeader = sepIdx.includes(1) && dataRows.length > 1;
+    for (let i = 0; i < dataRows.length; i++) {
+      const row = dataRows[i]!;
+      const isHeader = hasHeader && i === 0;
+      const cells = row.map((cell, c) => {
+        const w = colWidths[c]!;
+        const text = cell.length > w ? cell.slice(0, w - 1) + "…" : cell.padEnd(w);
+        return isHeader ? `${p.bold}${text}${p.reset}` : text;
+      });
+      this.writeLine(`${p.dim}│${p.reset} ${cells.join(` ${p.dim}│${p.reset} `)} ${p.dim}│${p.reset}`);
+
+      // Separator after header
+      if (isHeader) {
+        const sep = colWidths.map((w) => "─".repeat(w)).join(`─┼─`);
+        this.writeLine(`${p.dim}├─${sep}─┤${p.reset}`);
+      }
     }
   }
 
@@ -198,10 +277,10 @@ export class MarkdownRenderer {
     text = text.replace(/\*\*\*(.+?)\*\*\*/g, `${p.bold}${p.italic}$1${p.reset}`);
     // Bold
     text = text.replace(/\*\*(.+?)\*\*/g, `${p.bold}$1${p.reset}`);
-    text = text.replace(/__(.+?)__/g, `${p.bold}$1${p.reset}`);
+    text = text.replace(/(?<!\w)__(.+?)__(?!\w)/g, `${p.bold}$1${p.reset}`);
     // Italic
     text = text.replace(/\*(.+?)\*/g, `${p.italic}$1${p.reset}`);
-    text = text.replace(/_(.+?)_/g, `${p.italic}$1${p.reset}`);
+    text = text.replace(/(?<!\w)_(.+?)_(?!\w)/g, `${p.italic}$1${p.reset}`);
     // Strikethrough
     text = text.replace(/~~(.+?)~~/g, `${p.dim}$1${p.reset}`);
     // Links
@@ -221,4 +300,14 @@ export class MarkdownRenderer {
     this.firstLine = false;
     this.pendingLines.push(`  ${text}`);
   }
+}
+
+/** Parse a markdown table row into trimmed cell strings, or null if not a table row. */
+function parseTableRow(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) return null;
+  // Split on |, drop first and last empty entries
+  const parts = trimmed.split("|");
+  if (parts.length < 3) return null; // need at least |cell|
+  return parts.slice(1, -1).map((c) => c.trim());
 }
