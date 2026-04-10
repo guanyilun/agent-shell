@@ -242,6 +242,7 @@ export class Shell implements InputContext {
     this.bus.on("agent:processing-done", () => {
       this.paused = false;
       this.agentActive = false;
+      this.echoSkip = true;
       this.freshPrompt();
     });
 

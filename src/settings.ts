@@ -53,7 +53,7 @@ const DEFAULTS: Required<Settings> = {
   shellHeadLines: 5,
   shellTailLines: 5,
   recallExpandMaxLines: 100,
-  maxCommandOutputLines: 30,
+  maxCommandOutputLines: 5,
   readOutputMaxLines: 0,
   diffMaxLines: 20,
   enableMcp: true,

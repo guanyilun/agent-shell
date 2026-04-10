@@ -25,7 +25,7 @@ import type { DiffResult } from "../utils/diff.js";
 import { getSettings } from "../settings.js";
 import type { ExtensionContext } from "../types.js";
 
-export default function activate({ bus }: ExtensionContext): void {
+export default function activate({ bus, getAcpClient }: ExtensionContext): void {
   let spinner: SpinnerState | null = null;
   let renderer: MarkdownRenderer | null = null;
   let commandOutputBuffer = "";
@@ -160,7 +160,6 @@ export default function activate({ bus }: ExtensionContext): void {
   function startAgentResponse(): void {
     renderer = new MarkdownRenderer();
     hadToolCalls = false;
-    process.stdout.write("\n");
     renderer.printTopBorder();
   }
 
@@ -282,12 +281,21 @@ export default function activate({ bus }: ExtensionContext): void {
     }
   }
 
-  function startThinkingSpinner(label = "Thinking"): void {
+  function hasThinkingMode(): boolean {
+    const mode = getAcpClient().getCurrentMode();
+    return !mode || mode.id !== "off";
+  }
+
+  function startThinkingSpinner(): void {
     // Preserve start time if restarting (e.g. toggle), otherwise reset
     if (!spinnerStartTime) spinnerStartTime = Date.now();
     stopCurrentSpinner();
-    const hint = showThinkingText ? "(ctrl+t to collapse)" : "(ctrl+t to expand)";
-    spinner = startSpinner(label, { hint, startTime: spinnerStartTime });
+    const thinking = hasThinkingMode();
+    const label = thinking ? "Thinking" : "Working";
+    const hint = thinking
+      ? (showThinkingText ? "(ctrl+t to collapse)" : "(ctrl+t to expand)")
+      : "";
+    spinner = startSpinner(label, { hint: hint || undefined, startTime: spinnerStartTime });
   }
 
   function stopCurrentSpinner(): void {
