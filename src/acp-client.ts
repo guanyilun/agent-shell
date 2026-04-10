@@ -382,18 +382,19 @@ export class AcpClient {
       }
 
       case "tool_call_update": {
+        const toolId = update.toolCallId;
+        const toolTitle = toolId ? this.pendingToolCalls.get(toolId) : undefined;
+
         if (update.status === "completed" || update.status === "failed") {
-          // Show content only on final status — intermediate updates often
-          // contain stringified wrapper JSON (e.g. '{ "content": [] }')
-          if (update.content && Array.isArray(update.content)) {
+          // Show content only on final status, and skip for informational
+          // tools like shell_recall (output is for the agent, not the user)
+          if (toolTitle !== "shell_recall" && update.content && Array.isArray(update.content)) {
             for (const block of update.content) {
               if (block.type === "content" && block.content?.type === "text" && block.content.text) {
                 this.bus.emit("agent:tool-output-chunk", { chunk: block.content.text });
               }
             }
           }
-          const toolId = update.toolCallId;
-          const toolTitle = toolId ? this.pendingToolCalls.get(toolId) : undefined;
           const exitCode = update.status === "completed" ? 0 : 1;
           if (toolId && this.pendingToolCalls.has(toolId)) {
             this.pendingToolCalls.delete(toolId);

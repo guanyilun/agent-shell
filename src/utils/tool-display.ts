@@ -99,56 +99,50 @@ export function renderToolCall(
   }
 
   const lines: string[] = [];
-  lines.push(`${p.warning}${p.bold}${icon} ${tool.title}${p.reset}`);
 
+  // Build a compact detail string to append after the title
+  let detail = "";
   if (mode === "full") {
-    // Show file locations if available
-    if (tool.locations && tool.locations.length > 0) {
-      for (const loc of tool.locations) {
-        const lineInfo = loc.line ? `:${loc.line}` : "";
-        lines.push(`  ${p.dim}${loc.path}${lineInfo}${p.reset}`);
-      }
-    }
-
-    // Show command string for terminal tools
     if (tool.command) {
-      const maxCmdW = Math.max(1, width - 4);
-      const cmd = tool.command.length > maxCmdW
-        ? tool.command.slice(0, maxCmdW - 1) + "…"
-        : tool.command;
-      lines.push(`  ${p.dim}$ ${cmd}${p.reset}`);
-    }
-
-    // Show raw input args for non-terminal, non-file tools
-    if (!tool.command && !tool.locations?.length && tool.rawInput) {
+      detail = `$ ${tool.command}`;
+    } else if (tool.locations && tool.locations.length > 0) {
+      const loc = tool.locations[0]!;
+      const lineInfo = loc.line ? `:${loc.line}` : "";
+      detail = `${loc.path}${lineInfo}`;
+    } else if (tool.rawInput) {
       const raw = tool.rawInput as Record<string, unknown>;
       if (raw && typeof raw === "object") {
-        // command field → show as command line
         if (typeof raw.command === "string") {
-          const maxCmdW = Math.max(1, width - 4);
-          const cmd = raw.command.length > maxCmdW
-            ? raw.command.slice(0, maxCmdW - 1) + "…"
-            : raw.command;
-          lines.push(`  ${p.dim}$ ${cmd}${p.reset}`);
-        }
-        // operation field → compact summary (e.g. "expand #1,2" or "search foo")
-        else if (typeof raw.operation === "string") {
-          let summary = raw.operation;
+          detail = `$ ${raw.command}`;
+        } else if (typeof raw.operation === "string") {
+          detail = raw.operation;
           if (raw.ids && Array.isArray(raw.ids)) {
-            summary += ` #${(raw.ids as number[]).join(",")}`;
+            detail += ` #${(raw.ids as number[]).join(",")}`;
           }
           if (typeof raw.query === "string") {
-            summary += ` "${raw.query}"`;
+            detail += ` "${raw.query}"`;
           }
-          lines.push(`  ${p.dim}${summary}${p.reset}`);
         } else {
-          const detail = formatRawInput(tool.rawInput, width - 4);
-          if (detail) lines.push(`  ${p.dim}${detail}${p.reset}`);
+          detail = formatRawInput(tool.rawInput, width - tool.title.length - 6);
         }
-      } else {
-        const detail = formatRawInput(tool.rawInput, width - 4);
-        if (detail) lines.push(`  ${p.dim}${detail}${p.reset}`);
       }
+    }
+  }
+
+  // Render as single line: ► title: detail
+  const maxDetailW = Math.max(1, width - tool.title.length - 6);
+  if (detail) {
+    if (detail.length > maxDetailW) detail = detail.slice(0, maxDetailW - 1) + "…";
+    lines.push(`${p.warning}${p.bold}${icon} ${tool.title}${p.reset}${p.dim}: ${detail}${p.reset}`);
+  } else {
+    lines.push(`${p.warning}${p.bold}${icon} ${tool.title}${p.reset}`);
+  }
+
+  // Show additional file locations on separate lines (if more than one)
+  if (mode === "full" && tool.locations && tool.locations.length > 1) {
+    for (const loc of tool.locations.slice(1)) {
+      const lineInfo = loc.line ? `:${loc.line}` : "";
+      lines.push(`  ${p.dim}${loc.path}${lineInfo}${p.reset}`);
     }
   }
 
