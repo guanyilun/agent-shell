@@ -28,6 +28,19 @@ export default function activate(ctx) {
     if (payload.command !== "my-tool") return payload;
     return { ...payload, intercepted: true, output: "custom output" };
   });
+
+  // Register an MCP server for the agent to discover
+  ctx.bus.onPipe("session:configure", (payload) => {
+    return {
+      ...payload,
+      mcpServers: [...payload.mcpServers, {
+        name: "my-tool",
+        command: "node",
+        args: ["/path/to/my-mcp-server.js"],
+        env: [{ name: "MY_VAR", value: "value" }],
+      }],
+    };
+  });
 }
 ```
 

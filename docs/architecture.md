@@ -70,8 +70,8 @@ All components communicate exclusively through typed bus events. AcpClient has n
 |---|---|
 | `agent_message_chunk` | Real-time streaming markdown with syntax highlighting in a bordered box |
 | `agent_thought_chunk` | Thinking spinner (default), or streaming text when toggled on with Ctrl+T |
-| `tool_call` | Yellow header showing what the agent is invoking |
-| `tool_call_update` | Status indicator (checkmark or X with exit code) |
+| `tool_call` | Kind icon (◆ read, ✎ edit, ▶ execute, ⌕ search, etc.) + title, file paths, arguments |
+| `tool_call_update` | Streaming output content + status indicator (checkmark or X with exit code) |
 | `file_write` | Inline diff preview in bordered box (Ctrl+O to expand/collapse) |
 
 ## How It Works
@@ -87,13 +87,41 @@ All components communicate exclusively through typed bus events. AcpClient has n
 9. If the agent needs to run commands, it calls `terminal/create` and agent-sh executes them in isolated child processes, streaming output back
 10. When the agent finishes, normal shell operation resumes
 
+## Socket Protocol
+
+agent-sh exposes a Unix domain socket for external tools (MCP servers, pi extensions, etc.) to interact with the user's live shell. The socket speaks **JSON-RPC 2.0** (newline-delimited), the same protocol family as ACP and MCP.
+
+### Methods
+
+| Method | Params | Result | Description |
+|---|---|---|---|
+| `shell/exec` | `{ command }` | `{ output, cwd }` | Execute command in the user's PTY, capture output |
+| `shell/cwd` | `{}` | `{ cwd }` | Get current working directory |
+| `shell/info` | `{}` | `{ shell, agentSh }` | Get shell metadata |
+
+### Example
+
+```
+→ {"jsonrpc":"2.0","id":1,"method":"shell/exec","params":{"command":"cd ~/Downloads && pwd"}}
+← {"jsonrpc":"2.0","id":1,"result":{"output":"/Users/me/Downloads","cwd":"/Users/me/Downloads"}}
+```
+
+The socket path is available via the `AGENT_SH_SOCKET` environment variable. The protocol is extensible — new methods (e.g. `shell/env`, `shell/recall`) can be added without breaking existing clients.
+
+### How agents discover the socket
+
+Two paths, same backend:
+
+1. **MCP server** (universal) — the shell-exec extension registers an MCP server via the `session:configure` pipe. ACP agents that forward `mcpServers` (like claude-agent-acp) discover a `user_shell` tool automatically.
+2. **Agent extensions** (agent-specific) — extensions like pi-user-shell read `AGENT_SH_SOCKET` from the environment and connect directly. This is the path for pi-acp.
+
 ## EventBus
 
 All communication between components flows through a typed EventBus. Components emit events (shell commands, agent responses, tool calls) and extensions subscribe to events they care about. The bus supports three modes:
 
 - **emit/on** — fire-and-forget notifications (e.g., `agent:response-chunk`)
-- **emitPipe/onPipe** — synchronous transform chains (e.g., `autocomplete:request` where extensions append completion items)
-- **emitPipeAsync/onPipeAsync** — async transform chains (e.g., `permission:request` where extensions prompt the user and return a decision)
+- **emitPipe/onPipe** — synchronous transform chains (e.g., `autocomplete:request` where extensions append completion items, `session:configure` where extensions add MCP servers)
+- **emitPipeAsync/onPipeAsync** — async transform chains (e.g., `permission:request` where extensions prompt the user and return a decision, `shell:exec-request` where Shell executes a command in the PTY)
 
 ## Project Structure
 
@@ -110,6 +138,7 @@ agent-sh/
 │   ├── context-manager.ts  # Exchange log, context assembly, recall API
 │   ├── extension-loader.ts # Extension loading (-e, settings.json, extensions dir)
 │   ├── executor.ts         # Isolated child process execution
+│   ├── mcp-server.ts       # Standalone MCP server (user_shell tool via socket)
 │   ├── types.ts            # Shared type definitions
 │   ├── utils/
 │   │   ├── palette.ts      # Semantic color palette (accent/success/warning/error/muted)
@@ -118,13 +147,15 @@ agent-sh/
 │   │   ├── diff-renderer.ts# Syntax-highlighted diff display (split/unified/summary)
 │   │   ├── box-frame.ts    # Bordered TUI panels (rounded/square/double/heavy)
 │   │   ├── tool-display.ts # Width-adaptive tool call/result rendering
+│   │   ├── line-editor.ts  # Readline-style line editor (pure logic, no I/O)
 │   │   ├── file-watcher.ts # File change detection for agent tool writes
 │   │   └── markdown.ts     # Streaming markdown → ANSI renderer
 │   └── extensions/
 │       ├── tui-renderer.ts       # Terminal rendering (markdown, spinner, tools)
 │       ├── slash-commands.ts     # /help, /clear, /copy, /compact, /quit
 │       ├── file-autocomplete.ts  # @ file path completion
-│       └── shell-recall.ts      # __shell_recall terminal interception
+│       ├── shell-recall.ts      # __shell_recall terminal interception
+│       └── shell-exec.ts       # Unix socket server + MCP registration for PTY exec
 ├── examples/
 │   └── extensions/
 │       ├── interactive-prompts.ts # Example: permission gates (opt-in)

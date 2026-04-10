@@ -63,6 +63,27 @@ npm start -- --shell /bin/zsh
 AGENT_SH_AGENT=claude-agent-acp npm start
 ```
 
+## Using agent-sh as Your Default Shell
+
+You can launch agent-sh automatically when you open a terminal by adding it to your `~/.zshrc` or `~/.bashrc`. The `AGENT_SH` guard prevents infinite recursion (agent-sh sets this when it starts):
+
+```bash
+# Add to the END of your ~/.zshrc or ~/.bashrc
+if [[ -z "$AGENT_SH" && $- == *i* && -t 0 ]]; then
+  exec agent-sh --agent pi-acp
+fi
+```
+
+The checks ensure agent-sh only launches for interactive terminal sessions (`$- == *i*` and `-t 0`), not for scripts or non-interactive subshells.
+
+If you installed via a local build instead of npm, point to the built file directly:
+
+```bash
+if [[ -z "$AGENT_SH" && $- == *i* && -t 0 ]]; then
+  exec node /path/to/agent-sh/dist/index.js --agent pi-acp
+fi
+```
+
 ## Common Claude Models
 
 **Valid Claude model names** (for use with `--model` parameter):
@@ -155,7 +176,36 @@ export ANTHROPIC_API_KEY="your-key"
 export GOOGLE_API_KEY="your-key"
 ```
 
-**Tip:** Add these to your `~/.zshrc` or `~/.bashrc` for persistent configuration.
+**Tip:** Add these to your `~/.zshrc` or `~/.bashrc` for persistent configuration. agent-sh captures your full shell environment at startup (by running an interactive subshell), so environment variables from your rc files are available to the agent and its tools — no restart needed after adding them.
+
+## Live Shell Execution
+
+By default, agent tool calls (bash, read, write) run in isolated subprocesses — they can't affect your shell's state. The `user_shell` tool lets the agent execute commands directly in your live PTY shell, so `cd`, `export`, `source`, and similar commands actually take effect.
+
+### How it works
+
+agent-sh exposes a Unix socket that external tools connect to. Two discovery paths:
+
+- **MCP server** — registered automatically via `session:configure`. Works with ACP agents that forward `mcpServers` (e.g. claude-agent-acp).
+- **Pi extension** — install pi-user-shell for pi-acp. It reads `AGENT_SH_SOCKET` from the environment and connects directly.
+
+### Pi extension setup
+
+```bash
+# From wherever pi-user-shell lives
+pi install ./pi-user-shell
+```
+
+Once installed, the agent can use `user_shell` alongside its built-in tools. Ask it to `cd` somewhere and your shell prompt will reflect the change.
+
+### Writing your own socket client
+
+The socket speaks JSON-RPC 2.0 (newline-delimited). See [Architecture — Socket Protocol](architecture.md#socket-protocol) for the full method reference.
+
+```bash
+# Quick test (requires socat)
+echo '{"jsonrpc":"2.0","id":1,"method":"shell/cwd","params":{}}' | socat - UNIX-CONNECT:$AGENT_SH_SOCKET
+```
 
 ## Shell Context
 

@@ -79,6 +79,23 @@ See the [Usage Guide](docs/usage.md) for all options, model configuration, and e
 | `Ctrl-T` | Toggle thinking/reasoning text display |
 | `Escape` | Exit agent input mode (when typing after `>`) |
 
+### Agent Input Keybindings
+
+When typing after `>`, full readline-style keybindings are available:
+
+| Key | Action |
+|---|---|
+| `Ctrl-A` / `Home` | Move to start of line |
+| `Ctrl-E` / `End` | Move to end of line |
+| `Ctrl-B` / `←` | Move back one character |
+| `Ctrl-F` / `→` | Move forward one character |
+| `Option-B` / `Option-←` | Move back one word |
+| `Option-F` / `Option-→` | Move forward one word |
+| `Ctrl-U` | Delete to start of line |
+| `Ctrl-K` | Delete to end of line |
+| `Ctrl-W` / `Option-Backspace` | Delete word backward |
+| `Option-D` | Delete word forward |
+
 ### Slash Commands
 
 | Command | Description |
