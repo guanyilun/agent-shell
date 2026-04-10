@@ -10,7 +10,9 @@
  * silently dropped. Alternative renderers (web UI, logging, minimal)
  * can subscribe to the same events.
  */
-import { MarkdownRenderer } from "../utils/markdown.js";
+import { highlight } from "cli-highlight";
+import { MarkdownRenderer, wrapLine } from "../utils/markdown.js";
+import { createFencedBlockTransform } from "../utils/stream-transform.js";
 import { palette as p } from "../utils/palette.js";
 import {
   renderToolCall,
@@ -65,6 +67,16 @@ export default function activate({ bus, getAcpClient }: ExtensionContext): void 
     expanded: boolean;
   } | null = null;
 
+  // ── Register fenced block transform (code blocks → ContentBlock) ──
+  // Nobody is special — tui-renderer uses the same primitive as any extension.
+  createFencedBlockTransform(bus, {
+    open: /^```(\w*)\s*$/,
+    close: /^```\s*$/,
+    transform(match, content) {
+      return { type: "code-block", language: match[1] || "", code: content };
+    },
+  });
+
   // ── Event subscriptions ─────────────────────────────────────
 
   bus.on("agent:query", (e) => {
@@ -95,18 +107,27 @@ export default function activate({ bus, getAcpClient }: ExtensionContext): void 
 
   bus.on("agent:response-chunk", (e) => {
     if (e.blocks) {
-      // Typed content blocks from transform pipeline
-      for (const block of e.blocks) {
+      // Inject spacing: append \n to text blocks that precede non-text blocks
+      const blocks = e.blocks;
+      for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i]!;
+        const next = blocks[i + 1];
+        if (block.type === "text" && next && next.type !== "text") {
+          block.text += "\n";
+        }
+      }
+      for (const block of blocks) {
         switch (block.type) {
           case "text":
             if (block.text) writeAgentText(block.text);
             break;
+          case "code-block":
+            writeCodeBlock(block.language, block.code);
+            break;
           case "image":
-            // Render image via best available terminal protocol
             writeInlineImage(block.data);
             break;
           case "raw":
-            // Raw escape sequence — write directly, bypass markdown
             flushForRaw();
             process.stdout.write(block.escape);
             break;
@@ -267,6 +288,29 @@ export default function activate({ bus, getAcpClient }: ExtensionContext): void 
     if (needsGap) process.stdout.write("\n");
     renderer!.push(text);
     flushOutput();
+  }
+
+  /** Render a code block with syntax highlighting (extracted from MarkdownRenderer). */
+  function writeCodeBlock(language: string, code: string): void {
+    flushForRaw();
+    if (language) {
+      renderer!.writeLine(`${p.dim}${language}${p.reset}`);
+    }
+    let highlighted: string;
+    try {
+      highlighted = highlight(code, { language: language || undefined });
+    } catch {
+      highlighted = `${p.success}${code}${p.reset}`;
+    }
+    const termW = process.stdout.columns || 100;
+    const contentWidth = Math.min(90, termW - 2);
+    for (const line of highlighted.split("\n")) {
+      const indented = `  ${line}`;
+      const wrapped = wrapLine(indented, contentWidth);
+      for (const wl of wrapped) {
+        renderer!.writeLine(wl);
+      }
+    }
   }
 
   /** Flush markdown renderer and prepare for raw stdout writes. */

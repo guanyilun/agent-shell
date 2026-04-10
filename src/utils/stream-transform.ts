@@ -43,12 +43,33 @@ export function createBlockTransform(
   let buffer = "";
 
   bus.onPipe("agent:response-chunk", (e) => {
-    buffer += e.text;
-    const { blocks, pending } = processBuffer(buffer, opts);
-    buffer = pending;
-    // Merge our blocks with any existing blocks from previous transforms
-    const existing = e.blocks ?? [];
-    return { ...e, text: "", blocks: [...existing, ...blocks] };
+    // Process text from e.text and from text blocks in e.blocks
+    const outBlocks: ContentBlock[] = [];
+
+    if (e.blocks) {
+      for (const block of e.blocks) {
+        if (block.type === "text") {
+          // Run delimiter detection on text blocks
+          buffer += block.text;
+          const { blocks: parsed, pending } = processBuffer(buffer, opts);
+          buffer = pending;
+          outBlocks.push(...parsed);
+        } else {
+          // Pass through non-text blocks unchanged
+          outBlocks.push(block);
+        }
+      }
+    }
+
+    // Also process any raw text not yet in blocks
+    if (e.text) {
+      buffer += e.text;
+      const { blocks: parsed, pending } = processBuffer(buffer, opts);
+      buffer = pending;
+      outBlocks.push(...parsed);
+    }
+
+    return { ...e, text: "", blocks: outBlocks };
   });
 
   bus.onPipe("agent:response-done", (e) => {
@@ -63,6 +84,179 @@ export function createBlockTransform(
     return e;
   });
 }
+
+// ── Fenced block transform ────────────────────────────────────────
+
+export interface FencedBlockTransformOptions {
+  /** Regex matching the opening fence line. Captures are passed to transform. */
+  open: RegExp;
+  /** Regex matching the closing fence line. */
+  close: RegExp;
+  /**
+   * Transform a complete fenced block.
+   * Receives the opening fence match and the content between fences.
+   * Return ContentBlock(s), or null to produce a default code-block.
+   */
+  transform: (openMatch: RegExpMatchArray, content: string) => ContentBlock | ContentBlock[] | null;
+}
+
+/**
+ * Register a line-delimited fenced block transform on the content pipeline.
+ *
+ * Detects patterns like ```lang\n...\n``` in the streaming text,
+ * buffers the content line-by-line, and produces ContentBlocks when
+ * the closing fence arrives.
+ *
+ * Example:
+ *   createFencedBlockTransform(bus, {
+ *     open: /^```(\w*)\s*$/,
+ *     close: /^```\s*$/,
+ *     transform(match, content) {
+ *       return { type: "code-block", language: match[1] || "", code: content };
+ *     },
+ *   });
+ */
+export function createFencedBlockTransform(
+  bus: EventBus,
+  opts: FencedBlockTransformOptions,
+): void {
+  let buffer = "";
+  let inFence = false;
+  let fenceMatch: RegExpMatchArray | null = null;
+  let fenceLines: string[] = [];
+
+  bus.onPipe("agent:response-chunk", (e) => {
+    // Collect text from blocks or raw text
+    let incoming = "";
+    if (e.blocks) {
+      // Process text blocks, pass through non-text blocks
+      const passthrough: ContentBlock[] = [];
+      for (const block of e.blocks) {
+        if (block.type === "text") {
+          incoming += block.text;
+        } else {
+          passthrough.push(block);
+        }
+      }
+      const { blocks, pending } = processFencedBuffer(buffer + incoming, opts, inFence, fenceMatch, fenceLines);
+      buffer = pending.text;
+      inFence = pending.inFence;
+      fenceMatch = pending.fenceMatch;
+      fenceLines = pending.fenceLines;
+      return { ...e, text: "", blocks: [...passthrough, ...blocks] };
+    }
+
+    // No blocks yet — work with raw text
+    incoming = buffer + e.text;
+    const { blocks, pending } = processFencedBuffer(incoming, opts, inFence, fenceMatch, fenceLines);
+    buffer = pending.text;
+    inFence = pending.inFence;
+    fenceMatch = pending.fenceMatch;
+    fenceLines = pending.fenceLines;
+    const existing = e.blocks ?? [];
+    return { ...e, text: "", blocks: [...existing, ...blocks] };
+  });
+
+  bus.onPipe("agent:response-done", (e) => {
+    if (buffer || inFence) {
+      // Flush: unclosed fence → emit content as text
+      let remaining = buffer;
+      if (inFence) {
+        // Reconstruct the opening fence + accumulated lines
+        remaining = (fenceMatch?.[0] ?? "") + "\n" + fenceLines.join("\n") + (remaining ? "\n" + remaining : "");
+        inFence = false;
+        fenceMatch = null;
+        fenceLines = [];
+      }
+      if (remaining) {
+        bus.emitTransform("agent:response-chunk", {
+          text: remaining,
+          blocks: [{ type: "text", text: remaining }],
+        });
+      }
+      buffer = "";
+    }
+    return e;
+  });
+}
+
+interface FencedPendingState {
+  text: string;
+  inFence: boolean;
+  fenceMatch: RegExpMatchArray | null;
+  fenceLines: string[];
+}
+
+function processFencedBuffer(
+  text: string,
+  opts: FencedBlockTransformOptions,
+  inFence: boolean,
+  fenceMatch: RegExpMatchArray | null,
+  fenceLines: string[],
+): { blocks: ContentBlock[]; pending: FencedPendingState } {
+  const blocks: ContentBlock[] = [];
+  const lines = text.split("\n");
+  // Last element might be an incomplete line — hold it back
+  const incompleteLine = lines.pop()!;
+
+  let textAccum = ""; // accumulate non-fence text as one block
+
+  for (const line of lines) {
+    if (inFence) {
+      // Check for closing fence
+      if (opts.close.test(line)) {
+        const content = fenceLines.join("\n");
+        const result = opts.transform(fenceMatch!, content);
+        if (result === null) {
+          const lang = fenceMatch?.[1] ?? "";
+          blocks.push({ type: "code-block", language: lang, code: content });
+        } else if (Array.isArray(result)) {
+          blocks.push(...result);
+        } else {
+          blocks.push(result);
+        }
+        inFence = false;
+        fenceMatch = null;
+        fenceLines = [];
+      } else {
+        fenceLines.push(line);
+      }
+    } else {
+      // Check for opening fence
+      const match = line.match(opts.open);
+      if (match) {
+        // Flush accumulated text before the fence
+        if (textAccum) {
+          blocks.push({ type: "text", text: textAccum });
+          textAccum = "";
+        }
+        inFence = true;
+        fenceMatch = match;
+        fenceLines = [];
+      } else {
+        // Accumulate non-fence text (keep contiguous for downstream transforms)
+        textAccum += line + "\n";
+      }
+    }
+  }
+
+  // Flush remaining accumulated text
+  if (textAccum) {
+    blocks.push({ type: "text", text: textAccum });
+  }
+
+  return {
+    blocks,
+    pending: {
+      text: incompleteLine,
+      inFence,
+      fenceMatch,
+      fenceLines,
+    },
+  };
+}
+
+// ── Inline delimiter block transform ─────────────────────────────
 
 function processBuffer(
   text: string,

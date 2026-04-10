@@ -5,32 +5,34 @@
 An extension is a module that exports a default (or named `activate`) function. It receives an `ExtensionContext` with access to all core services:
 
 ```typescript
-// my-extension.js
+// my-extension.ts
 export default function activate(ctx) {
+  const { bus } = ctx;
+
   // Listen to agent events
-  ctx.bus.on("agent:response-done", (e) => {
+  bus.on("agent:response-done", (e) => {
     console.log(`Agent responded with ${e.response.length} chars`);
   });
 
   // Add a slash command
-  ctx.bus.on("command:execute", (e) => {
+  bus.on("command:execute", (e) => {
     if (e.name === "/greet") {
-      ctx.bus.emit("ui:info", { message: "Hello from my extension!" });
+      bus.emit("ui:info", { message: "Hello from my extension!" });
     }
   });
-  ctx.bus.onPipe("autocomplete:request", (payload) => {
+  bus.onPipe("autocomplete:request", (payload) => {
     if (!payload.buffer.startsWith("/g")) return payload;
     return { ...payload, items: [...payload.items, { name: "/greet", description: "Say hello" }] };
   });
 
   // Intercept terminal commands
-  ctx.bus.onPipe("agent:terminal-intercept", (payload) => {
+  bus.onPipe("agent:terminal-intercept", (payload) => {
     if (payload.command !== "my-tool") return payload;
     return { ...payload, intercepted: true, output: "custom output" };
   });
 
   // Register an MCP server for the agent to discover
-  ctx.bus.onPipe("session:configure", (payload) => {
+  bus.onPipe("session:configure", (payload) => {
     return {
       ...payload,
       mcpServers: [...payload.mcpServers, {
@@ -52,68 +54,76 @@ export default function activate(ctx) {
 | `contextManager` | `ContextManager` | Access exchange history, cwd, search, expand |
 | `getAcpClient` | `() => AcpClient` | Lazy getter for the agent client |
 | `quit` | `() => void` | Exit agent-sh |
-| `setPalette` | `(overrides: Partial<ColorPalette>) => void` | Override color palette slots for theming |
+| `setPalette` | `(overrides) => void` | Override color palette slots for theming |
+| `createBlockTransform` | `(opts) => void` | Register an inline delimiter transform (e.g. `$$...$$`) |
+| `createFencedBlockTransform` | `(opts) => void` | Register a fenced block transform (e.g. ` ```lang...``` `) |
+| `getExtensionSettings` | `(namespace, defaults) => T` | Read extension settings from `~/.agent-sh/settings.json` |
+
+All utilities are provided through `ctx` — no package imports needed. Extensions work from any location (`~/.agent-sh/extensions/`, npm packages, or local files).
 
 ### Extension Settings
 
-Extensions can read user-configurable settings from `~/.agent-sh/settings.json` using `getExtensionSettings`. Settings are namespaced under the extension name with type-safe defaults:
+Extensions read user-configurable settings from `~/.agent-sh/settings.json`, namespaced under the extension name with type-safe defaults:
 
 ```typescript
-import { getExtensionSettings } from "agent-sh/settings";
-
-const config = getExtensionSettings("my-extension", {
-  maxItems: 10,
-  color: "blue",
-  enabled: true,
-});
-// config.maxItems, config.color, config.enabled — all typed
+export default function activate(ctx) {
+  const config = ctx.getExtensionSettings("my-extension", {
+    maxItems: 10,
+    color: "blue",
+  });
+  // config.maxItems, config.color — typed, merged with user overrides
+}
 ```
 
 Users configure in `~/.agent-sh/settings.json`:
 ```json
 {
-  "my-extension": {
-    "maxItems": 50,
-    "color": "red"
-  }
+  "my-extension": { "maxItems": 50, "color": "red" }
 }
 ```
 
-Unspecified keys use the defaults. Core settings and extension settings coexist in the same file.
+## Content Transform Pipeline
 
-## Content Transforms
+Agent response streams flow through a **transform pipeline** before any renderer sees them. Extensions can modify, replace, or enrich content — rendering LaTeX as images, replacing diagram blocks with graphics, filtering output, etc.
 
-Agent response streams flow through a **transform pipeline** before any renderer sees them. This lets extensions modify, replace, or enrich content — rendering LaTeX as images, replacing diagram blocks with graphics, filtering output, etc.
-
-The tui-renderer is itself just an extension. Transform extensions sit before it in the pipeline with no special privileges. Multiple transforms chain naturally.
+The tui-renderer is itself just an extension. **Nobody is special** — built-in and user extensions compose through the same primitives.
 
 ### Content blocks
 
-The pipeline carries typed content blocks, not just raw text:
+The pipeline carries typed content blocks:
 
 ```typescript
 type ContentBlock =
-  | { type: "text"; text: string }   // markdown text → rendered by tui-renderer
-  | { type: "image"; data: Buffer }  // PNG buffer → displayed via terminal protocol (iTerm2/Kitty)
-  | { type: "raw"; escape: string }  // raw escape sequence → written directly to stdout
+  | { type: "text"; text: string }                          // markdown text
+  | { type: "code-block"; language: string; code: string }  // fenced code block
+  | { type: "image"; data: Buffer }                         // PNG → terminal image protocol
+  | { type: "raw"; escape: string }                         // raw terminal escape
 ```
 
-Extensions return content blocks from transforms. The tui-renderer handles each type: text goes through the markdown renderer, images are displayed via the best available terminal protocol (iTerm2, Kitty, Ghostty, WezTerm), and raw escapes bypass all processing.
+The tui-renderer handles each type: text → markdown renderer, code-block → syntax highlighting, image → iTerm2/Kitty protocol, raw → direct stdout.
 
-### Block transforms
+### Choosing the right tool
 
-The `createBlockTransform` helper handles the hard parts of streaming transforms — buffering across chunk boundaries, pattern matching, and flush-on-done coordination. You just define delimiters and a transform function:
+Extensions don't need to worry about pipe ordering or priorities. Each tool operates on its own domain and passes everything else through — they compose regardless of registration order.
+
+| I want to... | Use | Operates on |
+|---|---|---|
+| Match inline delimiters (`$$`, `<<`, etc.) | `ctx.createBlockTransform` | text blocks |
+| Match fenced blocks (` ``` `, `:::`, `~~~`) | `ctx.createFencedBlockTransform` | text blocks |
+| Transform blocks others produced | `bus.onPipe("agent:response-chunk", ...)` | any block type |
+
+### Inline delimiter transforms
+
+`createBlockTransform` detects patterns like `$$...$$` in text blocks. It handles streaming buffering, chunk splitting, and flush-on-done:
 
 ```typescript
-import { createBlockTransform } from "agent-sh/utils/stream-transform";
-
-export default function activate({ bus }) {
-  createBlockTransform(bus, {
+export default function activate(ctx) {
+  ctx.createBlockTransform({
     open: "$$",
     close: "$$",
     transform(content) {
       // content = text between delimiters (e.g. "E = mc^2")
-      // Return a ContentBlock, array of blocks, or null to keep original
+      // Return ContentBlock(s) or null to keep original
       const png = renderToPng(content);
       return png ? { type: "image", data: png } : null;
     },
@@ -121,33 +131,105 @@ export default function activate({ bus }) {
 }
 ```
 
-The helper manages:
-- **Chunk buffering** — holds back text when a delimiter might be split across chunks
-- **Safe boundaries** — only emits text that's outside any potential opening delimiter
-- **Flush on response-done** — drains remaining buffer when the response ends
+### Fenced block transforms
 
-### Low-level transforms
-
-For transforms that don't use delimiters (e.g. regex replacement on all text), register directly on the pipe:
+`createFencedBlockTransform` detects line-delimited fenced blocks. The open/close patterns are regexes, so it works for any fence style:
 
 ```typescript
-bus.onPipe("agent:response-chunk", (e) => {
-  const transformed = e.text.replace(/pattern/g, replacement);
-  return { ...e, text: transformed };
+// Detect :::warning ... ::: admonition blocks
+ctx.createFencedBlockTransform({
+  open: /^:::(\w+)\s*$/,
+  close: /^:::\s*$/,
+  transform(match, content) {
+    const kind = match[1]; // "warning", "note", etc.
+    return { type: "text", text: `⚠️ ${kind.toUpperCase()}: ${content}` };
+  },
 });
 ```
 
+The tui-renderer uses this same primitive for standard ` ``` ` code fences — it's not special:
+
+```typescript
+ctx.createFencedBlockTransform({
+  open: /^```(\w*)\s*$/,
+  close: /^```\s*$/,
+  transform(match, content) {
+    return { type: "code-block", language: match[1] || "", code: content };
+  },
+});
+```
+
+### Claiming blocks from other transforms
+
+To transform blocks that another extension produced (e.g. claim `code-block` with a specific language), use `bus.onPipe` directly:
+
+```typescript
+// Render mermaid code blocks as images
+bus.onPipe("agent:response-chunk", (e) => {
+  if (!e.blocks) return e;
+  return {
+    ...e,
+    blocks: e.blocks.map(block => {
+      if (block.type !== "code-block" || block.language !== "mermaid") return block;
+      const png = renderMermaid(block.code);
+      return png ? { type: "image", data: png } : block;
+    }),
+  };
+});
+```
+
+### How composability works
+
+Each tool only touches its own domain and passes everything else through:
+
+```
+createBlockTransform for $$   → reads text, produces images, passes code-blocks through
+createFencedBlockTransform    → reads text, produces code-blocks, passes images through
+onPipe claiming code-blocks   → reads code-blocks, produces images, passes text through
+tui-renderer (on listener)    → renders whatever blocks remain
+```
+
+Order doesn't matter — they compose because each has a disjoint input type. No priority system, no phase declarations, no coordination between extensions.
+
 ### Example: LaTeX image rendering
 
-A complete working example is included at `examples/extensions/latex-images.ts` — it renders `$$...$$` equations as inline terminal images using the same pipeline as Emacs org-mode (`latex` → `dvipng`):
+`examples/extensions/latex-images.ts` renders both `$$...$$` and ` ```latex ` blocks as terminal images using `latex` + `dvipng`:
 
 ```bash
 # Requires: latex + dvipng (brew install --cask mactex)
 # Requires: iTerm2, WezTerm, Kitty, or Ghostty
 agent-sh -e ./examples/extensions/latex-images.ts
+
+# Or install permanently:
+cp examples/extensions/latex-images.ts ~/.agent-sh/extensions/
 ```
 
-The entire extension is ~100 lines — the rendering logic plus a single `createBlockTransform` call. No manual buffering, no stdout hacks, no terminal protocol detection.
+```typescript
+export default function activate(ctx: ExtensionContext) {
+  const { bus } = ctx;
+  const config = ctx.getExtensionSettings("latex-images", { dpi: 300, fgColor: "d4d4d4" });
+
+  // Handle $$...$$ display math
+  ctx.createBlockTransform({
+    open: "$$", close: "$$",
+    transform(latex) {
+      const png = renderEquation(latex);
+      return png ? [{ type: "text", text: "\n" }, { type: "image", data: png }] : null;
+    },
+  });
+
+  // Handle ```latex code blocks
+  bus.onPipe("agent:response-chunk", (e) => {
+    if (!e.blocks) return e;
+    return { ...e, blocks: e.blocks.map(block => {
+      if (block.type !== "code-block") return block;
+      if (block.language !== "latex" && block.language !== "tex") return block;
+      const png = renderEquation(block.code);
+      return png ? { type: "image", data: png } : block;
+    })};
+  });
+}
+```
 
 ## Yolo Mode
 
@@ -187,8 +269,6 @@ Load a theme like any other extension:
 npm start -- -e ./examples/extensions/solarized-theme.ts
 ```
 
-A complete example is included at `examples/extensions/solarized-theme.ts`.
-
 ## Loading Extensions
 
 Extensions are loaded from three sources (in order, deduplicated):
@@ -199,7 +279,7 @@ npm start -- -e my-ext-package -e ./local-ext.ts
 npm start -- -e my-ext-package,another-package   # comma-separated also works
 ```
 
-**2. Settings file** — `~/.agent-sh/settings.json` (also supports other [configuration options](../README.md#configuration)):
+**2. Settings file** — `~/.agent-sh/settings.json`:
 ```json
 {
   "extensions": [

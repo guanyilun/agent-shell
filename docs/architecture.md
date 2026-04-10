@@ -189,54 +189,53 @@ All communication between components flows through a typed EventBus. Components 
 Agent content streams use `emitTransform` — a two-phase emission that runs pipe listeners (transforms) first, then notifies `on` listeners (renderers) with the transformed result.
 
 ```
-AcpClient
-  → emitTransform("agent:response-chunk", { text, blocks? })
-      Phase 1 (onPipe): transform extensions
-        → createBlockTransform: buffers $$..$$, renders LaTeX → { type: "image" }
-        → any extension can register here, they chain naturally
-      Phase 2 (on): renderers see final content blocks
-        → tui-renderer: text → markdown, image → terminal protocol, raw → stdout
+AcpClient emitTransform("agent:response-chunk", { text })
+  │
+  │ Phase 1 — onPipe transforms (nobody is special):
+  │   createBlockTransform:        text → finds $$...$$ → image blocks
+  │   createFencedBlockTransform:  text → finds ```...``` → code-block blocks
+  │   extension onPipe:            code-block → claims latex → image blocks
+  │
+  │ Phase 2 — on renderers:
+  │   tui-renderer:  text → markdown, code-block → highlight, image → terminal protocol
+  │   (any renderer: web UI, logger, etc.)
 ```
 
-The tui-renderer is just an extension — it has no privileged access. Any renderer (terminal, web, log) sees the same transformed output.
+The tui-renderer is just an extension. It uses the same `createFencedBlockTransform` primitive for ` ``` ` detection that any extension can use for `:::` or `~~~`. No special privileges.
 
 ### Content Blocks
 
-The pipeline carries **typed content blocks**, not just text:
+The pipeline carries **typed content blocks**:
 
 ```typescript
 type ContentBlock =
-  | { type: "text"; text: string }   // markdown → rendered normally
-  | { type: "image"; data: Buffer }  // PNG → displayed via iTerm2/Kitty protocol
-  | { type: "raw"; escape: string }  // terminal escape → written directly to stdout
+  | { type: "text"; text: string }                          // markdown text
+  | { type: "code-block"; language: string; code: string }  // fenced code block
+  | { type: "image"; data: Buffer }                         // PNG → terminal image protocol
+  | { type: "raw"; escape: string }                         // raw terminal escape
 ```
 
-Transform extensions return content blocks. The tui-renderer dispatches each type to the appropriate handler. This means extensions never need to write to `process.stdout` directly or worry about terminal protocol detection.
+Extensions return content blocks from transforms. The tui-renderer dispatches each type — extensions never write to `process.stdout` directly or detect terminal protocols.
+
+### Composable Primitives
+
+Three tools, each operating on a disjoint domain. They compose regardless of registration order:
+
+| Primitive | Operates on | Produces | Use case |
+|---|---|---|---|
+| `createBlockTransform` | text blocks (inline delimiters) | any block type | `$$...$$`, `<<...>>` |
+| `createFencedBlockTransform` | text blocks (line fences) | any block type | ` ``` `, `:::`, `~~~` |
+| `bus.onPipe` directly | any block type | any block type | claim code-blocks, filter, enrich |
+
+Each primitive processes only its input type and passes everything else through. This means extensions don't need to coordinate ordering — the tool choice determines the behavior.
 
 ### Streaming and Buffering
 
-Agent responses arrive as small chunks that may split patterns across boundaries. The `createBlockTransform` helper handles this:
-
-```
-chunk 1: "Energy is $$E=mc"     → emit "Energy is ", hold "$$E=mc"
-chunk 2: "^2$$ which means"     → render "E=mc^2" → emit [image] + " which means"
-```
-
-```typescript
-import { createBlockTransform } from "agent-sh/utils/stream-transform";
-
-createBlockTransform(bus, {
-  open: "$$", close: "$$",
-  transform(content) {
-    const png = render(content);
-    return png ? { type: "image", data: png } : null;
-  },
-});
-```
-
-The helper manages chunk buffering, safe boundary detection, and flush-on-done. For low-level transforms without delimiters, register directly on `bus.onPipe("agent:response-chunk", ...)`.
+Both primitives handle streaming automatically — buffering across chunk boundaries, safe boundary detection, and flush-on-done. Extension authors never manage buffers manually.
 
 Events using `emitTransform`: `agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-output-chunk`, `agent:response-done`.
+
+See [Extensions — Content Transform Pipeline](extensions.md#content-transform-pipeline) for full documentation and examples.
 
 ## Project Structure
 

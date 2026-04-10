@@ -20,20 +20,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "agent-sh/types";
-import { createBlockTransform } from "agent-sh/utils/stream-transform";
-import { getExtensionSettings } from "agent-sh/settings";
 
-// ── Settings ─────────────────────────────────────────────────────
-//
-// Configure in ~/.agent-sh/settings.json:
-//   "latex-images": { "dpi": 300, "fgColor": "d4d4d4" }
-
-const config = getExtensionSettings("latex-images", {
-  /** dvipng resolution (higher = crisper on retina) */
-  dpi: 300,
-  /** Foreground color (hex, no #) — light for dark terminals */
-  fgColor: "d4d4d4",
-});
+// Settings loaded in activate() via ctx.getExtensionSettings
+let config = { dpi: 300, fgColor: "d4d4d4" };
 
 // ── LaTeX rendering via latex + dvipng ───────────────────────────
 
@@ -89,7 +78,12 @@ function renderEquation(equation: string): Buffer | null {
 
 // ── Extension entry point ────────────────────────────────────────
 
-export default function activate({ bus }: ExtensionContext) {
+export default function activate(ctx: ExtensionContext) {
+  const { bus } = ctx;
+
+  // Load settings: ~/.agent-sh/settings.json → "latex-images": { dpi, fgColor }
+  config = ctx.getExtensionSettings("latex-images", config);
+
   // Check for latex + dvipng
   try {
     execSync("latex --version", { stdio: "ignore", timeout: 3000 });
@@ -103,20 +97,33 @@ export default function activate({ bus }: ExtensionContext) {
 
   bus.emit("ui:info", { message: "latex-images: ready (latex + dvipng)" });
 
-  // That's it — createBlockTransform handles buffering, chunk
-  // splitting, flush-on-done. The tui-renderer handles the
-  // { type: "image" } content block via terminal protocol.
-  createBlockTransform(bus, {
+  // Handle inline $$...$$ display math
+  ctx.createBlockTransform({
     open: "$$",
     close: "$$",
     transform(latex) {
       const png = renderEquation(latex);
-      if (!png) return null; // render failed — keep original $$...$$ text
+      if (!png) return null;
       return [
         { type: "text", text: "\n" },
         { type: "image", data: png },
       ];
     },
+  });
+
+  // Handle ```latex and ```tex code blocks (produced by createFencedBlockTransform)
+  bus.onPipe("agent:response-chunk", (e) => {
+    if (!e.blocks) return e;
+    return {
+      ...e,
+      blocks: e.blocks.map((block) => {
+        if (block.type !== "code-block") return block;
+        if (block.language !== "latex" && block.language !== "tex") return block;
+        const png = renderEquation(block.code);
+        if (!png) return block; // render failed — fall through to syntax highlight
+        return { type: "image" as const, data: png };
+      }),
+    };
   });
 
   process.on("exit", () => {

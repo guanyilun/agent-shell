@@ -125,6 +125,7 @@ export interface ShellEvents {
 
 export type ContentBlock =
   | { type: "text"; text: string }
+  | { type: "code-block"; language: string; code: string }
   | { type: "image"; data: Buffer }
   | { type: "raw"; escape: string };
 

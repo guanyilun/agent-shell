@@ -1,4 +1,3 @@
-import { highlight } from "cli-highlight";
 import { visibleLen } from "./ansi.js";
 import { palette as p } from "./palette.js";
 
@@ -79,18 +78,24 @@ export function wrapLine(text: string, maxWidth: number): string[] {
  * renders complete lines with ANSI formatting, and wraps output
  * in a bordered box.
  */
+export interface MarkdownRendererOptions {
+  terminalWidth?: number;
+  /** Output function. Defaults to process.stdout.write. */
+  write?: (text: string) => void;
+}
+
 export class MarkdownRenderer {
   private buffer = "";
-  private inCodeBlock = false;
-  private codeLanguage = "";
-  private codeLines: string[] = [];
   private contentWidth: number;
   private firstLine = true;
+  private writeFn: (text: string) => void;
 
-  constructor(terminalWidth?: number) {
-    const termW = terminalWidth ?? (process.stdout.columns || 100);
-    // 2-char left indent for content
+  constructor(opts?: MarkdownRendererOptions | number) {
+    // Backward compat: accept bare number for terminalWidth
+    const options = typeof opts === "number" ? { terminalWidth: opts } : opts;
+    const termW = options?.terminalWidth ?? (process.stdout.columns || 100);
     this.contentWidth = Math.min(MAX_CONTENT_WIDTH, termW - 2);
+    this.writeFn = options?.write ?? ((text: string) => process.stdout.write(text));
   }
 
   /**
@@ -106,9 +111,6 @@ export class MarkdownRenderer {
    * Flush any remaining text in the buffer (called when the response ends).
    */
   flush(): void {
-    if (this.inCodeBlock) {
-      this.renderCodeBlock();
-    }
     if (this.buffer.length > 0) {
       this.processLine(this.buffer);
       this.buffer = "";
@@ -117,13 +119,13 @@ export class MarkdownRenderer {
 
   printTopBorder(): void {
     const termW = process.stdout.columns || 80;
-    process.stdout.write(`${p.dim}${p.accent}${"─".repeat(termW)}${p.reset}\n`);
+    this.writeFn(`${p.dim}${p.accent}${"─".repeat(termW)}${p.reset}\n`);
     this.firstLine = true;
   }
 
   printBottomBorder(): void {
     const termW = process.stdout.columns || 80;
-    process.stdout.write(`${p.dim}${p.accent}${"─".repeat(termW)}${p.reset}\n`);
+    this.writeFn(`${p.dim}${p.accent}${"─".repeat(termW)}${p.reset}\n`);
   }
 
   private processBuffer(): void {
@@ -136,28 +138,7 @@ export class MarkdownRenderer {
   }
 
   private processLine(line: string): void {
-    // Code fence detection
-    const fenceMatch = line.match(/^(\s*)```(\w*)/);
-    if (fenceMatch) {
-      if (!this.inCodeBlock) {
-        this.inCodeBlock = true;
-        this.codeLanguage = fenceMatch[2] || "";
-        this.codeLines = [];
-        return;
-      } else {
-        this.inCodeBlock = false;
-        this.renderCodeBlock();
-        return;
-      }
-    }
-
-    if (this.inCodeBlock) {
-      this.codeLines.push(line);
-      return;
-    }
-
     const rendered = this.renderLine(line);
-    // Word-wrap and output each wrapped line
     const wrapped = wrapLine(rendered, this.contentWidth);
     for (const wl of wrapped) {
       this.writeLine(wl);
@@ -227,46 +208,12 @@ export class MarkdownRenderer {
     return text;
   }
 
-  private renderCodeBlock(): void {
-    const code = this.codeLines.join("\n");
-    const lang = this.codeLanguage;
-
-    if (lang) {
-      this.writeLine(`${p.dim}${lang}${p.reset}`);
-    }
-
-    let highlighted: string;
-    try {
-      highlighted = highlight(code, { language: lang || undefined });
-    } catch {
-      highlighted = `${p.success}${code}${p.reset}`;
-    }
-
-    // Code blocks get indented, and each line is individually wrapped
-    for (const line of highlighted.split("\n")) {
-      const indented = `  ${line}`;
-      const wrapped = wrapLine(indented, this.contentWidth);
-      for (const wl of wrapped) {
-        this.writeLine(wl);
-      }
-    }
-
-    this.codeLanguage = "";
-    this.codeLines = [];
-  }
-
   /**
    * Write a single line with a subtle left indent.
    */
   writeLine(text: string): void {
     if (this.firstLine && visibleLen(text) === 0) return;
     this.firstLine = false;
-    process.stdout.write(`  ${text}\n`);
-    if (process.stdout.writable) {
-      try {
-        process.stdout.write('');
-      } catch (e) {
-      }
-    }
+    this.writeFn(`  ${text}\n`);
   }
 }

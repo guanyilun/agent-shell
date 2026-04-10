@@ -2,8 +2,10 @@ import type { EventBus, ContentBlock } from "./event-bus.js";
 import type { ContextManager } from "./context-manager.js";
 import type { AcpClient } from "./acp-client.js";
 import type { ColorPalette } from "./utils/palette.js";
+import type { BlockTransformOptions, FencedBlockTransformOptions } from "./utils/stream-transform.js";
 
 export type { ContentBlock } from "./event-bus.js";
+export type { BlockTransformOptions, FencedBlockTransformOptions } from "./utils/stream-transform.js";
 
 export interface AgentShellConfig {
   agentCommand: string;
@@ -28,6 +30,14 @@ export interface ExtensionContext {
   quit: () => void;
   /** Override color palette slots for theming. */
   setPalette: (overrides: Partial<ColorPalette>) => void;
+
+  // ── Stream transform utilities ─────────────────────────────
+  /** Register a delimiter-based content transform (e.g. $$...$$ → image). */
+  createBlockTransform: (opts: BlockTransformOptions) => void;
+  /** Register a fenced block transform (e.g. ```lang...``` → code-block). */
+  createFencedBlockTransform: (opts: FencedBlockTransformOptions) => void;
+  /** Read extension-namespaced settings from ~/.agent-sh/settings.json. */
+  getExtensionSettings: <T extends Record<string, unknown>>(namespace: string, defaults: T) => T;
 }
 
 export interface TerminalSession {
