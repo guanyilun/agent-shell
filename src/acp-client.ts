@@ -98,19 +98,25 @@ export class AcpClient {
       stream,
     );
 
-    // Initialize the connection
+    // Initialize the connection with timeout
     this.log("Sending initialize request");
-    const initResponse = await this.connection.initialize({
-      protocolVersion: acp.PROTOCOL_VERSION,
-      clientInfo: { name: "agent-sh", version: "0.1.0" },
-      clientCapabilities: {
-        terminal: true,
-        fs: {
-          readTextFile: true,
-          writeTextFile: true,
+    const initTimeoutMs = 30000; // 30 seconds
+    const initResponse = await Promise.race([
+      this.connection.initialize({
+        protocolVersion: acp.PROTOCOL_VERSION,
+        clientInfo: { name: "agent-sh", version: "0.1.0" },
+        clientCapabilities: {
+          terminal: true,
+          fs: {
+            readTextFile: true,
+            writeTextFile: true,
+          },
         },
-      },
-    });
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Initialize timeout after ${initTimeoutMs}ms`)), initTimeoutMs)
+      ),
+    ]);
 
     this.log("Initialize successful");
 
@@ -130,10 +136,16 @@ export class AcpClient {
       cwd,
       mcpServers: [],
     });
-    const sessionResponse = await this.connection.newSession({
-      cwd: sessionConfig.cwd,
-      mcpServers: sessionConfig.mcpServers as acp.McpServer[],
-    });
+    const sessionTimeoutMs = 30000; // 30 seconds
+    const sessionResponse = await Promise.race([
+      this.connection.newSession({
+        cwd: sessionConfig.cwd,
+        mcpServers: sessionConfig.mcpServers as acp.McpServer[],
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`newSession timeout after ${sessionTimeoutMs}ms`)), sessionTimeoutMs)
+      ),
+    ]);
 
     this.sessionId = sessionResponse.sessionId;
     this.log(`Session created: ${this.sessionId}`);
@@ -164,15 +176,21 @@ export class AcpClient {
 
     try {
       this.log("sending prompt...");
-      const response = await this.connection.prompt({
-        sessionId: this.sessionId,
-        prompt: [
-          {
-            type: "text",
-            text: contextBlock + "\n" + query,
-          },
-        ],
-      });
+      const promptTimeoutMs = 300000; // 5 minutes timeout for LLM response
+      const response = await Promise.race([
+        this.connection.prompt({
+          sessionId: this.sessionId,
+          prompt: [
+            {
+              type: "text",
+              text: contextBlock + "\n" + query,
+            },
+          ],
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`Prompt timeout after ${promptTimeoutMs}ms`)), promptTimeoutMs)
+        ),
+      ]);
 
       this.log(`prompt resolved: stopReason=${response.stopReason}`);
 
