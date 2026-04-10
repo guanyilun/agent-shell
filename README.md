@@ -85,6 +85,7 @@ When typing after `>`, full readline-style keybindings are available:
 
 | Key | Action |
 |---|---|
+| `↑` / `↓` | Browse query history (persisted across sessions) |
 | `Ctrl-A` / `Home` | Move to start of line |
 | `Ctrl-E` / `End` | Move to end of line |
 | `Ctrl-B` / `←` | Move back one character |
@@ -105,6 +106,38 @@ When typing after `>`, full readline-style keybindings are available:
 | `/copy` | Copy last agent response to clipboard |
 | `/compact` | Ask agent to summarize the conversation |
 | `/quit` | Exit agent-sh |
+
+## Configuration
+
+agent-sh stores settings and history in `~/.agent-sh/`. Configure behavior via `~/.agent-sh/settings.json` — all fields are optional with sensible defaults:
+
+```json
+{
+  "extensions": [],
+  "historySize": 500,
+  "contextWindowSize": 20,
+  "contextBudget": 16384,
+  "shellTruncateThreshold": 10,
+  "shellHeadLines": 5,
+  "shellTailLines": 5,
+  "recallExpandMaxLines": 100,
+  "maxCommandOutputLines": 30,
+  "diffMaxLines": 20
+}
+```
+
+| Setting | Default | Description |
+|---|---|---|
+| `historySize` | `500` | Max agent query history entries (persisted across sessions) |
+| `contextWindowSize` | `20` | Recent exchanges included in agent context |
+| `contextBudget` | `16384` | Context budget in bytes (~4K tokens) |
+| `shellTruncateThreshold` | `10` | Shell output lines before truncation |
+| `shellHeadLines` / `shellTailLines` | `5` / `5` | Lines kept from start/end of truncated output |
+| `recallExpandMaxLines` | `100` | Max lines for recall expand before requiring line ranges |
+| `maxCommandOutputLines` | `30` | Max command output lines shown inline |
+| `diffMaxLines` | `20` | Max diff lines before "ctrl+o to expand" |
+
+See the [Extensions guide](docs/extensions.md) for extension configuration.
 
 ## Development
 
