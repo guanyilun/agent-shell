@@ -131,13 +131,12 @@ export default function activate(ctx: ExtensionContext) {
     },
   });
 
-  // Handle ```latex and ```tex code blocks via named renderer hook
-  bus.onPipe("renderer:code-block", (e) => {
-    if (e.language !== "latex" && e.language !== "tex") return e;
-    const png = renderEquation(e.code);
-    if (!png) return e; // render failed — fall through to syntax highlight
+  // Advise the code block renderer — wrap the default syntax highlighter
+  ctx.advise("render:code-block", (next, language: string, code: string) => {
+    if (language !== "latex" && language !== "tex") return next(language, code);
+    const png = renderEquation(code);
+    if (!png) return next(language, code); // render failed — fall through
     process.stdout.write("\n  " + encodeImage(png) + "\n");
-    return { ...e, handled: true };
   });
 
   process.on("exit", () => {

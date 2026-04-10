@@ -47,7 +47,8 @@ function encodeImageForTerminal(data: Buffer): string | null {
   return null;
 }
 
-export default function activate({ bus, getAcpClient }: ExtensionContext): void {
+export default function activate(ctx: ExtensionContext): void {
+  const { bus, getAcpClient, define } = ctx;
   let spinner: SpinnerState | null = null;
   let renderer: MarkdownRenderer | null = null;
   let commandOutputBuffer = "";
@@ -291,13 +292,8 @@ export default function activate({ bus, getAcpClient }: ExtensionContext): void 
   }
 
   /** Render a code block with syntax highlighting (extracted from MarkdownRenderer). */
-  function writeCodeBlock(language: string, code: string): void {
-    // Let extensions claim specific code blocks before default rendering
-    const result = bus.emitPipe("renderer:code-block", {
-      language, code, handled: false,
-    });
-    if (result.handled) return;
-
+  // Register named handler — extensions can advise this
+  define("render:code-block", (language: string, code: string) => {
     flushForRaw();
     if (language) {
       renderer!.writeLine(`${p.dim}${language}${p.reset}`);
@@ -317,6 +313,10 @@ export default function activate({ bus, getAcpClient }: ExtensionContext): void 
         renderer!.writeLine(wl);
       }
     }
+  });
+
+  function writeCodeBlock(language: string, code: string): void {
+    ctx.call("render:code-block", language, code);
   }
 
   /** Flush markdown renderer and prepare for raw stdout writes. */
@@ -327,13 +327,16 @@ export default function activate({ bus, getAcpClient }: ExtensionContext): void 
     renderer!.flush();
   }
 
-  /** Write an image buffer to the terminal via the best available protocol. */
-  function writeInlineImage(data: Buffer): void {
+  define("render:image", (data: Buffer) => {
     flushForRaw();
     const escape = encodeImageForTerminal(data);
     if (escape) {
       process.stdout.write("  " + escape + "\n");
     }
+  });
+
+  function writeInlineImage(data: Buffer): void {
+    ctx.call("render:image", data);
   }
 
   function showToolCall(

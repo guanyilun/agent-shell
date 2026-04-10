@@ -114,13 +114,6 @@ export interface ShellEvents {
   // Cycle session mode (input-handler → core)
   "config:cycle": Record<string, never>;
 
-  // Renderer hooks (sync pipe: extensions can claim before built-in rendering)
-  "renderer:code-block": {
-    language: string;
-    code: string;
-    handled: boolean;
-  };
-
   // Autocomplete (sync pipe: extensions inspect buffer and append items)
   "autocomplete:request": {
     buffer: string;

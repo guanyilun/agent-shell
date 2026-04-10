@@ -38,6 +38,14 @@ export interface ExtensionContext {
   createFencedBlockTransform: (opts: FencedBlockTransformOptions) => void;
   /** Read extension-namespaced settings from ~/.agent-sh/settings.json. */
   getExtensionSettings: <T extends Record<string, unknown>>(namespace: string, defaults: T) => T;
+
+  // ── Named handler registry (Emacs-style advice) ───────────
+  /** Register a named handler. */
+  define: (name: string, fn: (...args: any[]) => any) => void;
+  /** Wrap a named handler. Receives `next` (original) + args. */
+  advise: (name: string, wrapper: (next: (...args: any[]) => any, ...args: any[]) => any) => void;
+  /** Call a named handler. */
+  call: (name: string, ...args: any[]) => any;
 }
 
 export interface TerminalSession {
