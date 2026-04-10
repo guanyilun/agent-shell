@@ -53,11 +53,39 @@ export class LineEditor {
         if (next === "[") {
           const { consumed, incomplete } = this.handleCSI(data, i, actions);
           if (incomplete) {
-            // Buffer the incomplete CSI sequence for next feed()
             this.pendingSeq = data.slice(i, i + consumed);
             i += consumed;
           } else {
             i += consumed;
+          }
+          continue;
+        }
+
+        // SS3 sequence: \x1bO... (application cursor mode — arrow keys, Home, End)
+        if (next === "O") {
+          const ss3Final = data[i + 2];
+          if (ss3Final == null) {
+            // Incomplete — buffer for next feed()
+            this.pendingSeq = data.slice(i, i + 2);
+            i += 2;
+            continue;
+          }
+          i += 3; // consume \x1b O <final>
+          switch (ss3Final) {
+            case "A": actions.push({ action: "arrow-up" }); break;
+            case "B": actions.push({ action: "arrow-down" }); break;
+            case "C":
+              if (this.cursor < this.buffer.length) { this.cursor++; actions.push({ action: "changed" }); }
+              break;
+            case "D":
+              if (this.cursor > 0) { this.cursor--; actions.push({ action: "changed" }); }
+              break;
+            case "H": // Home
+              if (this.cursor > 0) { this.cursor = 0; actions.push({ action: "changed" }); }
+              break;
+            case "F": // End
+              if (this.cursor < this.buffer.length) { this.cursor = this.buffer.length; actions.push({ action: "changed" }); }
+              break;
           }
           continue;
         }
