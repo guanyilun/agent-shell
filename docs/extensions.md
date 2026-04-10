@@ -54,6 +54,32 @@ export default function activate(ctx) {
 | `quit` | `() => void` | Exit agent-sh |
 | `setPalette` | `(overrides: Partial<ColorPalette>) => void` | Override color palette slots for theming |
 
+## Content Transforms
+
+Extensions can transform agent content before any renderer sees it. The content streams (`agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-output-chunk`) flow through a transform pipeline: `onPipe` listeners modify the payload first, then `on` listeners (renderers) receive the transformed result.
+
+```typescript
+// latex-render.ts — render LaTeX equations as terminal images
+export default function activate({ bus }) {
+  bus.onPipe("agent:response-chunk", (e) => {
+    // Replace inline LaTeX with rendered terminal graphics
+    const transformed = e.text.replace(
+      /\$\$(.+?)\$\$/g,
+      (_, equation) => renderLatexToKittyGraphics(equation),
+    );
+    return { ...e, text: transformed };
+  });
+}
+```
+
+Since the tui-renderer is itself just an extension using `bus.on(...)`, transform extensions compose naturally — they sit in the pipe before any renderer without special privileges. Multiple transforms chain: each `onPipe` listener receives the output of the previous one.
+
+Use cases:
+- **LaTeX rendering** — detect `$...$` equations, render via `katex`/`latex`, emit kitty graphics escapes
+- **Diagram rendering** — detect mermaid/plantuml blocks, render to images
+- **Syntax transforms** — custom highlighting, annotation overlays
+- **Content filtering** — redact sensitive output, collapse verbose sections
+
 ## Yolo Mode
 
 By default, agent-sh runs in **yolo mode** — all tool calls and file writes are auto-approved. This matches pi's design philosophy where the agent operates freely unless you explicitly add permission gates.
