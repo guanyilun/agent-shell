@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { Shell } from "./shell.js";
 import { createCore } from "./core.js";
 import { palette as p } from "./utils/palette.js";
@@ -12,32 +12,66 @@ import { loadExtensions } from "./extension-loader.js";
 import type { AgentShellConfig } from "./types.js";
 
 /**
- * Capture the user's full shell environment by running a quick interactive
- * subshell. This picks up env vars exported in .zshrc/.bashrc that the
- * Node.js process (which was spawned before the PTY sources rc files)
- * doesn't have.
+ * Capture the user's full shell environment asynchronously.
+ * This picks up env vars exported in .zshrc/.bashrc that the
+ * Node.js process doesn't have.
+ *
+ * Uses -l (login shell) instead of -i to avoid TTY blocking issues.
  */
-function captureShellEnv(shell: string): Record<string, string> {
-  try {
-    const output = execFileSync(shell, ["-i", "-c", "env -0"], {
-      encoding: "utf-8",
-      timeout: 5000,
-      stdio: ["pipe", "pipe", "pipe"], // suppress interactive noise on stderr
-    });
-    const env: Record<string, string> = {};
-    for (const entry of output.split("\0")) {
-      const eq = entry.indexOf("=");
-      if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1);
+async function captureShellEnvAsync(shell: string): Promise<Record<string, string>> {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(shell, ["-l", "-c", "env -0"], {
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 5000,
+      });
+
+      let output = "";
+      child.stdout?.on("data", (data) => {
+        output += data.toString("utf-8");
+      });
+
+      child.on("close", (code) => {
+        if (code !== 0 || !output) {
+          resolve({}); // Return empty to trigger fallback
+          return;
+        }
+        const env: Record<string, string> = {};
+        for (const entry of output.split("\0")) {
+          const eq = entry.indexOf("=");
+          if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1);
+        }
+        resolve(env);
+      });
+
+      child.on("error", () => {
+        resolve({}); // Return empty to trigger fallback
+      });
+
+      // Safety timeout
+      setTimeout(() => {
+        child.kill("SIGTERM");
+        resolve({});
+      }, 5000);
+    } catch {
+      resolve({});
     }
-    return env;
-  } catch {
-    // Fallback: use Node's own environment
-    const env: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined) env[k] = v;
+  });
+}
+
+/**
+ * Merge captured shell env into base env, only adding keys that don't exist.
+ * This preserves any runtime modifications while adding missing shell vars.
+ */
+function mergeShellEnv(baseEnv: Record<string, string>, shellEnv: Record<string, string>): Record<string, string> {
+  const merged = { ...baseEnv };
+  for (const [key, value] of Object.entries(shellEnv)) {
+    // Only add if key doesn't exist or is empty in base env
+    if (!(key in merged) || !merged[key]) {
+      merged[key] = value;
     }
-    return env;
   }
+  return merged;
 }
 
 function parseArgs(argv: string[]): AgentShellConfig {
@@ -124,17 +158,47 @@ function formatAgentInfo(agentInfo: { name: string; version: string }, model?: s
 }
 
 async function main(): Promise<void> {
+  // Ignore SIGTTOU to prevent suspension when setRawMode is called.
+  // This happens when the process is in the background and tries to
+  // modify terminal settings.
+  process.on("SIGTTOU", () => {});
+
   const config = parseArgs(process.argv.slice(2));
 
-  // Capture the user's shell environment (picks up vars from .zshrc/.bashrc
-  // that the Node process doesn't have)
-  config.shellEnv = captureShellEnv(config.shell || process.env.SHELL || "/bin/bash");
+  // Start with current process environment (fast, non-blocking)
+  // We'll enrich it with shell env asynchronously in the background
+  const baseEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined) baseEnv[k] = v;
+  }
+  config.shellEnv = baseEnv;
+
+  // Asynchronously capture full shell environment without blocking startup
+  const shellPath = config.shell || process.env.SHELL || "/bin/bash";
+  captureShellEnvAsync(shellPath).then((shellEnv) => {
+    if (Object.keys(shellEnv).length > 0) {
+      const merged = mergeShellEnv(config.shellEnv!, shellEnv);
+      config.shellEnv = merged;
+      if (process.env.DEBUG) {
+        console.error('[agent-sh] Shell environment enriched asynchronously');
+      }
+    }
+  }).catch(() => {
+    // Ignore errors, we already have process.env as fallback
+  });
+
+  if (process.env.DEBUG) {
+    console.error('[agent-sh] Using current process environment (async enrichment pending)');
+  }
 
   // ── Core (frontend-agnostic) ──────────────────────────────────
   const core = createCore(config);
   const { bus, client } = core;
 
   // ── Interactive frontend ──────────────────────────────────────
+  if (process.env.DEBUG) {
+    console.error('[agent-sh] Setting up interactive frontend...');
+  }
   process.stdout.write(`\x1b]0;agent-sh\x07`);
 
   const cols = process.stdout.columns || 80;
@@ -149,6 +213,9 @@ async function main(): Promise<void> {
     process.exit(0);
   };
 
+  if (process.env.DEBUG) {
+    console.error('[agent-sh] Creating Shell...');
+  }
   const shell = new Shell({
     bus,
     cols,
@@ -166,8 +233,14 @@ async function main(): Promise<void> {
       return { info: "" };
     },
   });
+  if (process.env.DEBUG) {
+    console.error('[agent-sh] Shell created');
+  }
 
   // ── Extensions ────────────────────────────────────────────────
+  if (process.env.DEBUG) {
+    console.error('[agent-sh] Setting up extensions...');
+  }
   const extCtx = core.extensionContext({ quit: cleanup });
 
   tuiRenderer(extCtx);
@@ -175,23 +248,57 @@ async function main(): Promise<void> {
   fileAutocomplete(extCtx);
   shellRecall(extCtx);
 
-  // Shell-exec: start the Unix socket bridge so the MCP server can
+  // Shell-exec: start the Unix domain socket bridge so the MCP server can
   // route user_shell tool calls to the PTY via the EventBus.
   const tmpDir = shell.getTmpDir();
   if (tmpDir) {
+    if (process.env.DEBUG) {
+      console.error('[agent-sh] Starting shell-exec socket server...');
+    }
     shellExec(extCtx, { socketPath: `${tmpDir}/shell.sock` });
   }
 
-  await loadExtensions(extCtx, config.extensions);
+  // Load extensions with timeout to prevent blocking startup
+  if (process.env.DEBUG) {
+    console.error('[agent-sh] Loading extensions...');
+  }
+  const loadExtensionsTimeoutMs = 10000; // 10 seconds
+  await Promise.race([
+    loadExtensions(extCtx, config.extensions),
+    new Promise<void>((_, reject) =>
+      setTimeout(() => reject(new Error(`Extension loading timeout after ${loadExtensionsTimeoutMs}ms`)), loadExtensionsTimeoutMs)
+    ),
+  ]).catch((err) => {
+    console.error(`Warning: ${err.message}`);
+  });
+  if (process.env.DEBUG) {
+    console.error('[agent-sh] Extensions loaded');
+  }
 
   // ── Agent connection (async — don't block shell startup) ──────
-  core.start().catch((err) => {
+  const agentStartTimeoutMs = 35000; // 35 seconds (slightly longer than internal timeouts)
+  Promise.race([
+    core.start(),
+    new Promise<void>((_, reject) =>
+      setTimeout(() => reject(new Error(`Agent connection timeout`)), agentStartTimeoutMs)
+    ),
+  ]).catch((err) => {
     console.error(`Failed to connect to ${config.agentCommand}:`, err);
   });
 
   // ── Terminal lifecycle ────────────────────────────────────────
   process.on("SIGTERM", cleanup);
   process.on("SIGHUP", cleanup);
+  process.on("SIGCONT", () => {
+    // Re-acquire terminal when brought back to foreground
+    if (process.stdin.isTTY) {
+      try {
+        process.stdin.setRawMode(true);
+      } catch {
+        // May fail if stdin is not a TTY
+      }
+    }
+  });
 
   process.stdout.on("resize", () => {
     shell.resize(process.stdout.columns || 80, process.stdout.rows || 24);
@@ -205,10 +312,35 @@ async function main(): Promise<void> {
     process.exit(e.exitCode);
   });
 
-  if (process.stdin.isTTY) {
-    process.stdin.setRawMode(true);
+  // Set up stdin - resume after all event listeners are in place
+  if (process.env.DEBUG) {
+    console.error('[agent-sh] Resuming stdin...');
   }
   process.stdin.resume();
+
+  // Set raw mode after resume to avoid SIGTTOU issues
+  if (process.stdin.isTTY) {
+    if (process.env.DEBUG) {
+      console.error('[agent-sh] Setting raw mode...');
+    }
+    // Use setImmediate to ensure we're in the next tick
+    setImmediate(() => {
+      try {
+        process.stdin.setRawMode(true);
+        if (process.env.DEBUG) {
+          console.error('[agent-sh] Raw mode enabled');
+        }
+      } catch (err) {
+        if (process.env.DEBUG) {
+          console.error(`[agent-sh] Failed to set raw mode: ${err}`);
+        }
+        // May fail if process is in background; SIGTTOU handler prevents suspension
+      }
+    });
+  }
+  if (process.env.DEBUG) {
+    console.error('[agent-sh] Startup complete');
+  }
 }
 
 main().catch((err) => {
