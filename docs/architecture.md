@@ -177,11 +177,67 @@ The socket path is available via the `AGENT_SH_SOCKET` environment variable. The
 
 ## EventBus
 
-All communication between components flows through a typed EventBus. Components emit events (shell commands, agent responses, tool calls) and extensions subscribe to events they care about. The bus supports three modes:
+All communication between components flows through a typed EventBus. Components emit events (shell commands, agent responses, tool calls) and extensions subscribe to events they care about. The bus supports four modes:
 
-- **emit/on** — fire-and-forget notifications (e.g., `agent:response-chunk`)
+- **emit/on** — fire-and-forget notifications (e.g., `shell:command-done`)
 - **emitPipe/onPipe** — synchronous transform chains (e.g., `autocomplete:request` where extensions append completion items, `session:configure` where extensions add MCP servers)
 - **emitPipeAsync/onPipeAsync** — async transform chains (e.g., `permission:request` where extensions prompt the user and return a decision, `shell:exec-request` where Shell executes a command in the PTY)
+- **emitTransform** — transform-then-notify: runs pipe listeners to transform the payload, then emits the result to `on` listeners. Used for content streams where extensions can modify data before renderers see it.
+
+### Content Transform Pipeline
+
+Agent content streams (`agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-output-chunk`) use `emitTransform`. This creates a two-phase flow:
+
+```
+AcpClient
+  → emitTransform("agent:response-chunk", { text })
+      Phase 1 (onPipe): transform extensions modify text
+        → latex-ext:    $E=mc^2$ → terminal image escape sequence
+        → diagram-ext:  ```mermaid → rendered diagram
+        → any extension can register here
+      Phase 2 (on): renderers see the final transformed text
+        → tui-renderer renders to terminal
+        → web-renderer renders to HTML
+        → logger captures for debugging
+```
+
+Transform extensions register with `bus.onPipe("agent:response-chunk", ...)` and modify the payload. Renderers register with `bus.on("agent:response-chunk", ...)` and consume the final result. Since `onPipe` runs first, transforms always complete before any renderer sees the content.
+
+This means the tui-renderer is just an extension — it has no privileged access to content. A LaTeX extension, a syntax highlighter, or a diagram renderer all compose through the same bus, and any renderer (terminal, web, log) sees the same transformed output.
+
+### Streaming Transforms
+
+Agent responses arrive as a stream of small chunks. A pattern like `$E=mc^2$` may span multiple chunks. Transform extensions handle this by **buffering** — holding back text until a pattern is complete, and releasing the safe portion:
+
+```
+chunk 1: "The energy is $E=mc"    → release "The energy is ", hold "$E=mc"
+chunk 2: "^2$ which means"        → transform "$E=mc^2$", release result + " which means"
+```
+
+The pipe supports this naturally — the extension returns only the ready-to-render portion and keeps a buffer internally. On `agent:response-done` (also piped via `emitTransform`), extensions flush any remaining buffered text.
+
+```typescript
+// Streaming transform skeleton
+let buf = "";
+
+bus.onPipe("agent:response-chunk", (e) => {
+  buf += e.text;
+  const { ready, pending } = splitAtSafeBoundary(buf, /\$[^$]*\$/);
+  buf = pending;
+  return { ...e, text: ready };
+});
+
+bus.onPipe("agent:response-done", (e) => {
+  if (buf) {
+    // Pattern never closed — flush raw text
+    bus.emitTransform("agent:response-chunk", { text: buf });
+    buf = "";
+  }
+  return e;
+});
+```
+
+Events using `emitTransform`: `agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-output-chunk`, `agent:response-done`.
 
 ## Project Structure
 

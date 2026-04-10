@@ -216,7 +216,7 @@ export class AcpClient {
     } finally {
       this.log("restoring shell mode");
       if (!cancelled) {
-        this.bus.emit("agent:response-done", {
+        this.bus.emitTransform("agent:response-done", {
           response: this.currentResponseText,
         });
       }
@@ -430,7 +430,7 @@ export class AcpClient {
         const content = update.content;
         if (content.type === "text") {
           this.currentResponseText += content.text;
-          this.bus.emit("agent:response-chunk", { text: content.text });
+          this.bus.emitTransform("agent:response-chunk", { text: content.text });
         }
         break;
       }
@@ -438,7 +438,7 @@ export class AcpClient {
       case "agent_thought_chunk": {
         const thought = update.content;
         if (thought.type === "text" && thought.text) {
-          this.bus.emit("agent:thinking-chunk", { text: thought.text });
+          this.bus.emitTransform("agent:thinking-chunk", { text: thought.text });
         }
         break;
       }
@@ -467,7 +467,7 @@ export class AcpClient {
           if (!skipOutput && update.content && Array.isArray(update.content)) {
             for (const block of update.content) {
               if (block.type === "content" && block.content?.type === "text" && block.content.text) {
-                this.bus.emit("agent:tool-output-chunk", { chunk: block.content.text });
+                this.bus.emitTransform("agent:tool-output-chunk", { chunk: block.content.text });
               }
             }
           }
