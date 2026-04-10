@@ -4,6 +4,7 @@
  * Follows the render(width) -> string[] protocol for completed tools.
  * Also provides a spinner/timer component for in-progress tools.
  */
+import * as path from "node:path";
 import { visibleLen } from "./ansi.js";
 import { palette as p } from "./palette.js";
 
@@ -102,13 +103,14 @@ export function renderToolCall(
 
   // Build a compact detail string to append after the title
   let detail = "";
+  const cwd = process.cwd();
   if (mode === "full") {
     if (tool.command) {
       detail = `$ ${tool.command}`;
     } else if (tool.locations && tool.locations.length > 0) {
       const loc = tool.locations[0]!;
       const lineInfo = loc.line ? `:${loc.line}` : "";
-      detail = `${loc.path}${lineInfo}`;
+      detail = `${shortenPath(loc.path, cwd)}${lineInfo}`;
     } else if (tool.rawInput) {
       const raw = tool.rawInput as Record<string, unknown>;
       if (raw && typeof raw === "object") {
@@ -142,7 +144,7 @@ export function renderToolCall(
   if (mode === "full" && tool.locations && tool.locations.length > 1) {
     for (const loc of tool.locations.slice(1)) {
       const lineInfo = loc.line ? `:${loc.line}` : "";
-      lines.push(`  ${p.dim}${loc.path}${lineInfo}${p.reset}`);
+      lines.push(`  ${p.dim}${shortenPath(loc.path, cwd)}${lineInfo}${p.reset}`);
     }
   }
 
@@ -263,6 +265,17 @@ export function renderSpinnerLine(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
+
+/**
+ * Shorten an absolute path to a relative or tilde-prefixed form.
+ */
+function shortenPath(p: string, cwd: string): string {
+  if (p.startsWith(cwd + "/")) return p.slice(cwd.length + 1);
+  if (p.startsWith(cwd)) return p.slice(cwd.length) || ".";
+  const home = process.env.HOME;
+  if (home && p.startsWith(home + "/")) return "~/" + p.slice(home.length + 1);
+  return p;
+}
 
 function truncateVisible(text: string, maxWidth: number): string {
   if (visibleLen(text) <= maxWidth) return text;

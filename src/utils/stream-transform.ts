@@ -116,16 +116,23 @@ export interface FencedBlockTransformOptions {
  *     },
  *   });
  */
+export interface FencedBlockTransformHandle {
+  /** Flush any buffered text (e.g. before tool calls, to preserve interleaving). */
+  flush(): void;
+}
+
 export function createFencedBlockTransform(
   bus: EventBus,
   opts: FencedBlockTransformOptions,
-): void {
+): FencedBlockTransformHandle {
   let buffer = "";
   let inFence = false;
   let fenceMatch: RegExpMatchArray | null = null;
   let fenceLines: string[] = [];
+  let flushing = false;
 
   bus.onPipe("agent:response-chunk", (e) => {
+    if (flushing) return e; // pass through during flush to avoid re-buffering
     // Collect text from blocks or raw text
     let incoming = "";
     if (e.blocks) {
@@ -157,27 +164,32 @@ export function createFencedBlockTransform(
     return { ...e, text: "", blocks: [...existing, ...blocks] };
   });
 
-  bus.onPipe("agent:response-done", (e) => {
-    if (buffer || inFence) {
-      // Flush: unclosed fence → emit content as text
-      let remaining = buffer;
-      if (inFence) {
-        // Reconstruct the opening fence + accumulated lines
-        remaining = (fenceMatch?.[0] ?? "") + "\n" + fenceLines.join("\n") + (remaining ? "\n" + remaining : "");
-        inFence = false;
-        fenceMatch = null;
-        fenceLines = [];
-      }
-      if (remaining) {
-        bus.emitTransform("agent:response-chunk", {
-          text: remaining,
-          blocks: [{ type: "text", text: remaining }],
-        });
-      }
-      buffer = "";
+  function flushBuffer(): void {
+    if (!buffer && !inFence) return;
+    let remaining = buffer;
+    if (inFence) {
+      remaining = (fenceMatch?.[0] ?? "") + "\n" + fenceLines.join("\n") + (remaining ? "\n" + remaining : "");
+      inFence = false;
+      fenceMatch = null;
+      fenceLines = [];
     }
+    buffer = "";
+    if (remaining) {
+      flushing = true;
+      bus.emitTransform("agent:response-chunk", {
+        text: "",
+        blocks: [{ type: "text", text: remaining }],
+      });
+      flushing = false;
+    }
+  }
+
+  bus.onPipe("agent:response-done", (e) => {
+    flushBuffer();
     return e;
   });
+
+  return { flush: flushBuffer };
 }
 
 interface FencedPendingState {

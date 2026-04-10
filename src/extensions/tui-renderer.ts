@@ -12,7 +12,7 @@
  */
 import { highlight } from "cli-highlight";
 import { MarkdownRenderer, wrapLine } from "../utils/markdown.js";
-import { createFencedBlockTransform } from "../utils/stream-transform.js";
+import { createFencedBlockTransform, type FencedBlockTransformHandle } from "../utils/stream-transform.js";
 import { palette as p } from "../utils/palette.js";
 import {
   renderToolCall,
@@ -82,6 +82,7 @@ interface RenderState {
   // ── Thinking ──
   isThinking: boolean;
   showThinkingText: boolean;
+  thinkingPending: boolean;
 
   // ── Diff expansion ──
   lastTruncatedDiff: TruncatedDiff | null;
@@ -104,6 +105,7 @@ function createRenderState(): RenderState {
     commandOutputOverflow: 0,
     isThinking: false,
     showThinkingText: false,
+    thinkingPending: false,
     lastTruncatedDiff: null,
   };
 }
@@ -115,7 +117,7 @@ export default function activate(ctx: ExtensionContext): void {
 
   // ── Register fenced block transform (code blocks → ContentBlock) ──
   // Nobody is special — tui-renderer uses the same primitive as any extension.
-  createFencedBlockTransform(bus, {
+  const fencedTransform = createFencedBlockTransform(bus, {
     open: /^```(\w*)\s*$/,
     close: /^```\s*$/,
     transform(match, content) {
@@ -133,6 +135,7 @@ export default function activate(ctx: ExtensionContext): void {
   });
 
   bus.on("agent:thinking-chunk", (e) => {
+    s.thinkingPending = true;
     if (!s.isThinking) {
       s.isThinking = true;
       if (s.showThinkingText) {
@@ -146,6 +149,7 @@ export default function activate(ctx: ExtensionContext): void {
       }
     }
     if (s.showThinkingText && e.text) {
+      s.thinkingPending = false;
       if (!s.renderer) startAgentResponse();
       s.renderer!.push(`${p.dim}${e.text}${p.reset}`);
       drain();
@@ -194,6 +198,7 @@ export default function activate(ctx: ExtensionContext): void {
   });
 
   bus.on("agent:tool-started", (e) => {
+    fencedTransform.flush();
     stopCurrentSpinner();
     s.currentToolKind = e.kind;
     if (e.title === "user_shell") {
@@ -272,8 +277,17 @@ export default function activate(ctx: ExtensionContext): void {
     drain();
   }
 
+  function showCollapsedThinking(): void {
+    if (s.thinkingPending && !s.showThinkingText) {
+      if (!s.renderer) startAgentResponse();
+      s.renderer!.writeLine(`${p.muted}… thinking${p.reset}`);
+      s.thinkingPending = false;
+    }
+  }
+
   function endAgentResponse(): void {
     closeToolLine();
+    stopCurrentSpinner();
     if (s.renderer) {
       s.renderer.flush();
       s.renderer.printBottomBorder();
@@ -327,6 +341,7 @@ export default function activate(ctx: ExtensionContext): void {
         drain();
       }
     }
+    showCollapsedThinking();
     stopCurrentSpinner();
     if (!s.renderer) startAgentResponse();
     if (needsGap) writer.write("\n");
@@ -392,6 +407,7 @@ export default function activate(ctx: ExtensionContext): void {
     closeToolLine();
     stopCurrentSpinner();
     if (!s.renderer) startAgentResponse();
+    showCollapsedThinking();
     s.renderer!.flush();
     drain();
     const lines = renderToolCall({

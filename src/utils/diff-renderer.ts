@@ -410,7 +410,7 @@ function renderSplit(diff: DiffResult, opts: DiffRenderOptions): string[] {
   const lang = useSyntax ? detectLanguage(opts.filePath) : undefined;
   const totalWidth = opts.width;
   // 3 chars for " │ " separator
-  const colWidth = Math.floor((totalWidth - 3) / 2);
+  const colWidth = Math.max(1, Math.floor((totalWidth - 3) / 2));
 
   // Compute max line number width
   let maxNo = 0;

@@ -8,6 +8,7 @@ const MAX_CONTENT_WIDTH = 90;
  * Returns an array of lines, each fitting within `maxWidth` visible characters.
  */
 export function wrapLine(text: string, maxWidth: number): string[] {
+  if (!(maxWidth > 0)) return [text]; // catches NaN, <=0, undefined
   if (visibleLen(text) <= maxWidth) return [text];
 
   const result: string[] = [];
@@ -89,8 +90,8 @@ export class MarkdownRenderer {
   private width: number;
 
   constructor(width: number) {
-    this.width = width;
-    this.contentWidth = Math.min(MAX_CONTENT_WIDTH, width - 2);
+    this.width = Math.max(10, width);
+    this.contentWidth = Math.min(MAX_CONTENT_WIDTH, this.width - 2);
   }
 
   /**
