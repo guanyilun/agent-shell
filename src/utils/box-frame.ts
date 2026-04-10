@@ -53,7 +53,8 @@ export interface BoxFrameOptions {
  * @returns Array of terminal-ready lines with borders
  */
 export function renderBoxFrame(content: string[], opts: BoxFrameOptions): string[] {
-  const { width, borderColor = p.dim } = opts;
+  const { width: rawWidth, borderColor = p.dim } = opts;
+  const width = Math.max(6, rawWidth);
   const style = opts.style ?? "rounded";
   const b = BORDERS[style];
   const bc = borderColor;
