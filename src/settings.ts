@@ -36,6 +36,10 @@ export interface Settings {
   maxCommandOutputLines?: number;
   /** Max diff lines shown before "ctrl+o to expand". */
   diffMaxLines?: number;
+
+  // ── Agent integration ─────────────────────────────────────
+  /** Register MCP server for bridge tools (shell_cwd, user_shell, shell_recall). Default true. */
+  enableMcp?: boolean;
 }
 
 const DEFAULTS: Required<Settings> = {
@@ -49,6 +53,7 @@ const DEFAULTS: Required<Settings> = {
   recallExpandMaxLines: 100,
   maxCommandOutputLines: 30,
   diffMaxLines: 20,
+  enableMcp: true,
 };
 
 let cached: Settings | null = null;

@@ -255,10 +255,7 @@ async function main(): Promise<void> {
     if (process.env.DEBUG) {
       console.error('[agent-sh] Starting shell-exec socket server...');
     }
-    // pi-acp doesn't support MCP — it uses its own extension system.
-    // Only register the MCP server for agents that forward mcpServers.
-    const isPi = config.agentCommand.includes("pi");
-    shellExec(extCtx, { socketPath: `${tmpDir}/shell.sock`, enableMcp: !isPi });
+    shellExec(extCtx, { socketPath: `${tmpDir}/shell.sock` });
   }
 
   // Load extensions with timeout to prevent blocking startup

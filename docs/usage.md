@@ -223,7 +223,8 @@ agent-sh stores settings and query history in `~/.agent-sh/`. Configure behavior
   "shellTailLines": 5,
   "recallExpandMaxLines": 100,
   "maxCommandOutputLines": 30,
-  "diffMaxLines": 20
+  "diffMaxLines": 20,
+  "enableMcp": true
 }
 ```
 
@@ -238,6 +239,7 @@ agent-sh stores settings and query history in `~/.agent-sh/`. Configure behavior
 | `recallExpandMaxLines` | `100` | Max lines for recall expand before requiring line ranges |
 | `maxCommandOutputLines` | `30` | Max command output lines shown inline in TUI |
 | `diffMaxLines` | `20` | Max diff lines shown before "ctrl+o to expand" |
+| `enableMcp` | `true` | Register MCP server for bridge tools (disable if agent doesn't use MCP) |
 
 The file doesn't need to exist — all defaults apply automatically. Settings are loaded once at startup.
 

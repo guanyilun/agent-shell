@@ -23,20 +23,21 @@ import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getSettings } from "../settings.js";
 import type { ExtensionContext } from "../types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default function activate(
   { bus, contextManager }: ExtensionContext,
-  opts: { socketPath: string; enableMcp?: boolean },
+  opts: { socketPath: string },
 ): void {
   const { socketPath } = opts;
 
   // Register MCP server so ACP agents discover the bridge tools.
-  // Skipped for agents that don't support MCP (e.g. pi-acp uses its own
-  // extension system instead — see examples/pi-agent-sh.ts).
-  if (opts.enableMcp !== false) {
+  // Agents that don't support MCP (e.g. pi-acp) simply ignore it.
+  // Can be disabled via settings.json if not needed.
+  if (getSettings().enableMcp) {
     bus.onPipe("session:configure", (payload) => {
       return {
         ...payload,

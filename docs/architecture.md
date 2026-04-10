@@ -109,7 +109,7 @@ These tools are **not built into the agent** — they're registered externally a
 
 Two paths to the same socket backend — **both always active**:
 
-1. **MCP server** (automatic for MCP-capable agents) — the shell-exec extension registers an MCP server via the `session:configure` pipe when creating an ACP session. Any ACP agent that forwards `mcpServers` (like claude-agent-acp) discovers `shell_cwd`, `user_shell`, and `shell_recall` tools automatically. This is skipped for agents that don't support MCP (like pi-acp).
+1. **MCP server** (on by default) — the shell-exec extension registers an MCP server via the `session:configure` pipe when creating an ACP session. Any ACP agent that forwards `mcpServers` (like claude-agent-acp) discovers `shell_cwd`, `user_shell`, and `shell_recall` tools automatically. Agents that don't support MCP (like pi-acp) simply ignore it. Can be disabled via `"enableMcp": false` in settings.json.
 
 2. **Agent extensions** (agent-specific) — some agents don't support MCP but have their own extension system. For pi-acp, the pi extension (`examples/pi-agent-sh.ts`, installed to `~/.pi/agent/extensions/pi-agent-sh/`) reads `AGENT_SH_SOCKET` from the environment and connects to the same socket directly.
 
