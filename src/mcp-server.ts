@@ -32,6 +32,19 @@ function sendError(id: unknown, code: number, message: string): void {
 
 // ── Tool definition ─────────────────────────────────────────────
 
+const SHELL_CWD_TOOL = {
+  name: "shell_cwd",
+  description:
+    "Get the user's current working directory in their live shell. " +
+    "IMPORTANT: Your internal working directory may differ from the user's actual shell cwd — " +
+    "the user may have cd'd after your session started. Call this tool to get the real cwd " +
+    "before file operations if you're unsure.",
+  inputSchema: {
+    type: "object" as const,
+    properties: {},
+  },
+};
+
 const USER_SHELL_TOOL = {
   name: "user_shell",
   description:
@@ -39,7 +52,10 @@ const USER_SHELL_TOOL = {
     "Use this for commands that should affect the user's shell state: " +
     "cd, export, source, pushd/popd, alias, etc. " +
     "The command runs in the user's actual shell with their full environment " +
-    "(aliases, functions, PATH), not an isolated subprocess.",
+    "(aliases, functions, PATH), not an isolated subprocess. " +
+    "NOTE: Your internal cwd may be stale — the user may have cd'd. " +
+    "Check the shell context for [shell cwd:...] labels or call shell_cwd " +
+    "to determine the real working directory. Use absolute paths when possible.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -57,7 +73,8 @@ const SHELL_RECALL_TOOL = {
   description:
     "Retrieve past shell commands, agent responses, and tool executions from the session history. " +
     "Use this to look up truncated output, search for previous commands or errors, " +
-    "or browse recent exchanges. Operations: " +
+    "or browse recent exchanges. Each entry shows [shell cwd:...] so you can see " +
+    "which directory commands were run in. Operations: " +
     '"browse" lists recent exchange summaries with line counts, ' +
     '"search" finds exchanges matching a regex query, ' +
     '"expand" retrieves content by exchange ID (use start/end for specific line ranges).',
@@ -157,7 +174,7 @@ async function handleRequest(id: unknown, method: string, params: any): Promise<
       break;
 
     case "tools/list":
-      sendResult(id, { tools: [USER_SHELL_TOOL, SHELL_RECALL_TOOL] });
+      sendResult(id, { tools: [SHELL_CWD_TOOL, USER_SHELL_TOOL, SHELL_RECALL_TOOL] });
       break;
 
     case "tools/call": {
@@ -167,7 +184,10 @@ async function handleRequest(id: unknown, method: string, params: any): Promise<
       try {
         let text: string;
 
-        if (toolName === "user_shell") {
+        if (toolName === "shell_cwd") {
+          const result = await callSocket("shell/cwd", {}) as { cwd: string };
+          text = `User's current working directory: ${result.cwd}`;
+        } else if (toolName === "user_shell") {
           const command = args.command;
           if (!command || typeof command !== "string") {
             sendError(id, -32602, "Missing required parameter: command");
