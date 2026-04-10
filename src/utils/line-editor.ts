@@ -22,14 +22,14 @@ export type LineEditAction =
 export class LineEditor {
   buffer = "";
   cursor = 0;
-  private pendingEscape = false;
+  private pendingSeq = ""; // buffered incomplete escape sequence
 
   /** Process raw terminal input, return actions for the consumer. */
   feed(data: string): LineEditAction[] {
-    // If we had a pending \x1b from a previous chunk, prepend it
-    if (this.pendingEscape) {
-      this.pendingEscape = false;
-      data = "\x1b" + data;
+    // If we had a pending incomplete escape sequence, prepend it
+    if (this.pendingSeq) {
+      data = this.pendingSeq + data;
+      this.pendingSeq = "";
     }
 
     const actions: LineEditAction[] = [];
@@ -42,18 +42,23 @@ export class LineEditor {
       if (ch === "\x1b") {
         const next = data[i + 1];
 
-        // Bare Escape (nothing follows in this chunk) — defer to next feed()
-        // in case the rest of the CSI sequence arrives in the next chunk
+        // Incomplete escape — buffer and wait for next feed()
         if (next == null) {
-          this.pendingEscape = true;
+          this.pendingSeq = "\x1b";
           i++;
           continue;
         }
 
         // CSI sequence: \x1b[...
         if (next === "[") {
-          const { consumed } = this.handleCSI(data, i, actions);
-          i += consumed;
+          const { consumed, incomplete } = this.handleCSI(data, i, actions);
+          if (incomplete) {
+            // Buffer the incomplete CSI sequence for next feed()
+            this.pendingSeq = data.slice(i, i + consumed);
+            i += consumed;
+          } else {
+            i += consumed;
+          }
           continue;
         }
 
@@ -161,35 +166,36 @@ export class LineEditor {
     return actions;
   }
 
-  /** Check if there's a pending escape waiting for more data. */
+  /** Check if there's a pending incomplete escape sequence. */
   hasPendingEscape(): boolean {
-    return this.pendingEscape;
+    return this.pendingSeq.length > 0;
   }
 
-  /** Flush a pending bare escape as a cancel action. */
+  /** Flush a pending sequence — treat bare \x1b as cancel, discard incomplete CSI. */
   flushPendingEscape(): LineEditAction[] {
-    if (!this.pendingEscape) return [];
-    this.pendingEscape = false;
-    return [{ action: "cancel" }];
+    if (!this.pendingSeq) return [];
+    const wasBarEscape = this.pendingSeq === "\x1b";
+    this.pendingSeq = "";
+    return wasBarEscape ? [{ action: "cancel" }] : [];
   }
 
   clear(): void {
     this.buffer = "";
     this.cursor = 0;
-    this.pendingEscape = false;
+    this.pendingSeq = "";
   }
 
   // ── CSI sequence handling ───────────────────────────────────
 
   /**
    * Parse and handle a CSI sequence (\x1b[...) starting at `start`.
-   * Returns the number of bytes consumed.
+   * Returns the number of bytes consumed and whether the sequence was incomplete.
    */
   private handleCSI(
     data: string,
     start: number,
     actions: LineEditAction[],
-  ): { consumed: number } {
+  ): { consumed: number; incomplete?: boolean } {
     // Skip \x1b[
     let j = start + 2;
     // Accumulate parameter bytes (0x20-0x3F: digits, semicolons, etc.)
@@ -198,8 +204,12 @@ export class LineEditor {
       params += data[j];
       j++;
     }
-    const final = j < data.length ? data[j]! : "";
-    const consumed = j - start + (final ? 1 : 0);
+    // If we ran out of data before the final byte, sequence is incomplete
+    if (j >= data.length) {
+      return { consumed: j - start, incomplete: true };
+    }
+    const final = data[j]!;
+    const consumed = j - start + 1;
 
     // Dispatch on final byte
     switch (final) {
