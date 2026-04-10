@@ -160,6 +160,20 @@ export class EventBus {
     this.emitter.emit(event, payload);
   }
 
+  /**
+   * Transform-then-notify: run the payload through any registered pipe
+   * listeners (transforms), then emit the final result to regular `on`
+   * listeners (renderers). This enables content pipelines where extensions
+   * modify data (e.g. render LaTeX → terminal image) before renderers see it.
+   */
+  emitTransform<K extends keyof ShellEvents>(
+    event: K,
+    payload: ShellEvents[K],
+  ): void {
+    const transformed = this.emitPipe(event, payload);
+    this.emitter.emit(event, transformed);
+  }
+
   /** Register a transform listener for a pipeline event. */
   onPipe<K extends keyof ShellEvents>(
     event: K,
