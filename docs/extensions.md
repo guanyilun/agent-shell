@@ -80,6 +80,12 @@ Use cases:
 - **Syntax transforms** — custom highlighting, annotation overlays
 - **Content filtering** — redact sensitive output, collapse verbose sections
 
+A complete working example is included at `examples/extensions/math-render.ts` — it replaces LaTeX notation with Unicode math symbols (`$\alpha^2$` → `α²`), demonstrating both stateless transforms and streaming buffering across chunks:
+
+```bash
+agent-sh -e ./examples/extensions/math-render.ts
+```
+
 ## Yolo Mode
 
 By default, agent-sh runs in **yolo mode** — all tool calls and file writes are auto-approved. This matches pi's design philosophy where the agent operates freely unless you explicitly add permission gates.
