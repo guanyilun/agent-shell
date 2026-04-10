@@ -25,6 +25,26 @@ import type { DiffResult } from "../utils/diff.js";
 import { getSettings } from "../settings.js";
 import type { ExtensionContext } from "../types.js";
 
+/** Encode a PNG buffer as a terminal inline image escape sequence. */
+function encodeImageForTerminal(data: Buffer): string | null {
+  const b64 = data.toString("base64");
+  if (process.env.TERM_PROGRAM === "iTerm.app" || process.env.TERM_PROGRAM === "WezTerm") {
+    return `\x1b]1337;File=inline=1;size=${data.length};preserveAspectRatio=1:${b64}\x07`;
+  }
+  if (process.env.KITTY_WINDOW_ID || process.env.TERM_PROGRAM === "ghostty") {
+    const chunks: string[] = [];
+    for (let i = 0; i < b64.length; i += 4096) {
+      const chunk = b64.slice(i, i + 4096);
+      const isLast = i + 4096 >= b64.length;
+      chunks.push(i === 0
+        ? `\x1b_Gf=100,t=d,a=T,m=${isLast ? 0 : 1};${chunk}\x1b\\`
+        : `\x1b_Gm=${isLast ? 0 : 1};${chunk}\x1b\\`);
+    }
+    return chunks.join("");
+  }
+  return null;
+}
+
 export default function activate({ bus, getAcpClient }: ExtensionContext): void {
   let spinner: SpinnerState | null = null;
   let renderer: MarkdownRenderer | null = null;
@@ -73,7 +93,29 @@ export default function activate({ bus, getAcpClient }: ExtensionContext): void 
     }
   });
 
-  bus.on("agent:response-chunk", (e) => writeAgentText(e.text));
+  bus.on("agent:response-chunk", (e) => {
+    if (e.blocks) {
+      // Typed content blocks from transform pipeline
+      for (const block of e.blocks) {
+        switch (block.type) {
+          case "text":
+            if (block.text) writeAgentText(block.text);
+            break;
+          case "image":
+            // Render image via best available terminal protocol
+            writeInlineImage(block.data);
+            break;
+          case "raw":
+            // Raw escape sequence — write directly, bypass markdown
+            flushForRaw();
+            process.stdout.write(block.escape);
+            break;
+        }
+      }
+    } else {
+      writeAgentText(e.text);
+    }
+  });
   bus.on("agent:response-done", () => {
     isThinking = false;
     endAgentResponse();
@@ -225,6 +267,23 @@ export default function activate({ bus, getAcpClient }: ExtensionContext): void 
     if (needsGap) process.stdout.write("\n");
     renderer!.push(text);
     flushOutput();
+  }
+
+  /** Flush markdown renderer and prepare for raw stdout writes. */
+  function flushForRaw(): void {
+    closeToolLine();
+    stopCurrentSpinner();
+    if (!renderer) startAgentResponse();
+    renderer!.flush();
+  }
+
+  /** Write an image buffer to the terminal via the best available protocol. */
+  function writeInlineImage(data: Buffer): void {
+    flushForRaw();
+    const escape = encodeImageForTerminal(data);
+    if (escape) {
+      process.stdout.write("  " + escape + "\n");
+    }
   }
 
   function showToolCall(
