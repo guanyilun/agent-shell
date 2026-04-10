@@ -1,6 +1,6 @@
 {
   "name": "agent-sh",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A shell-first terminal where any ACP-compatible AI agent is one keystroke away",
   "type": "module",
   "main": "dist/core.js",
