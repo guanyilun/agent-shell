@@ -30,6 +30,7 @@ export class InputHandler {
   private history: string[] = [];
   private historyIndex = -1; // -1 = not browsing history
   private savedBuffer = ""; // buffer saved when entering history
+  private escapeTimer: ReturnType<typeof setTimeout> | null = null;
   private bus: EventBus;
   private onShowAgentInfo: () => { info: string; model?: string };
 
@@ -238,7 +239,28 @@ export class InputHandler {
   }
 
   private handleAgentInput(data: string): void {
+    // Clear any pending escape timer — new data arrived
+    if (this.escapeTimer) {
+      clearTimeout(this.escapeTimer);
+      this.escapeTimer = null;
+    }
+
     const actions = this.editor.feed(data);
+
+    // If the editor is waiting for more escape sequence data, set a short
+    // timer — if nothing arrives, treat it as a bare Escape keypress
+    if (this.editor.hasPendingEscape()) {
+      this.escapeTimer = setTimeout(() => {
+        this.escapeTimer = null;
+        const flushed = this.editor.flushPendingEscape();
+        if (flushed.length > 0) this.processAgentActions(flushed);
+      }, 50);
+    }
+
+    this.processAgentActions(actions);
+  }
+
+  private processAgentActions(actions: ReturnType<typeof this.editor.feed>): void {
 
     for (const act of actions) {
       switch (act.action) {

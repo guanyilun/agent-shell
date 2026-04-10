@@ -22,9 +22,16 @@ export type LineEditAction =
 export class LineEditor {
   buffer = "";
   cursor = 0;
+  private pendingEscape = false;
 
   /** Process raw terminal input, return actions for the consumer. */
   feed(data: string): LineEditAction[] {
+    // If we had a pending \x1b from a previous chunk, prepend it
+    if (this.pendingEscape) {
+      this.pendingEscape = false;
+      data = "\x1b" + data;
+    }
+
     const actions: LineEditAction[] = [];
     let i = 0;
 
@@ -35,9 +42,10 @@ export class LineEditor {
       if (ch === "\x1b") {
         const next = data[i + 1];
 
-        // Bare Escape (nothing follows in this chunk)
+        // Bare Escape (nothing follows in this chunk) — defer to next feed()
+        // in case the rest of the CSI sequence arrives in the next chunk
         if (next == null) {
-          actions.push({ action: "cancel" });
+          this.pendingEscape = true;
           i++;
           continue;
         }
@@ -153,9 +161,22 @@ export class LineEditor {
     return actions;
   }
 
+  /** Check if there's a pending escape waiting for more data. */
+  hasPendingEscape(): boolean {
+    return this.pendingEscape;
+  }
+
+  /** Flush a pending bare escape as a cancel action. */
+  flushPendingEscape(): LineEditAction[] {
+    if (!this.pendingEscape) return [];
+    this.pendingEscape = false;
+    return [{ action: "cancel" }];
+  }
+
   clear(): void {
     this.buffer = "";
     this.cursor = 0;
+    this.pendingEscape = false;
   }
 
   // ── CSI sequence handling ───────────────────────────────────
