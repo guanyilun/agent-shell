@@ -2,4 +2,4 @@ node_modules/
 dist/
 *.tsbuildinfo
 *.org
-/.agent-shell/
+package-lock.json
