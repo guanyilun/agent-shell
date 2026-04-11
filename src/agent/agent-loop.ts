@@ -30,6 +30,8 @@ import { createGrepTool } from "./tools/grep.js";
 import { createGlobTool } from "./tools/glob.js";
 import { createLsTool } from "./tools/ls.js";
 import { createUserShellTool } from "./tools/user-shell.js";
+import { createListSkillsTool } from "./tools/list-skills.js";
+import { discoverProjectSkills } from "./skills.js";
 
 interface PendingToolCall {
   id: string;
@@ -44,6 +46,7 @@ export class AgentLoop implements AgentBackend {
   private modes: AgentMode[];
   private currentModeIndex = 0;
   private boundListeners: Array<{ event: string; fn: (...args: any[]) => void }> = [];
+  private lastProjectSkillNames = new Set<string>();
 
   constructor(
     private bus: EventBus,
@@ -93,6 +96,25 @@ export class AgentLoop implements AgentBackend {
     on("agent:reset-session", () => {
       this.cancel();
       this.conversation = new ConversationState();
+      this.lastProjectSkillNames.clear();
+    });
+    on("shell:cwd-change", ({ cwd }) => {
+      const projectSkills = discoverProjectSkills(cwd);
+      const newNames = new Set(projectSkills.map(s => s.name));
+
+      // Check if the set of project skills changed
+      if (newNames.size === this.lastProjectSkillNames.size &&
+          [...newNames].every(n => this.lastProjectSkillNames.has(n))) {
+        return; // no change
+      }
+      this.lastProjectSkillNames = newNames;
+
+      if (projectSkills.length > 0) {
+        const names = projectSkills.map(s => s.name).join(", ");
+        this.conversation.addSystemNote(
+          `[Project skills available: ${names}. Use list_skills for details, read_file to load.]`,
+        );
+      }
     });
   }
 
@@ -178,6 +200,7 @@ export class AgentLoop implements AgentBackend {
     this.toolRegistry.register(
       createUserShellTool({ getCwd, bus: this.bus }),
     );
+    this.toolRegistry.register(createListSkillsTool(getCwd));
   }
 
   private async handleQuery(

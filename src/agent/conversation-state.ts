@@ -42,6 +42,11 @@ export class ConversationState {
     });
   }
 
+  /** Inject a system-level note into the conversation (e.g. context change). */
+  addSystemNote(text: string): void {
+    this.messages.push({ role: "user", content: text });
+  }
+
   getMessages(): ChatCompletionMessageParam[] {
     return this.messages;
   }

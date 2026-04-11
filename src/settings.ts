@@ -60,8 +60,8 @@ export interface Settings {
   diffMaxLines?: number;
 
   // ── Agent integration ─────────────────────────────────────
-  /** Register MCP server for bridge tools (shell_cwd, user_shell, shell_recall). Default true. */
-  enableMcp?: boolean;
+  /** Additional directories to scan for skills (supports ~ expansion). */
+  skillPaths?: string[];
 }
 
 const DEFAULTS: Required<Settings> = {
@@ -79,7 +79,7 @@ const DEFAULTS: Required<Settings> = {
   maxCommandOutputLines: 3,
   readOutputMaxLines: 0,
   diffMaxLines: 20,
-  enableMcp: true,
+  skillPaths: [],
 };
 
 let cached: Settings | null = null;

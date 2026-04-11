@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ToolDefinition } from "./types.js";
 import type { ContextManager } from "../context-manager.js";
+import { discoverSkills } from "./skills.js";
 
 /** File names to scan for project conventions (checked in order). */
 const CONVENTION_FILES = ["CLAUDE.md", "AGENT.md"];
@@ -107,13 +108,21 @@ Each prompt includes a per-query mode instruction — follow it.`,
     );
   }
 
-  // 6. Shell context (from ContextManager — recent commands, output, exchanges)
+  // 6. Skills hint (only if skills are available — agent discovers via list_skills tool)
+  const skills = discoverSkills(contextManager.getCwd());
+  if (skills.length > 0) {
+    sections.push(
+      `You have access to ${skills.length} skill(s). Use the list_skills tool to see them, then read_file to load one.`,
+    );
+  }
+
+  // 7. Shell context (from ContextManager — recent commands, output, exchanges)
   const shellContext = contextManager.getContext();
   if (shellContext) {
     sections.push(shellContext);
   }
 
-  // 7. Dynamic metadata
+  // 8. Dynamic metadata
   sections.push(
     `Current date: ${new Date().toISOString().split("T")[0]}
 Working directory: ${contextManager.getCwd()}`,

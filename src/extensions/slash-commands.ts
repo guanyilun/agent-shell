@@ -9,6 +9,7 @@
 import { execSync } from "node:child_process";
 import { palette as p } from "../utils/palette.js";
 import type { ExtensionContext } from "../types.js";
+import { discoverSkills, loadSkillContent, type Skill } from "../agent/skills.js";
 
 interface SlashCommand {
   name: string;
@@ -16,7 +17,7 @@ interface SlashCommand {
   handler: (args: string) => Promise<void> | void;
 }
 
-export default function activate({ bus, quit }: ExtensionContext): void {
+export default function activate({ bus, contextManager, quit }: ExtensionContext): void {
   // Track last response for /copy
   let lastResponseText = "";
   bus.on("agent:processing-start", () => { lastResponseText = ""; });
@@ -101,19 +102,69 @@ export default function activate({ bus, quit }: ExtensionContext): void {
     },
   ];
 
+  // ── Skill commands (/skill:<name>) ──────────────────────────────
+
+  /** Get current skills (re-discovered on each call since cwd may change). */
+  const getSkills = (): Skill[] => {
+    const cwd = contextManager?.getCwd() ?? process.cwd();
+    return discoverSkills(cwd);
+  };
+
+  const handleSkillCommand = (skillName: string, args: string) => {
+    const skills = getSkills();
+    const skill = skills.find(s => s.name === skillName);
+    if (!skill) {
+      bus.emit("ui:error", { message: `Unknown skill: ${skillName}` });
+      return;
+    }
+
+    const content = loadSkillContent(skill);
+    if (!content) {
+      bus.emit("ui:error", { message: `Failed to load skill: ${skillName}` });
+      return;
+    }
+
+    // Inject skill content as a query — agent sees the full instructions
+    const query = args.trim()
+      ? `${content}\n\n${args.trim()}`
+      : content;
+    bus.emit("agent:submit", { query });
+  };
+
   // Provide command completions for /-prefixed input
   bus.onPipe("autocomplete:request", (payload) => {
     if (!payload.buffer.startsWith("/")) return payload;
     const prefix = payload.buffer.toLowerCase();
+
+    // Built-in commands
     const matching = commands
       .filter((c) => c.name.toLowerCase().startsWith(prefix))
       .map((c) => ({ name: c.name, description: c.description }));
+
+    // Skill commands
+    if (prefix.startsWith("/skill:") || "/skill:".startsWith(prefix)) {
+      const skills = getSkills();
+      for (const skill of skills) {
+        const name = `/skill:${skill.name}`;
+        if (name.toLowerCase().startsWith(prefix)) {
+          matching.push({ name, description: skill.description });
+        }
+      }
+    }
+
     if (matching.length === 0) return payload;
     return { ...payload, items: [...payload.items, ...matching] };
   });
 
   // Handle command execution
   bus.on("command:execute", (e) => {
+    // Check for /skill:<name> commands
+    if (e.name.startsWith("/skill:")) {
+      const skillName = e.name.slice("/skill:".length);
+      handleSkillCommand(skillName, e.args);
+      return;
+    }
+
     const cmd = commands.find((c) => c.name === e.name);
     if (cmd) {
       const result = cmd.handler(e.args);
