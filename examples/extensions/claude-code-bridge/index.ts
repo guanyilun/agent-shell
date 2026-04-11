@@ -71,12 +71,12 @@ export default function activate(ctx: ExtensionContext): void {
   const listeners: Array<{ event: string; fn: Function }> = [];
 
   const wireListeners = () => {
-    const onSubmit = async ({ query: userQuery, modeInstruction }: any) => {
+    const onSubmit = async ({ query: userQuery, modeInstruction, modeLabel }: any) => {
       const prompt = modeInstruction
         ? `${modeInstruction}\n${userQuery}`
         : userQuery;
 
-      bus.emit("agent:query", { query: userQuery });
+      bus.emit("agent:query", { query: userQuery, modeLabel });
       bus.emit("agent:processing-start", {});
 
       let fullResponseText = "";

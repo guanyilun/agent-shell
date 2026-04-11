@@ -203,7 +203,7 @@ export default function activate(ctx: ExtensionContext): void {
   const listeners: Array<{ event: string; fn: Function }> = [];
 
   const wireListeners = () => {
-    const onSubmit = async ({ query, modeInstruction }: any) => {
+    const onSubmit = async ({ query, modeInstruction, modeLabel }: any) => {
       if (!session) {
         bus.emit("agent:error", {
           message: booting ? "pi is still starting up..." : "pi session not initialized",
@@ -213,7 +213,7 @@ export default function activate(ctx: ExtensionContext): void {
       }
 
       const prompt = modeInstruction ? `${modeInstruction}\n${query}` : query;
-      bus.emit("agent:query", { query });
+      bus.emit("agent:query", { query, modeLabel });
       bus.emit("agent:processing-start", {});
 
       try {
