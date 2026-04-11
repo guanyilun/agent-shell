@@ -1,60 +1,55 @@
 # Extensions
 
-## Writing Extensions
-
-An extension is a module that exports a default (or named `activate`) function. It receives an `ExtensionContext` with access to all core services:
+An extension is a module that exports a default (or named `activate`) function. It receives an `ExtensionContext` with access to all core services — no package imports needed.
 
 ```typescript
-// my-extension.ts
-export default function activate(ctx) {
+export default function activate(ctx: ExtensionContext) {
   const { bus } = ctx;
 
-  // Listen to agent events
   bus.on("agent:response-done", (e) => {
     console.log(`Agent responded with ${e.response.length} chars`);
   });
-
-  // Add a slash command
-  bus.on("command:execute", (e) => {
-    if (e.name === "/greet") {
-      bus.emit("ui:info", { message: "Hello from my extension!" });
-    }
-  });
-  bus.onPipe("autocomplete:request", (payload) => {
-    if (!payload.buffer.startsWith("/g")) return payload;
-    return { ...payload, items: [...payload.items, { name: "/greet", description: "Say hello" }] };
-  });
-
-  // Intercept terminal commands
-  bus.onPipe("agent:terminal-intercept", (payload) => {
-    if (payload.command !== "my-tool") return payload;
-    return { ...payload, intercepted: true, output: "custom output" };
-  });
-
-  // Use the LLM client for fast-path features (null in ACP mode)
-  if (ctx.llmClient) {
-    bus.on("shell:command-done", async ({ command, output, exitCode }) => {
-      if (exitCode === 0) return;
-      const suggestion = await ctx.llmClient!.complete({
-        messages: [
-          { role: "system", content: "Suggest a fix in one line." },
-          { role: "user", content: `$ ${command}\n${output}` },
-        ],
-        max_tokens: 100,
-      });
-      if (suggestion.trim()) bus.emit("ui:suggestion", { text: suggestion.trim() });
-    });
-  }
 }
 ```
 
-### ExtensionContext API
+## Loading Extensions
+
+Extensions are loaded from three sources (in order, deduplicated):
+
+**CLI flag** (`-e` / `--extensions`):
+```bash
+npm start -- -e my-ext-package -e ./local-ext.ts
+npm start -- -e my-ext-package,another-package   # comma-separated also works
+```
+
+**Settings file** (`~/.agent-sh/settings.json`):
+```json
+{
+  "extensions": [
+    "my-published-extension",
+    "./relative/path/to/ext.ts"
+  ]
+}
+```
+
+**Extensions directory** (`~/.agent-sh/extensions/`):
+```
+~/.agent-sh/extensions/
+├── my-extension.ts          # loaded directly
+├── another.js               # JS works too
+└── complex-extension/       # directory with index file
+    └── index.ts
+```
+
+TypeScript and JavaScript are both supported (`.ts`, `.tsx`, `.mts`, `.js`, `.mjs`). TS is transpiled at runtime via tsx. Bare names resolve as npm packages via Node's standard module resolution. Errors in extension loading are non-fatal.
+
+## ExtensionContext API
 
 | Property | Type | Description |
 |---|---|---|
 | `bus` | `EventBus` | Subscribe to events, emit events, register pipe handlers |
 | `contextManager` | `ContextManager` | Access exchange history, cwd, search, expand |
-| `llmClient` | `LlmClient \| null` | LLM client for fast-path features (null in ACP mode) |
+| `llmClient` | `LlmClient \| null` | LLM client for fast-path features (null if extension backend provides its own) |
 | `quit` | `() => void` | Exit agent-sh |
 | `setPalette` | `(overrides) => void` | Override color palette slots for theming |
 | `createBlockTransform` | `(opts) => void` | Register an inline delimiter transform (e.g. `$$...$$`) |
@@ -64,11 +59,9 @@ export default function activate(ctx) {
 | `advise` | `(name, wrapper) => void` | Wrap a named handler (receives `next` + args) |
 | `call` | `(name, ...args) => any` | Call a named handler |
 
-All utilities are provided through `ctx` — no package imports needed. Extensions work from any location (`~/.agent-sh/extensions/`, npm packages, or local files).
+## Extension Settings
 
-### Extension Settings
-
-Extensions read user-configurable settings from `~/.agent-sh/settings.json`, namespaced under the extension name with type-safe defaults:
+Extensions read user-configurable settings from `~/.agent-sh/settings.json`, namespaced under the extension name:
 
 ```typescript
 export default function activate(ctx) {
@@ -87,102 +80,214 @@ Users configure in `~/.agent-sh/settings.json`:
 }
 ```
 
-## Named Handlers (Advice System)
+## Event Bus
 
-Built-in extensions register named processing steps with `ctx.define`. User extensions wrap them with `ctx.advise` — each advisor receives the previous handler as `next` and decides whether to call it.
+The bus has three patterns. The key difference: **`on`/`emit` is fire-and-forget** (listeners can't change anything), while **`onPipe`/`emitPipe` is a transform chain** (each listener modifies the payload for the next).
+
+### `on` / `emit` — Notifications
+
+Broadcast an event. Listeners react but can't affect the payload or the emitter. Use this for logging, UI updates, and side effects.
+
+```typescript
+// Emitter doesn't care what listeners do
+bus.emit("ui:info", { message: "Operation completed" });
+
+// Listener reacts but can't change the event
+bus.on("shell:command-done", ({ command, output, exitCode }) => {
+  if (exitCode !== 0) bus.emit("ui:suggestion", { text: "Command failed" });
+});
+```
+
+### `onPipe` / `emitPipe` — Synchronous Transform Chain
+
+Each listener receives the payload, **returns a modified version**, and that becomes the input for the next listener. The emitter gets back the final result. Use this when you need extensions to intercept or transform data.
+
+```typescript
+// Emitter sends a payload through the chain and reads the result
+const result = bus.emitPipe("agent:terminal-intercept", {
+  command, cwd, intercepted: false, output: "",
+});
+if (result.intercepted) return result.output;  // an extension handled it
+
+// Listener transforms the payload (or returns it unchanged to pass through)
+bus.onPipe("agent:terminal-intercept", (payload) => {
+  if (payload.command !== "my-tool") return payload;  // not mine, pass through
+  return { ...payload, intercepted: true, output: "custom output" };
+});
+```
+
+Another common use — multiple extensions enriching a payload:
+```typescript
+// Each extension appends its own completions
+bus.onPipe("autocomplete:request", (payload) => {
+  return { ...payload, items: [...payload.items, { name: "/greet", description: "Say hello" }] };
+});
+```
+
+### `onPipeAsync` / `emitPipeAsync` — Async Transform Chain
+
+Same as `onPipe` but listeners can be async. Also notifies regular `on` listeners first (so UI can prepare before async work starts). Use this for transforms that need I/O — permission prompts, shell execution, network calls.
+
+```typescript
+// Permission system: emit a request, wait for extensions to decide
+const result = await bus.emitPipeAsync("permission:request", {
+  kind: "tool-call", title: toolName, decision: { outcome: "approved" },
+});
+if (result.decision.outcome !== "approved") { /* denied */ }
+
+// Interactive extension: prompt the user asynchronously
+bus.onPipeAsync("permission:request", async (payload) => {
+  const answer = await promptUser(`Allow ${payload.title}?`);
+  return { ...payload, decision: { outcome: answer } };
+});
+```
+
+### `emitTransform` — Pipe Then Notify
+
+A convenience combo: runs the payload through the `onPipe` transform chain, then emits the result to regular `on` listeners. This is the standard way to emit content that should be both transformable and renderable.
+
+```typescript
+// Without emitTransform (two steps):
+const transformed = bus.emitPipe("agent:response-chunk", { blocks });
+bus.emit("agent:response-chunk", transformed);
+
+// With emitTransform (same thing, one call):
+bus.emitTransform("agent:response-chunk", { blocks });
+```
+
+This is how agent backends emit response chunks — extensions get a chance to transform the content (e.g. LaTeX → image) before the renderer sees it.
+
+## Custom Agent Backends
+
+An extension can replace the entire agent backend — the component that receives queries and produces responses. The built-in backend (AgentLoop) uses an OpenAI-compatible API with tool calling, but you can swap it for anything: a local model, a proprietary agent service, a deterministic script, or a test stub.
 
 ### How it works
 
+During `activate()`, emit `agent:register-backend` to claim the backend role. This prevents the built-in AgentLoop from activating. From that point, your extension is responsible for handling queries.
+
+Here's a complete working backend (`examples/extensions/echo-backend.ts`):
+
 ```typescript
-// tui-renderer defines the default code block handler
+import type { ExtensionContext } from "../../src/types.js";
+
+export default function activate({ bus }: ExtensionContext): void {
+  // 1. Register — claims the backend role before activateBackend() runs
+  bus.emit("agent:register-backend", {
+    name: "echo",
+    kill: () => {},
+  });
+
+  // 2. Handle queries — listen for submits, emit the response protocol
+  bus.on("agent:submit", ({ query }) => {
+    bus.emit("agent:processing-start", {});
+    bus.emit("agent:query", { query });
+
+    // Use emitTransform so the content pipeline processes response chunks
+    bus.emitTransform("agent:response-chunk", {
+      blocks: [{ type: "text", text: `Echo: ${query}\n` }],
+    });
+
+    bus.emitTransform("agent:response-done", {
+      response: `Echo: ${query}`,
+    });
+
+    bus.emit("agent:processing-done", {});
+  });
+
+  // 3. Identify yourself (shown in the TUI prompt)
+  bus.emit("agent:info", { name: "echo-backend", version: "1.0.0" });
+}
+```
+
+```bash
+agent-sh -e examples/extensions/echo-backend.ts
+```
+
+### Event protocol
+
+A backend listens for input events and emits output events. The TUI and all extensions only see bus events — they don't know or care which backend is active.
+
+**Input events** (listen with `bus.on`):
+
+| Event | Payload | Description |
+|---|---|---|
+| `agent:submit` | `{ query, modeInstruction?, modeLabel? }` | User submitted a query |
+| `agent:cancel-request` | `{ silent? }` | User requested cancellation |
+| `agent:reset-session` | `{}` | User issued reset — clear conversation state |
+
+**Output events** (emit in this order for each query):
+
+| Step | Event | Payload | Notes |
+|---|---|---|---|
+| 1 | `agent:processing-start` | `{}` | Starts spinner in TUI |
+| 2 | `agent:query` | `{ query, modeLabel? }` | Echoes the query for display |
+| 3 | `agent:response-chunk` | `{ blocks: ContentBlock[] }` | Use `emitTransform` so content pipeline runs. Emit 0+ times |
+| 4 | `agent:response-done` | `{ response }` | Full response text |
+| 5 | `agent:processing-done` | `{}` | Stops spinner, returns control to prompt |
+
+**Optional events** for richer backends:
+
+| Event | Payload | When |
+|---|---|---|
+| `agent:thinking-chunk` | `{ text }` | Reasoning tokens (e.g. DeepSeek-r1) |
+| `agent:tool-started` | `{ title, toolCallId?, kind? }` | Tool execution beginning |
+| `agent:tool-output-chunk` | `{ chunk }` | Streamed tool output |
+| `agent:tool-completed` | `{ toolCallId?, exitCode }` | Tool execution finished |
+| `agent:error` | `{ message }` | Error during processing |
+| `agent:usage` | `{ prompt_tokens, completion_tokens, total_tokens }` | Token usage stats |
+
+### Registration timing
+
+Extensions load *before* `activateBackend()` runs. When `activateBackend()` sees that an extension registered a backend, it calls the extension's `start?.()` (if provided) and skips the built-in AgentLoop entirely. This means your extension has full control — the default backend never wires up.
+
+## Named Handlers (Advice System)
+
+The event bus transforms *data flowing through events*. Named handlers are different — they let you wrap *function calls*. Think of `define`/`advise`/`call` as a named function registry where any extension can intercept any function.
+
+**`define`** registers a named function. **`call`** invokes it. **`advise`** wraps it — your wrapper receives `next` (the previous implementation) and decides whether to call it, like middleware.
+
+```typescript
+// Built-in: tui-renderer defines the default code block handler
 ctx.define("render:code-block", (language, code, width) => {
   syntaxHighlight(language, code, width);
 });
 
 // Your extension wraps it
 ctx.advise("render:code-block", (next, language, code, width) => {
-  if (language === "latex") {
-    renderLatexImage(code);     // handle it yourself
-    return;                     // don't call next — you replaced the handler
-  }
-  next(language, code, width);   // not yours — pass through to the original
+  if (language === "mermaid") return renderMermaid(code);  // handle it yourself
+  return next(language, code, width);                      // otherwise pass through
 });
+
+// Somewhere in the system, the handler is invoked
+ctx.call("render:code-block", "python", codeString, 80);
 ```
 
-The `next` parameter is the key. It's the previous handler (or the one before that, if multiple advisors chain). What you do with it determines the behavior:
+Multiple advisors chain — each wraps the last. First advisor to not call `next` wins.
 
-```typescript
-// AROUND — conditionally call the original
-ctx.advise("render:code-block", (next, lang, code, width) => {
-  if (lang === "mermaid") return renderMermaid(code);
-  return next(lang, code, width);
-});
+### When to use `advise` vs `onPipe`
 
-// BEFORE — do something, then call the original
-ctx.advise("render:code-block", (next, lang, code, width) => {
-  console.log(`rendering: ${lang}`);
-  return next(lang, code, width);
-});
+- **`onPipe`**: you want to transform *data* as it flows through the system (autocomplete items, response chunks, intercepted commands). You get a payload, return a modified payload.
+- **`advise`**: you want to replace *behavior* — how a code block renders, how an image displays. You get `next` and decide whether to call the original implementation or substitute your own.
 
-// AFTER — call the original, then do something
-ctx.advise("render:code-block", (next, lang, code, width) => {
-  const result = next(lang, code, width);
-  logMetrics(lang, code.length);
-  return result;
-});
+### Built-in handlers
 
-// OVERRIDE — replace entirely, never call next
-ctx.advise("render:code-block", (_next, lang, code, width) => {
-  return myCustomRenderer(lang, code);
-});
-```
-
-### Available handlers
-
-The tui-renderer registers these named handlers that extensions can advise:
+The tui-renderer registers these handlers that extensions can advise:
 
 | Handler | Arguments | Description |
 |---|---|---|
 | `render:code-block` | `(language: string, code: string, width: number)` | Render a fenced code block (default: syntax highlighting) |
 | `render:image` | `(data: Buffer)` | Display an image in the terminal (default: iTerm2/Kitty protocol) |
 
-### Multiple advisors chain
-
-Each `advise` call wraps the previous handler. Multiple extensions can advise the same handler — they nest like middleware:
-
-```
-Extension A advises render:code-block (handles mermaid)
-Extension B advises render:code-block (handles latex)
-→ Call order: B's wrapper → A's wrapper → original handler
-```
-
-If B doesn't handle it (calls `next`), A gets a chance. If A doesn't handle it either, the original runs. First advisor to not call `next` wins.
-
-### Defining your own handlers
-
-Extensions can define their own named handlers for other extensions to advise:
+Extensions can define their own handlers for other extensions to advise:
 
 ```typescript
-// my-extension defines a handler
-ctx.define("my-ext:process-data", (data) => {
-  return defaultProcessing(data);
-});
-
-// Call it from within your extension
-const result = ctx.call("my-ext:process-data", someData);
+ctx.define("my-ext:process-data", (data) => defaultProcessing(data));
+// Other extensions can then advise("my-ext:process-data", ...)
 ```
-
-Other extensions can then `advise("my-ext:process-data", ...)` to customize your behavior.
 
 ## Content Transform Pipeline
 
-Agent response streams flow through a **transform pipeline** before any renderer sees them. Extensions can modify, replace, or enrich content — rendering LaTeX as images, replacing diagram blocks with graphics, filtering output, etc.
-
-The tui-renderer is itself just an extension. **Nobody is special** — built-in and user extensions compose through the same primitives.
-
-### Content blocks
-
-The pipeline carries typed content blocks:
+The agent streams raw text. Before the renderer sees it, the text flows through a transform pipeline that breaks it into typed **content blocks**:
 
 ```typescript
 type ContentBlock =
@@ -192,43 +297,39 @@ type ContentBlock =
   | { type: "raw"; escape: string }                         // raw terminal escape
 ```
 
-The tui-renderer handles each type: text → markdown renderer, code-block → syntax highlighting, image → iTerm2/Kitty protocol, raw → direct stdout.
+The pipeline has two layers. **Parsers** turn raw text into blocks (e.g. detecting ` ``` ` fences and emitting `code-block`). **Post-transforms** operate on those blocks (e.g. taking a `code-block` with language "mermaid" and converting it to an `image`). `createBlockTransform` and `createFencedBlockTransform` are parsers; `bus.onPipe("agent:response-chunk")` is the post-transform layer.
 
-### Choosing the right tool
-
-Extensions don't need to worry about pipe ordering or priorities. Each tool operates on its own domain and passes everything else through — they compose regardless of registration order.
-
-| I want to... | Use | Operates on |
+| I want to... | Use | Layer |
 |---|---|---|
-| Match inline delimiters (`$$`, `<<`, etc.) | `ctx.createBlockTransform` | text blocks |
-| Match fenced blocks (` ``` `, `:::`, `~~~`) | `ctx.createFencedBlockTransform` | text blocks |
-| Transform blocks others produced | `bus.onPipe("agent:response-chunk", ...)` | any block type |
+| Match inline delimiters (`$$`, `<<`, etc.) | `ctx.createBlockTransform` | Parser — text in, blocks out |
+| Match fenced blocks (` ``` `, `:::`, `~~~`) | `ctx.createFencedBlockTransform` | Parser — text in, blocks out |
+| Transform blocks others produced | `bus.onPipe("agent:response-chunk", ...)` | Post-transform — blocks in, blocks out |
+
+Parsers only read `text` blocks and pass other block types through. Post-transforms see all block types. This means they compose regardless of registration order — each operates on a disjoint domain.
 
 ### Inline delimiter transforms
 
-`createBlockTransform` detects patterns like `$$...$$` in text blocks. It handles streaming buffering, chunk splitting, and flush-on-done:
+Parsers that detect patterns like `$$...$$` within text. They handle streaming buffering and flush-on-done automatically — you just provide the delimiters and a transform function:
 
 ```typescript
-export default function activate(ctx) {
-  ctx.createBlockTransform({
-    open: "$$",
-    close: "$$",
-    transform(content) {
-      // content = text between delimiters (e.g. "E = mc^2")
-      // Return ContentBlock(s) or null to keep original
-      const png = renderToPng(content);
-      return png ? { type: "image", data: png } : null;
-    },
-  });
-}
+ctx.createBlockTransform({
+  open: "$$",
+  close: "$$",
+  transform(content) {
+    // content = text between delimiters (e.g. "E = mc^2")
+    // Return ContentBlock(s) or null to keep original
+    const png = renderToPng(content);
+    return png ? { type: "image", data: png } : null;
+  },
+});
 ```
 
 ### Fenced block transforms
 
-`createFencedBlockTransform` detects line-delimited fenced blocks. The open/close patterns are regexes, so it works for any fence style:
+Parsers that detect line-delimited fenced blocks. Open/close patterns are regexes:
 
 ```typescript
-// Detect :::warning ... ::: admonition blocks
+// :::warning ... ::: admonition blocks
 ctx.createFencedBlockTransform({
   open: /^:::(\w+)\s*$/,
   close: /^:::\s*$/,
@@ -239,107 +340,85 @@ ctx.createFencedBlockTransform({
 });
 ```
 
-The tui-renderer uses this same primitive for standard ` ``` ` code fences — it's not special:
+The tui-renderer uses this same primitive for standard ` ``` ` code fences — it's not special.
+
+### Post-transforms: claiming blocks from other transforms
+
+Use `bus.onPipe` to transform blocks that a parser already produced. This is how you claim specific code block languages, convert block types, or filter output:
 
 ```typescript
-ctx.createFencedBlockTransform({
-  open: /^```(\w*)\s*$/,
-  close: /^```\s*$/,
-  transform(match, content) {
-    return { type: "code-block", language: match[1] || "", code: content };
-  },
-});
+// A parser already turned ```mermaid ... ``` into a code-block.
+// This post-transform claims it and converts to an image.
+bus.onPipe("agent:response-chunk", (e) => ({
+  blocks: e.blocks.map(block => {
+    if (block.type !== "code-block" || block.language !== "mermaid") return block;
+    const png = renderMermaid(block.code);
+    return png ? { type: "image", data: png } : block;
+  }),
+}));
 ```
-
-### Claiming blocks from other transforms
-
-To transform blocks that another extension produced (e.g. claim `code-block` with a specific language), use `bus.onPipe` directly:
-
-```typescript
-// Render mermaid code blocks as images
-bus.onPipe("agent:response-chunk", (e) => {
-  return {
-    blocks: e.blocks.map(block => {
-      if (block.type !== "code-block" || block.language !== "mermaid") return block;
-      const png = renderMermaid(block.code);
-      return png ? { type: "image", data: png } : block;
-    }),
-  };
-});
-```
-
-### How composability works
-
-Each tool only touches its own domain and passes everything else through:
-
-```
-createBlockTransform for $$   → reads text, produces images, passes code-blocks through
-createFencedBlockTransform    → reads text, produces code-blocks, passes images through
-onPipe claiming code-blocks   → reads code-blocks, produces images, passes text through
-tui-renderer (on listener)    → renders whatever blocks remain
-```
-
-Order doesn't matter — they compose because each has a disjoint input type. No priority system, no phase declarations, no coordination between extensions.
 
 ### Example: LaTeX image rendering
 
-`examples/extensions/latex-images.ts` renders both `$$...$$` and ` ```latex ` blocks as terminal images using `latex` + `dvipng`:
+`examples/extensions/latex-images.ts` renders both `$$...$$` and ` ```latex ` blocks as terminal images — using a parser for the inline math and a post-transform for the code fences:
 
 ```bash
 # Requires: latex + dvipng (brew install --cask mactex)
 # Requires: iTerm2, WezTerm, Kitty, or Ghostty
 agent-sh -e ./examples/extensions/latex-images.ts
-
-# Or install permanently:
-cp examples/extensions/latex-images.ts ~/.agent-sh/extensions/
 ```
+
+## Custom Input Modes
+
+Input modes change what happens when the user types and presses Enter. Each mode binds a trigger character (typed at the start of an empty line) to a custom `onSubmit` handler. The built-in modes (`?` for query, `>` for execute) are registered this way — they're not special.
+
+The flow: user types trigger → prompt changes to show the mode → user types their input → presses Enter → `onSubmit` fires → your handler emits `agent:submit` with a `modeInstruction` that gets prepended to the agent's system prompt, telling it how to behave in this mode.
 
 ```typescript
-export default function activate(ctx: ExtensionContext) {
-  const { bus } = ctx;
-  const config = ctx.getExtensionSettings("latex-images", { dpi: 300, fgColor: "d4d4d4" });
-
-  // Handle $$...$$ display math
-  ctx.createBlockTransform({
-    open: "$$", close: "$$",
-    transform(latex) {
-      const png = renderEquation(latex);
-      return png ? [{ type: "text", text: "\n" }, { type: "image", data: png }] : null;
-    },
-  });
-
-  // Handle ```latex code blocks
-  bus.onPipe("agent:response-chunk", (e) => {
-    return { blocks: e.blocks.map(block => {
-      if (block.type !== "code-block") return block;
-      if (block.language !== "latex" && block.language !== "tex") return block;
-      const png = renderEquation(block.code);
-      return png ? { type: "image", data: png } : block;
-    })};
-  });
-}
+bus.emit("input-mode:register", {
+  id: "translate",           // unique identifier
+  trigger: "!",              // single char — typed at empty line start
+  label: "translate",        // shown in prompt
+  promptIcon: "⟩",           // chevron/icon character
+  indicator: "🌐",           // status indicator before the icon
+  onSubmit(query, bus) {
+    // This is where you control what the agent sees.
+    // modeInstruction is prepended to the prompt — it's how you steer the agent.
+    bus.emit("agent:submit", {
+      query,                 // what the user typed
+      modeLabel: "Translate",
+      modeInstruction: "[mode: translate] Translate the following to Spanish.",
+    });
+  },
+  returnToSelf: true,        // re-enter this mode after agent finishes
+});
 ```
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | Unique identifier |
+| `trigger` | `string` | Single character that activates the mode at empty line start |
+| `label` | `string` | Shown in the prompt area |
+| `promptIcon` | `string` | Chevron/icon character in the prompt |
+| `indicator` | `string` | Status indicator before the icon |
+| `onSubmit` | `(query, bus) => void` | Called on Enter. Emits `agent:submit` with `query` + `modeInstruction` |
+| `returnToSelf` | `boolean` | Re-enter this mode after the agent finishes |
+
+Each trigger character can only be claimed by one mode. Slash commands and readline keybindings work in every mode.
 
 ## Rendering Architecture
 
-The tui-renderer is the built-in extension that turns events and content blocks into terminal output. Understanding its internals helps when writing extensions that advise rendering handlers or emit UI events.
-
-### How content reaches the screen
+The tui-renderer turns content blocks into terminal output. All output flows through an **OutputWriter** (`write(text)` + `columns`). Extensions should never call `process.stdout.write` directly.
 
 ```
 ContentBlock (from transform pipeline)
-    │
-    ├── text        → MarkdownRenderer.push(chunk)  → drainLines() → writer
-    ├── code-block  → ctx.call("render:code-block")  → drainLines() → writer
-    ├── image       → ctx.call("render:image")        → writer
+    ├── text        → MarkdownRenderer.push(chunk) → drainLines() → writer
+    ├── code-block  → ctx.call("render:code-block") → drainLines() → writer
+    ├── image       → ctx.call("render:image")       → writer
     └── raw         → writer.write(escape)
 ```
 
-All output flows through an **OutputWriter** — an injectable interface with `write(text)` and `columns` (terminal width). The default `StdoutWriter` forwards to `process.stdout`. Extensions should never call `process.stdout.write` directly — use the render handlers or emit events instead.
-
-### The line protocol
-
-Rendering components follow a **return lines, don't write** convention:
+Rendering components follow a **return lines, don't write** convention — each returns `string[]`, making them testable in isolation:
 
 - `renderBoxFrame(content, opts)` → `string[]`
 - `renderDiff(diff, opts)` → `string[]`
@@ -347,201 +426,31 @@ Rendering components follow a **return lines, don't write** convention:
 - `renderSpinnerLine(state, label, opts)` → `string`
 - `MarkdownRenderer.drainLines()` → `string[]`
 
-The tui-renderer collects lines from these components and writes them through the OutputWriter. This makes every component testable in isolation — call it with arguments, assert on the returned strings.
-
-### MarkdownRenderer
-
-The `MarkdownRenderer` is a streaming line accumulator:
-
-```typescript
-const md = new MarkdownRenderer(width);  // width in columns
-md.push("Hello **world**\n");            // buffer text, process complete lines
-md.writeLine("arbitrary pre-formatted line");
-md.flush();                              // process any remaining buffered text
-const lines: string[] = md.drainLines(); // extract all accumulated lines
-```
-
-It handles heading formatting, inline styles (bold, italic, code, links), lists, blockquotes, and word-wrapping with ANSI code preservation. Lines include a 2-space left indent.
-
-`printTopBorder()` and `printBottomBorder()` add response box borders to the line buffer.
-
-### Writing a render handler
-
-The `render:code-block` and `render:image` handlers are the extension points for custom rendering. When you advise them, your handler runs inside the tui-renderer's rendering context — the `MarkdownRenderer` is active and you can push lines into it.
-
-**Replacing a code block with an image:**
-
-```typescript
-ctx.advise("render:code-block", (next, language, code, width) => {
-  if (language !== "mermaid") return next(language, code, width);
-
-  const png = renderMermaidToPng(code);
-  if (!png) return next(language, code, width);  // fallback to syntax highlight
-
-  // Use the image handler — it knows about iTerm2/Kitty/Ghostty protocols
-  ctx.call("render:image", png);
-});
-```
-
-**Replacing a code block with custom text:**
-
-```typescript
-ctx.advise("render:code-block", (next, language, code, width) => {
-  if (language !== "csv") return next(language, code, width);
-
-  // Emit formatted lines through the bus — they'll appear in the response box
-  const { bus } = ctx;
-  const table = formatCsvAsTable(code, width);
-  bus.emit("ui:info", { message: table });
-});
-```
-
-### Emitting UI events
-
-Extensions can show messages without touching the renderer directly:
-
-```typescript
-bus.emit("ui:info", { message: "Operation completed" });   // dimmed text
-bus.emit("ui:error", { message: "Something went wrong" }); // red error
-```
-
-These render outside the response box and work regardless of renderer state.
-
-### Render state
-
-The tui-renderer maintains a `RenderState` that tracks the current phase of rendering (idle, responding, tool-running), spinner state, tool output buffering, thinking display, and diff expansion. Extensions don't access this directly — they interact through the named handler system and bus events.
-
-## Custom Input Modes
-
-Extensions can register new input modes — each mode binds a trigger character (typed at the start of an empty shell line) to custom behavior. The two built-in modes (`?` for query, `>` for execute) are registered this way.
-
-### Registering a mode
-
-Emit `input-mode:register` with an `InputModeConfig`:
-
-```typescript
-export default function activate(ctx) {
-  const { bus } = ctx;
-
-  bus.emit("input-mode:register", {
-    id: "translate",           // unique identifier
-    trigger: "!",              // single char — typed at empty line start
-    label: "translate",        // shown in prompt
-    promptIcon: "⟩",           // chevron/icon character
-    indicator: "🌐",           // status indicator before the icon
-    onSubmit(query, bus) {
-      // Called when the user presses Enter with a non-empty query.
-      // Use bus.emit("agent:submit", { query, modeInstruction, modeLabel })
-      // to send to the agent with a mode-specific instruction.
-      bus.emit("agent:submit", {
-        query,
-        modeLabel: "Translate",
-        modeInstruction: "[mode: translate] Translate the following to Spanish.",
-      });
-    },
-    returnToSelf: true,        // re-enter this mode after agent finishes
-  });
-}
-```
-
-### InputModeConfig fields
-
-| Field | Type | Description |
-|---|---|---|
-| `id` | `string` | Unique identifier (e.g. `"query"`, `"execute"`, `"translate"`) |
-| `trigger` | `string` | Single character that activates the mode at empty line start |
-| `label` | `string` | Human-readable label shown in the prompt area |
-| `promptIcon` | `string` | The chevron/icon character displayed in the prompt (e.g. `"❯"`, `"⟩"`) |
-| `indicator` | `string` | Status indicator shown before the icon (e.g. `"❓"`, `"●"`, `"🌐"`) |
-| `onSubmit` | `(query, bus) => void` | Called on Enter with non-empty input. Typically emits `agent:submit` |
-| `returnToSelf` | `boolean` | If `true`, re-enter this mode after the agent finishes processing |
-
-### How the built-in modes work
-
-The two default modes are registered in `index.ts`:
-
-- **Query mode** (`?`): Sends queries with `[mode: query]` instruction. The agent uses its internal tools (bash, file read/write) and does **not** use `user_shell`. `returnToSelf: true` — stays in query mode for follow-up questions.
-- **Execute mode** (`>`): Sends queries with `[mode: execute]` instruction. The agent investigates context if needed, then runs the command via `user_shell` in the live PTY. `returnToSelf: false` — returns to normal shell after execution.
-
-A session orientation message is sent on the first prompt to teach the agent about the available modes and tools. Per-query mode instructions then guide behavior for each individual prompt.
-
-### Notes
-
-- Each trigger character can only be claimed by one mode. Attempting to register a duplicate trigger emits a `ui:error`.
-- Slash commands (`/help`, `/clear`, etc.) work in any input mode.
-- All readline keybindings (history, word movement, multiline) are available in every mode.
-
 ## Yolo Mode
 
-By default, agent-sh runs in **yolo mode** — all tool calls and file writes are auto-approved. This matches pi's design philosophy where the agent operates freely unless you explicitly add permission gates.
+By default, agent-sh runs in **yolo mode** — all tool calls and file writes are auto-approved. To add permission prompts, load the example extension:
 
-To add permission prompts, load the example extension:
 ```bash
-# One-off
 npm start -- -e ./examples/extensions/interactive-prompts.ts
 
-# Permanent: copy to your extensions dir
+# Or install permanently:
 cp examples/extensions/interactive-prompts.ts ~/.agent-sh/extensions/
-
-# Or add to settings.json
-echo '{ "extensions": ["./examples/extensions/interactive-prompts.ts"] }' > ~/.agent-sh/settings.json
 ```
 
 ## Theming
 
-agent-sh uses a semantic color palette with ~10 base roles (`accent`, `success`, `warning`, `error`, `muted`, plus background variants and style modifiers). Extensions can override any slot via `setPalette()`:
+agent-sh uses a semantic color palette (~10 base roles). Override any slot via `setPalette()`:
 
 ```typescript
-// solarized-theme.ts
 export default function activate({ setPalette }) {
   setPalette({
     accent:  "\x1b[38;2;38;139;210m",   // solarized blue
-    success: "\x1b[38;2;133;153;0m",    // solarized green
-    warning: "\x1b[38;2;181;137;0m",    // solarized yellow
-    error:   "\x1b[38;2;220;50;47m",    // solarized red
-    muted:   "\x1b[38;2;88;110;117m",   // solarized base01
+    success: "\x1b[38;2;133;153;0m",     // solarized green
+    warning: "\x1b[38;2;181;137;0m",     // solarized yellow
+    error:   "\x1b[38;2;220;50;47m",     // solarized red
+    muted:   "\x1b[38;2;88;110;117m",    // solarized base01
   });
 }
 ```
 
-Load a theme like any other extension:
-```bash
-npm start -- -e ./examples/extensions/solarized-theme.ts
-```
-
-## Loading Extensions
-
-Extensions are loaded from three sources (in order, deduplicated):
-
-**1. CLI flag (`-e` / `--extensions`)** — npm packages or file paths, repeatable:
-```bash
-npm start -- -e my-ext-package -e ./local-ext.ts
-npm start -- -e my-ext-package,another-package   # comma-separated also works
-```
-
-**2. Settings file** — `~/.agent-sh/settings.json`:
-```json
-{
-  "extensions": [
-    "my-published-extension",
-    "/absolute/path/to/ext.ts",
-    "./relative/path/to/ext.js"
-  ]
-}
-```
-
-**3. Extensions directory** — files and directories in `~/.agent-sh/extensions/`:
-```bash
-~/.agent-sh/extensions/
-├── my-extension.ts          # loaded directly
-├── another.js               # JS works too
-└── complex-extension/       # directory with index file
-    ├── index.ts             # entry point (auto-detected)
-    └── helpers.ts           # supporting modules
-```
-
-Extensions can be written in **TypeScript or JavaScript** — `.ts`, `.tsx`, `.mts`, `.js`, `.mjs` are all supported. TS extensions are transpiled at runtime via tsx.
-
-Bare names (e.g. `my-ext-package`) resolve as **npm packages** via Node's standard module resolution. Install them globally or locally and reference by name.
-
-Errors in extension loading are non-fatal — a `ui:error` is emitted and the next extension continues loading.
+Load a theme like any other extension: `npm start -- -e ./my-theme.ts`

@@ -2,8 +2,6 @@
 
 ## Running agent-sh
 
-### Internal Agent (Recommended)
-
 The simplest way to run agent-sh — just provide an API key and model:
 
 ```bash
@@ -18,19 +16,6 @@ npx agent-sh --api-key "$KEY" --model gpt-4o
 ```
 
 Environment variables `OPENAI_API_KEY` and `OPENAI_BASE_URL` are supported as alternatives to CLI flags.
-
-### ACP Agent (Alternative)
-
-For external agents that speak the [Agent Client Protocol](https://agentclientprotocol.com/):
-
-```bash
-# Install an ACP agent
-npm install -g pi-acp
-
-# Start with an ACP agent
-agent-sh --agent pi-acp
-agent-sh --agent claude-agent-acp --agent-args "--model claude-sonnet-4-6"
-```
 
 ### Other Options
 
@@ -104,26 +89,6 @@ agent-sh --api-key dummy \
   --model your-model
 ```
 
-## ACP Agent Configuration
-
-When using `--agent` instead of `--api-key`, the agent handles its own LLM configuration. Common patterns:
-
-```bash
-# pi-acp with Anthropic
-export ANTHROPIC_API_KEY="your-key"
-agent-sh --agent pi-acp --agent-args "--provider anthropic --model claude-sonnet-4-6"
-
-# pi-acp with OpenAI
-export OPENAI_API_KEY="your-key"
-agent-sh --agent pi-acp --agent-args "--provider openai --model gpt-4o"
-
-# claude-agent-acp
-export ANTHROPIC_API_KEY="your-key"
-agent-sh --agent claude-agent-acp --agent-args "--model claude-sonnet-4-6"
-```
-
-For ACP agents, bridge tools (`user_shell`, `shell_recall`) are exposed via MCP server (enabled by default) or agent-specific extensions. See [Architecture](architecture.md#user_shell--the-bridge) for details.
-
 ## Using agent-sh as Your Default Shell
 
 Add to the end of your `~/.zshrc` or `~/.bashrc`:
@@ -169,13 +134,13 @@ agent-sh stores settings and query history in `~/.agent-sh/`. Configure via `~/.
 | `maxCommandOutputLines` | `5` | Max tool output lines shown inline in TUI |
 | `readOutputMaxLines` | `0` | Max read tool output lines shown inline (0 = hidden) |
 | `diffMaxLines` | `20` | Max diff lines before "ctrl+o to expand" |
-| `enableMcp` | `true` | Register MCP server for bridge tools (ACP mode) |
+| `enableMcp` | `true` | Register MCP server for bridge tools |
 
 ## Shell Context
 
 The agent automatically receives structured context about your shell session with each query:
 
-- **Current working directory** — tracked via OSC 7 escape sequences (internal agent reads it directly; ACP gets it serialized)
+- **Current working directory** — tracked via OSC 7 escape sequences
 - **Recent commands and output** — truncated summaries of recent shell activity
 - **Full history access** — the agent can recall full output of truncated exchanges
 

@@ -1,6 +1,6 @@
 # Troubleshooting
 
-## Internal Agent Issues
+## Common Issues
 
 **Problem**: No response from agent (thinking appears but no text)
 
@@ -19,31 +19,6 @@
 **Problem**: Tool calls not working (agent responds but doesn't use tools)
 
 **Solution**: Some models have limited or no tool/function calling support. Try a more capable model (e.g., gpt-4o, claude-sonnet-4-6 via OpenRouter).
-
-## ACP Agent Issues
-
-**Problem**: "Agent not connected. Please wait a moment and try again."
-
-**Solutions**:
-1. Check agent installation:
-   ```bash
-   which pi-acp
-   which claude-agent-acp
-   ```
-2. Install missing agents:
-   ```bash
-   npm install -g pi-acp
-   npm install -g @agentclientprotocol/claude-agent-acp
-   ```
-3. Check API keys:
-   ```bash
-   echo $ANTHROPIC_API_KEY
-   echo $OPENAI_API_KEY
-   ```
-
-**Problem**: "Agent process exited with code X"
-- Check agent installation and API key validity
-- Try running the agent directly to see its error output
 
 ## Common Errors
 
@@ -64,11 +39,7 @@
 Enable debug mode for detailed protocol logging:
 
 ```bash
-# Internal agent
 DEBUG=1 agent-sh --api-key "$KEY" --model gpt-4o
-
-# ACP agent
-DEBUG=1 agent-sh --agent pi-acp
 ```
 
 ## Getting Help

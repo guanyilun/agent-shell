@@ -10,8 +10,8 @@ The core (`createCore()`) is a frontend-agnostic kernel — it wires up the Even
 createCore({ apiKey, baseURL, model }) — frontend-agnostic kernel:
   │     EventBus          — typed pub/sub + transform pipelines
   │     ContextManager    — exchange recording, context assembly
-  │     AgentBackend      — bus-driven, self-wiring (AgentLoop or AcpClient)
-  │     LlmClient         — shared OpenAI-compat SDK wrapper (null in ACP mode)
+  │     AgentBackend      — bus-driven, self-wiring (AgentLoop or extension-provided)
+  │     LlmClient         — shared OpenAI-compat SDK wrapper
   │
 index.ts — interactive terminal frontend:
   │     Shell             — PTY lifecycle (delegates to InputHandler + OutputParser)
@@ -37,55 +37,12 @@ index.ts — interactive terminal frontend:
 
 All components communicate exclusively through typed bus events. The backend has no reference to Shell — it emits lifecycle events and the TUI subscribes. Input flows the same way: any frontend emits `agent:submit` and the backend handles it.
 
-**The core works without any frontend.** This enables:
-
-- **Library usage** — `import { createCore } from "agent-sh"` to build WebSocket servers, REST APIs, Electron apps, or test harnesses
-- **Headless mode** — CI, scripting, embedding — no terminal needed
-- **Alternative renderers** — web UI, logging backend, minimal TUI
-- **Custom features** — add commands, autocomplete providers, tool interceptors by writing an extension
-
-## Agent Backend
-
-The agent backend is a bus-driven component that self-wires to events in its constructor. Core creates it and holds a reference for lifecycle only — it never calls methods on it (except `kill()`).
-
-```
-              AgentBackend (bus-driven, self-wiring)
-              ├── subscribes to: agent:submit, agent:cancel-request, config:cycle
-              ├── emits: agent:response-chunk, agent:tool-started, ...
-              └── kill()  ← only imperative method
-                         │
-              ┌──────────┴──────────┐
-              │                     │
-         AcpClient              AgentLoop
-    (subprocess, ACP proto)   (in-process, OpenAI API)
-              │                     │
-         Same bus events       Same bus events
-              │                     │
-              └──────────┬──────────┘
-                         │
-                    TUI / Extensions
-                   (don't know, don't care)
-```
-
-### Internal Agent (AgentLoop)
-
-The default when `--api-key` is provided. Uses the `openai` SDK to call any OpenAI-compatible API directly. The agent loop runs in-process:
-
-- **Shared state** — reads `contextManager.getCwd()`, `.getExchanges()` directly. No bridge tools needed for cwd or history.
-- **Built-in tools** — bash, read_file, write_file, edit_file, grep, glob, ls, user_shell
-- **Streaming** — reasoning/thinking tokens + response text + tool calls, all via bus events
-- **Fast-path features** — `LlmClient` is shared with extensions for single-shot completions (command suggestions, etc.)
-
-### ACP Agent (AcpClient)
-
-The alternative when `--agent <command>` is provided. Launches an external agent subprocess that speaks the [Agent Client Protocol](https://agentclientprotocol.com/). The agent brings its own tools, models, and context management.
-
-Both backends emit the same bus events. The TUI, extensions, and library consumers don't know which backend is active.
+**The core works without any frontend.** See [Library](library.md) for embedding agent-sh in your own apps.
 
 ## How It Works
 
 1. agent-sh spawns a real PTY running your shell (zsh or bash, with your full rc config) and sets up raw stdin passthrough
-2. It creates the agent backend (AgentLoop or AcpClient) which self-wires to bus events
+2. It creates the agent backend (AgentLoop or extension-provided) which self-wires to bus events
 3. All keyboard input goes directly to the PTY — zero latency, full terminal compatibility
 4. When you type `?` or `>` at the start of a line, agent-sh intercepts and enters an agent input mode
 5. On Enter, the query is emitted as `agent:submit` with a mode instruction (`[mode: query]` or `[mode: execute]`)
@@ -112,87 +69,32 @@ agent calls user_shell({ command: "cd src" })
           → result returned to agent
 ```
 
-With the internal agent, `user_shell` is a built-in tool. With ACP, agents discover it via MCP server or agent extensions connected to the Unix socket (`$AGENT_SH_SOCKET`).
+With the internal agent, `user_shell` is a built-in tool. Extension backends can implement it however they choose — see [Extensions: Custom Agent Backends](extensions.md#custom-agent-backends).
 
-## Input Mode System
+## Agent Backend
 
-agent-sh supports multiple input modes, each triggered by a single character at the start of an empty shell line:
+The agent backend is a bus-driven component. Core creates it and holds a reference for lifecycle only — all communication flows through events.
 
-| Trigger | Mode | Behavior |
-|---|---|---|
-| `?` | Query | Agent uses internal tools (bash, file ops). Stays in query mode after response. |
-| `>` | Execute | Agent runs command in user's live shell via `user_shell`. Returns to shell after. |
+### Internal Agent (AgentLoop)
 
-Modes are registered via `input-mode:register` bus events. Extensions can add new modes — each binds a trigger character to an `onSubmit` handler that emits `agent:submit` with a mode-specific instruction.
+The default backend. Uses the `openai` SDK to call any OpenAI-compatible API directly. See [Internal Agent](agent.md) for the full guide — the query flow, tool loop, context assembly, streaming, and built-in tools.
 
-The system prompt explains both modes to the agent. Each query includes a per-query mode instruction (e.g. `[mode: query]` or `[mode: execute]`) so the agent knows how to behave.
+### Extension Backends
 
-## EventBus
+Extensions can replace the built-in backend entirely by emitting `agent:register-backend` during activation. This is how you integrate external agents, custom protocols, or alternative LLM providers that don't follow the OpenAI API. See [Extensions: Custom Agent Backends](extensions.md#custom-agent-backends) for the full protocol and a working example.
 
-All communication between components flows through a typed EventBus. Components emit events (shell commands, agent responses, tool calls) and extensions subscribe. The bus supports four modes:
+All backends emit the same bus events. The TUI, extensions, and library consumers don't know which backend is active.
 
-- **emit/on** — fire-and-forget notifications (e.g., `shell:command-done`)
-- **emitPipe/onPipe** — synchronous transform chains (e.g., `autocomplete:request` where extensions append completion items)
-- **emitPipeAsync/onPipeAsync** — async transform chains (e.g., `permission:request` where extensions prompt the user, `shell:exec-request` where Shell executes a command in the PTY)
-- **emitTransform** — transform-then-notify: runs pipe listeners to transform the payload, then emits the result to `on` listeners. Used for content streams where extensions can modify data before renderers see it.
+## Key Extension Points
 
-### Named Handler Registry
+The extension system provides several composable primitives for customizing agent-sh. Each is documented in detail in the [Extensions](extensions.md) guide:
 
-Separate from the event bus, a **handler registry** provides Emacs-style advice for named processing steps:
-
-```
-ctx.define("render:code-block", defaultHandler)     ← tui-renderer
-ctx.advise("render:code-block", latexWrapper)        ← latex-images extension
-ctx.advise("render:code-block", mermaidWrapper)      ← mermaid extension
-→ Call: mermaid → latex → default (first to not call next() wins)
-```
-
-Events are for **data flow** (content streaming, notifications). Handlers are for **named processing steps** (render this code block, display this image).
-
-### Content Transform Pipeline
-
-Agent content streams use `emitTransform` — a two-phase emission that runs pipe listeners (transforms) first, then notifies `on` listeners (renderers) with the transformed result.
-
-```
-Backend emitTransform("agent:response-chunk", { blocks: [{ type: "text", text }] })
-  │
-  │ Phase 1 — onPipe transforms (nobody is special):
-  │   createBlockTransform:        text → finds $$...$$ → image blocks
-  │   createFencedBlockTransform:  text → finds ```...``` → code-block blocks
-  │   extension onPipe:            code-block → claims latex → image blocks
-  │
-  │ Phase 2 — on renderers:
-  │   tui-renderer:  text → markdown, code-block → highlight, image → terminal protocol
-  │   (any renderer: web UI, logger, etc.)
-```
-
-The tui-renderer is just an extension. It uses the same `createFencedBlockTransform` primitive that any extension can use. No special privileges.
-
-### Content Blocks
-
-The pipeline carries **typed content blocks**:
-
-```typescript
-type ContentBlock =
-  | { type: "text"; text: string }                          // markdown text
-  | { type: "code-block"; language: string; code: string }  // fenced code block
-  | { type: "image"; data: Buffer }                         // PNG → terminal image protocol
-  | { type: "raw"; escape: string }                         // raw terminal escape
-```
-
-Events always carry `{ blocks: ContentBlock[] }`. Extensions never write to `process.stdout` directly.
-
-### Composable Primitives
-
-Three tools, each operating on a disjoint domain:
-
-| Primitive | Operates on | Produces | Use case |
-|---|---|---|---|
-| `createBlockTransform` | text blocks (inline delimiters) | any block type | `$$...$$`, `<<...>>` |
-| `createFencedBlockTransform` | text blocks (line fences) | any block type | ` ``` `, `:::`, `~~~` |
-| `bus.onPipe` directly | any block type | any block type | claim code-blocks, filter, enrich |
-
-Each primitive processes only its input type and passes everything else through.
+- **[Event Bus](extensions.md#event-bus)** — typed pub/sub (`on`/`emit`), synchronous transform chains (`onPipe`/`emitPipe`), async transform chains (`onPipeAsync`/`emitPipeAsync`), and transform-then-notify (`emitTransform`)
+- **[Custom Agent Backends](extensions.md#custom-agent-backends)** — replace the entire agent backend via `agent:register-backend`
+- **[Named Handlers](extensions.md#named-handlers-advice-system)** — `define`/`advise`/`call` registry for wrapping processing steps (e.g. code block rendering)
+- **[Content Transform Pipeline](extensions.md#content-transform-pipeline)** — typed content blocks (`text`, `code-block`, `image`, `raw`) flow through parsers and post-transforms before rendering
+- **[Custom Input Modes](extensions.md#custom-input-modes)** — register trigger characters (`?`, `>`, etc.) with custom `onSubmit` handlers
+- **[Theming](extensions.md#theming)** — semantic color palette overrides via `setPalette()`
 
 ## Project Structure
 
@@ -213,10 +115,8 @@ agent-sh/
 │   │
 │   ├── agent/              # Agent backends (behind AgentBackend interface)
 │   │   ├── types.ts        # AgentBackend, ToolDefinition, ToolResult
-│   │   ├── index.ts        # Factory: config → AgentLoop or AcpClient
+│   │   ├── index.ts        # Factory: config → AgentLoop
 │   │   ├── agent-loop.ts   # Internal agent (OpenAI-compat API, bus-driven)
-│   │   ├── acp-client.ts   # ACP subprocess agent (bus-driven)
-│   │   ├── mcp-server.ts   # Standalone MCP server for ACP bridge tools
 │   │   ├── tool-registry.ts       # Map-based tool registry
 │   │   ├── conversation-state.ts  # OpenAI chat messages array
 │   │   ├── system-prompt.ts       # System prompt builder
