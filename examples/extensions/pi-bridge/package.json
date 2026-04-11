@@ -1,0 +1,13 @@
+{
+  "name": "agent-sh-pi-bridge",
+  "version": "0.1.0",
+  "description": "Pi coding agent backend for agent-sh",
+  "type": "module",
+  "main": "index.ts",
+  "dependencies": {
+    "@mariozechner/pi-agent-core": "^0.66.0",
+    "@mariozechner/pi-ai": "^0.66.0",
+    "@mariozechner/pi-coding-agent": "^0.66.0",
+    "@sinclair/typebox": "^0.34.0"
+  }
+}

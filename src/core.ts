@@ -121,11 +121,60 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
     ? new AgentLoop(bus, contextManager, llmClient, modes, initialModeIndex)
     : null;
 
-  // ── Extension backend registration ───────────────────────────
-  let extensionBackend: { name: string; kill: () => void; start?: () => Promise<void> } | null = null;
+  // ── Multi-backend registry ───────────────────────────────────
+  type Backend = { name: string; kill: () => void; start?: () => Promise<void> };
+  const backends = new Map<string, Backend>();
+  let activeBackendName: string | null = null;
+
+  const activateByName = async (name: string, silent = false) => {
+    const backend = name === "built-in" ? null : backends.get(name);
+    if (name !== "built-in" && !backend) {
+      bus.emit("ui:error", { message: `Unknown backend: ${name}` });
+      return;
+    }
+
+    // Deactivate current backend
+    if (activeBackendName === "built-in") {
+      agentLoop?.unwire();
+    } else if (activeBackendName) {
+      backends.get(activeBackendName)?.kill();
+    }
+
+    // Activate new backend
+    if (name === "built-in") {
+      if (!agentLoop) {
+        bus.emit("ui:error", { message: "No LLM provider configured for built-in backend" });
+        return;
+      }
+      agentLoop.wire();
+      activeBackendName = "built-in";
+    } else {
+      await backend!.start?.();
+      activeBackendName = name;
+    }
+
+    if (!silent) {
+      bus.emit("ui:info", { message: `Backend: ${name}` });
+    }
+    bus.emit("config:changed", {});
+  };
 
   bus.on("agent:register-backend", (backend) => {
-    extensionBackend = backend;
+    backends.set(backend.name, backend);
+  });
+
+  bus.on("config:switch-backend", ({ name }) => {
+    activateByName(name);
+  });
+
+  bus.on("config:list-backends", () => {
+    const names: string[] = [];
+    if (agentLoop) names.push("built-in");
+    for (const name of backends.keys()) names.push(name);
+    const list = names
+      .map((n) => n === activeBackendName ? `${n} (active)` : n)
+      .join(", ");
+    bus.emit("ui:info", { message: `Backends: ${list}` });
   });
 
   // ── Runtime provider management ──────────────────────────────
@@ -185,11 +234,21 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
     llmClient,
 
     activateBackend() {
-      if (extensionBackend) {
-        extensionBackend.start?.();
-        return;
+      const preferred = settings.defaultBackend;
+      if (preferred && backends.has(preferred)) {
+        activateByName(preferred);
+      } else if (backends.size > 0 && !agentLoop) {
+        activateByName(backends.keys().next().value!);
+      } else if (agentLoop) {
+        agentLoop.wire();
+        activeBackendName = "built-in";
+      } else if (backends.size > 0) {
+        activateByName(backends.keys().next().value!);
       }
-      agentLoop?.wire();
+
+      if (activeBackendName) {
+        bus.emit("ui:info", { message: `Backend: ${activeBackendName}` });
+      }
     },
 
     async query(text, opts) {
@@ -251,10 +310,10 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
     },
 
     kill() {
-      if (extensionBackend) {
-        extensionBackend.kill();
-      } else {
+      if (activeBackendName === "built-in") {
         agentLoop?.kill();
+      } else if (activeBackendName) {
+        backends.get(activeBackendName)?.kill();
       }
     },
   };

@@ -80,6 +80,18 @@ export default function activate({ bus, quit }: ExtensionContext): void {
         bus.emit("config:cycle", {});
       },
     },
+    {
+      name: "/backend",
+      description: "List or switch agent backend",
+      handler: (args) => {
+        const name = args.trim();
+        if (!name) {
+          bus.emit("config:list-backends", {});
+        } else {
+          bus.emit("config:switch-backend", { name });
+        }
+      },
+    },
 {
       name: "/quit",
       description: "Exit agent-sh",

@@ -34,6 +34,8 @@ export interface Settings {
   providers?: Record<string, ProviderConfig>;
   /** Which provider to use by default. */
   defaultProvider?: string;
+  /** Preferred agent backend (extension name, e.g. "pi", "claude-code"). */
+  defaultBackend?: string;
 
   // ── Context & truncation ──────────────────────────────────
   /** Recent exchanges included in agent context window. */
@@ -67,6 +69,7 @@ const DEFAULTS: Required<Settings> = {
   historySize: 500,
   providers: {},
   defaultProvider: undefined as any,
+  defaultBackend: undefined as any,
   contextWindowSize: 20,
   contextBudget: 16384,
   shellTruncateThreshold: 10,

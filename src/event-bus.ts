@@ -124,6 +124,12 @@ export interface ShellEvents {
     start?: () => Promise<void>;
   };
 
+  // Switch agent backend at runtime (slash command → core)
+  "config:switch-backend": { name: string };
+
+  // List registered backends (slash command → core, returns via ui:info)
+  "config:list-backends": Record<string, never>;
+
   // Session mode/config updated (from agent backend)
   "config:changed": Record<string, never>;
 

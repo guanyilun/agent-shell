@@ -1,0 +1,11 @@
+{
+  "name": "agent-sh-claude-code-bridge",
+  "version": "0.1.0",
+  "description": "Claude Code agent backend for agent-sh",
+  "type": "module",
+  "main": "index.ts",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.0",
+    "zod": "^4.0.0"
+  }
+}

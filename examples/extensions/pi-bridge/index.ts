@@ -199,45 +199,67 @@ export default function activate(ctx: ExtensionContext): void {
     }
   };
 
-  // ── Register as backend (synchronous — boot happens via start()) ──
+  // ── Bus listeners (wired on start, unwired on kill) ────────────
+  const listeners: Array<{ event: string; fn: Function }> = [];
+
+  const wireListeners = () => {
+    const onSubmit = async ({ query, modeInstruction }: any) => {
+      if (!session) {
+        bus.emit("agent:error", {
+          message: booting ? "pi is still starting up..." : "pi session not initialized",
+        });
+        bus.emit("agent:processing-done", {});
+        return;
+      }
+
+      const prompt = modeInstruction ? `${modeInstruction}\n${query}` : query;
+      bus.emit("agent:query", { query });
+      bus.emit("agent:processing-start", {});
+
+      try {
+        await session.prompt(prompt);
+      } catch (err) {
+        bus.emit("agent:error", {
+          message: err instanceof Error ? err.message : String(err),
+        });
+        bus.emit("agent:processing-done", {});
+      }
+    };
+
+    const onCancel = async () => { await session?.abort(); };
+    const onReset = async () => {
+      await runtime?.newSession();
+      session = runtime?.session;
+    };
+
+    bus.on("agent:submit", onSubmit);
+    bus.on("agent:cancel-request", onCancel);
+    bus.on("agent:reset-session", onReset);
+    listeners.push(
+      { event: "agent:submit", fn: onSubmit },
+      { event: "agent:cancel-request", fn: onCancel },
+      { event: "agent:reset-session", fn: onReset },
+    );
+  };
+
+  const unwireListeners = () => {
+    for (const { event, fn } of listeners) bus.off(event as any, fn as any);
+    listeners.length = 0;
+  };
+
+  // ── Register as backend ───────────────────────────────────────
   bus.emit("agent:register-backend", {
     name: "pi",
-    start: boot,
-    kill: () => {
-      runtime?.dispose();
+    start: async () => {
+      await boot();
+      wireListeners();
     },
-  });
-
-  // ── agent-sh events → pi ─────────────────────────────────────
-  bus.on("agent:submit", async ({ query, modeInstruction }) => {
-    if (!session) {
-      bus.emit("agent:error", {
-        message: booting ? "pi is still starting up..." : "pi session not initialized",
-      });
-      bus.emit("agent:processing-done", {});
-      return;
-    }
-
-    const prompt = modeInstruction ? `${modeInstruction}\n${query}` : query;
-    bus.emit("agent:query", { query });
-    bus.emit("agent:processing-start", {});
-
-    try {
-      await session.prompt(prompt);
-    } catch (err) {
-      bus.emit("agent:error", {
-        message: err instanceof Error ? err.message : String(err),
-      });
-      bus.emit("agent:processing-done", {});
-    }
-  });
-
-  bus.on("agent:cancel-request", async () => {
-    await session?.abort();
-  });
-
-  bus.on("agent:reset-session", async () => {
-    await runtime?.newSession();
-    session = runtime?.session;
+    kill: () => {
+      unwireListeners();
+      runtime?.dispose();
+      session = null;
+      runtime = null;
+      booting = true;
+    },
   });
 }

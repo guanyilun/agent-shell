@@ -58,7 +58,10 @@ export async function loadExtensions(
     const entries = await fs.readdir(EXT_DIR, { withFileTypes: true });
     for (const entry of entries) {
       const fullPath = path.join(EXT_DIR, entry.name);
-      if (entry.isDirectory()) {
+      // Resolve symlinks to check if they point to directories
+      const isDir = entry.isDirectory() ||
+        (entry.isSymbolicLink() && (await fs.stat(fullPath)).isDirectory());
+      if (isDir) {
         // Directory extension: look for index.{ts,js,mjs,...}
         const indexFile = await findIndex(fullPath);
         if (indexFile) {
@@ -81,6 +84,7 @@ export async function loadExtensions(
   });
 
   // Load each extension
+  const loaded: string[] = [];
   for (const specifier of unique) {
     try {
       const importPath = await resolveSpecifier(specifier);
@@ -97,12 +101,20 @@ export async function loadExtensions(
           : mod.activate;
       if (typeof activate === "function") {
         activate(ctx);
+        // Extract a short name from the specifier
+        const base = path.basename(specifier).replace(/\.(ts|js|mjs|mts|tsx)$/, "");
+        const name = base === "index" ? path.basename(path.dirname(specifier)) : base;
+        loaded.push(name);
       }
     } catch (err) {
       ctx.bus.emit("ui:error", {
         message: `Failed to load extension ${specifier}: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
+  }
+
+  if (loaded.length > 0) {
+    ctx.bus.emit("ui:info", { message: `Extensions: ${loaded.join(", ")}` });
   }
 }
 
