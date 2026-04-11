@@ -38,7 +38,7 @@ agent-sh starts from the opposite end. The shell is the primary interface — it
 - **Command Suggestions** — Failed commands get automatic fix suggestions (when LLM is available)
 - **Token Tracking** — Per-response token usage display
 - **Extensible** — Plugin system with content transforms, custom input modes, theming
-- **ACP Compatible** — Also supports external ACP agents (pi-acp, claude-agent-acp, etc.)
+- **Pluggable Backends** — Swap in pi or Claude Code as the agent backend via extensions
 
 ## Quick Start
 
@@ -52,9 +52,8 @@ OPENAI_API_KEY="your-key" agent-sh --model gpt-4o
 # Or with a custom provider
 agent-sh --api-key "$KEY" --base-url http://localhost:11434/v1 --model llama3
 
-# Or with an ACP agent (alternative mode)
-npm install -g pi-acp
-ANTHROPIC_API_KEY="your-key" agent-sh --agent pi-acp
+# Or with a backend extension (pi, Claude Code, etc.)
+# See examples/extensions/ for setup instructions
 ```
 
 Requires Node.js 18+. See the [Usage Guide](docs/usage.md) for provider examples, model configuration, and environment variables.
