@@ -13,6 +13,7 @@
  *   - agent:thinking-chunk, agent:cancelled, agent:error
  */
 import type { EventBus } from "../event-bus.js";
+import type { AgentMode } from "../types.js";
 import type { ContextManager } from "../context-manager.js";
 import type { LlmClient } from "../utils/llm-client.js";
 import type { AgentBackend, ToolDefinition } from "./types.js";
@@ -40,19 +41,21 @@ export class AgentLoop implements AgentBackend {
   private abortController: AbortController | null = null;
   private toolRegistry = new ToolRegistry();
   private conversation = new ConversationState();
-  private modes: { id: string; name: string; model: string }[];
+  private modes: AgentMode[];
   private currentModeIndex = 0;
 
   constructor(
     private bus: EventBus,
     private contextManager: ContextManager,
     private llmClient: LlmClient,
-    modeConfig?: { id: string; name: string; model: string }[],
+    modeConfig?: AgentMode[],
+    initialModeIndex?: number,
   ) {
     // Default modes: just the configured model
     this.modes = modeConfig ?? [
-      { id: "default", name: "Default", model: llmClient.model },
+      { model: llmClient.model },
     ];
+    this.currentModeIndex = initialModeIndex ?? 0;
 
     // Register core tools
     this.registerCoreTools();
@@ -63,6 +66,18 @@ export class AgentLoop implements AgentBackend {
     });
     bus.on("agent:cancel-request", () => this.cancel());
     bus.on("config:cycle", () => this.cycleMode());
+    bus.on("config:set-modes", ({ modes: newModes }) => {
+      this.modes = newModes;
+      this.currentModeIndex = 0;
+      // Apply the first mode's config
+      const m = this.modes[0];
+      if (m.providerConfig) {
+        this.llmClient.reconfigure({ ...m.providerConfig, model: m.model });
+      } else {
+        this.llmClient.model = m.model;
+      }
+      this.bus.emit("config:changed", {});
+    });
     bus.on("agent:reset-session", () => {
       this.cancel();
       this.conversation = new ConversationState();
@@ -83,9 +98,31 @@ export class AgentLoop implements AgentBackend {
   }
 
   private cycleMode(): void {
+    const prevMode = this.modes[this.currentModeIndex];
     this.currentModeIndex =
       (this.currentModeIndex + 1) % this.modes.length;
+    const newMode = this.modes[this.currentModeIndex];
+
+    // Reconfigure LlmClient if provider changed
+    if (newMode.provider !== prevMode.provider && newMode.providerConfig) {
+      this.llmClient.reconfigure({
+        apiKey: newMode.providerConfig.apiKey,
+        baseURL: newMode.providerConfig.baseURL,
+        model: newMode.model,
+      });
+    } else {
+      this.llmClient.model = newMode.model;
+    }
+
+    const label = newMode.provider
+      ? `${newMode.provider}: ${newMode.model}`
+      : newMode.model;
+    this.bus.emit("ui:info", { message: `Model: ${label}` });
     this.bus.emit("config:changed", {});
+  }
+
+  private get currentMode(): AgentMode {
+    return this.modes[this.currentModeIndex];
   }
 
   private get currentModel(): string {

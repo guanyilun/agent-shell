@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import type { AgentMode } from "./types.js";
 
 /**
  * Typed event map — every event has a known payload shape.
@@ -124,8 +125,26 @@ export interface ShellEvents {
   // Session mode/config updated (from agent backend)
   "config:changed": Record<string, never>;
 
-  // Cycle session mode (input-handler → backend)
+  // Cycle session mode (input-handler → backend: cycles models within provider)
   "config:cycle": Record<string, never>;
+
+  // Switch provider at runtime (slash command → core)
+  "config:switch-provider": { provider: string };
+
+  // Set modes (core → agent loop: after provider switch)
+  "config:set-modes": { modes: AgentMode[] };
+
+  // Register a provider at runtime (extensions → core)
+  "provider:register": {
+    id: string;
+    apiKey?: string;
+    baseURL?: string;
+    defaultModel: string;
+    models?: string[];
+    type?: "acp";
+    command?: string;
+    args?: string[];
+  };
 
   // Autocomplete (sync pipe: extensions inspect buffer and append items)
   "autocomplete:request": {

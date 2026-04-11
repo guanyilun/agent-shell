@@ -74,6 +74,13 @@ export default function activate({ bus, quit }: ExtensionContext): void {
       },
     },
     {
+      name: "/model",
+      description: "Cycle to next model",
+      handler: () => {
+        bus.emit("config:cycle", {});
+      },
+    },
+{
       name: "/quit",
       description: "Exit agent-sh",
       handler: () => {

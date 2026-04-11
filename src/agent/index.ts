@@ -10,7 +10,7 @@
  */
 import type { EventBus } from "../event-bus.js";
 import type { ContextManager } from "../context-manager.js";
-import type { AgentShellConfig } from "../types.js";
+import type { AgentShellConfig, AgentMode } from "../types.js";
 import type { LlmClient } from "../utils/llm-client.js";
 import type { AgentBackend } from "./types.js";
 import { AcpClient } from "./acp-client.js";
@@ -26,10 +26,12 @@ export function createAgentBackend(
   bus: EventBus,
   contextManager: ContextManager,
   llmClient?: LlmClient,
+  modes?: AgentMode[],
+  initialModeIndex?: number,
 ): AgentBackend {
   if (llmClient) {
     // AgentLoop self-wires to bus events — no routing needed
-    return new AgentLoop(bus, contextManager, llmClient);
+    return new AgentLoop(bus, contextManager, llmClient, modes, initialModeIndex);
   }
 
   // AcpClient self-wires to bus events in its constructor.

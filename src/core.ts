@@ -23,10 +23,11 @@ import { EventBus, type ContentBlock } from "./event-bus.js";
 import { ContextManager } from "./context-manager.js";
 import { createAgentBackend } from "./agent/index.js";
 import { LlmClient } from "./utils/llm-client.js";
-import type { AgentShellConfig, ExtensionContext } from "./types.js";
+import type { AgentShellConfig, AgentMode, ExtensionContext } from "./types.js";
 import { setPalette } from "./utils/palette.js";
 import * as streamTransform from "./utils/stream-transform.js";
 import * as settingsMod from "./settings.js";
+import { resolveProvider, getProviderNames, type ResolvedProvider } from "./settings.js";
 import { HandlerRegistry } from "./utils/handler-registry.js";
 
 // Re-export types that library consumers need
@@ -60,18 +61,134 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
   const handlers = new HandlerRegistry();
   const contextManager = new ContextManager(bus);
 
+  // ── Resolve provider ─────────────────────────────────────────
+  // Priority: CLI flags > --provider > settings.defaultProvider
+  const settings = settingsMod.getSettings();
+  let activeProvider: ResolvedProvider | null = null;
+
+  // Runtime provider registry (settings + extension-registered)
+  const providerRegistry = new Map<string, ResolvedProvider>();
+
+  // Load providers from settings
+  for (const name of getProviderNames()) {
+    const p = resolveProvider(name);
+    if (p) providerRegistry.set(name, p);
+  }
+
+  // Determine active provider
+  const providerName = config.provider ?? settings.defaultProvider;
+  if (providerName) {
+    activeProvider = providerRegistry.get(providerName) ?? null;
+  }
+
+  // Build flat modes list across all non-ACP providers
+  const buildModes = (): AgentMode[] => {
+    const allModes: AgentMode[] = [];
+    for (const [id, p] of providerRegistry) {
+      if (p.type === "acp") continue;
+      if (!p.apiKey) continue;
+      for (const model of p.models) {
+        allModes.push({
+          model,
+          provider: id,
+          providerConfig: { apiKey: p.apiKey, baseURL: p.baseURL },
+        });
+      }
+    }
+    return allModes;
+  };
+
+  // Determine effective config for initial LLM client
+  const effectiveApiKey = config.apiKey ?? activeProvider?.apiKey;
+  const effectiveBaseURL = config.baseURL ?? activeProvider?.baseURL;
+  const effectiveModel = config.model ?? activeProvider?.defaultModel ?? "gpt-4o";
+
+  // Build modes — if CLI overrides are set and no providers configured, use single mode
+  let modes = buildModes();
+  if (modes.length === 0 && effectiveApiKey) {
+    modes = [{ model: effectiveModel }];
+  }
+
+  // Set initial mode index to match the effective model
+  const initialModeIndex = Math.max(0, modes.findIndex(
+    (m) => m.model === effectiveModel && (!activeProvider || m.provider === activeProvider.id)
+  ));
+
   // Shared LLM client — used by agent loop AND fast-path features
   const llmClient =
-    config.apiKey
+    effectiveApiKey
       ? new LlmClient({
-          apiKey: config.apiKey,
-          baseURL: config.baseURL,
-          model: config.model ?? "gpt-4o",
+          apiKey: effectiveApiKey,
+          baseURL: effectiveBaseURL,
+          model: effectiveModel,
         })
       : null;
 
+  // If provider is ACP type, configure as ACP
+  if (activeProvider?.type === "acp" && activeProvider.command) {
+    config.agentCommand = activeProvider.command;
+    config.agentArgs = activeProvider.args ?? [];
+  }
+
   // Create agent backend via factory — both backends self-wire to bus events
-  const backend = createAgentBackend(config, bus, contextManager, llmClient ?? undefined);
+  const backend = createAgentBackend(config, bus, contextManager, llmClient ?? undefined, modes, initialModeIndex);
+
+  // ── Runtime provider management ──────────────────────────────
+
+  // Extensions can register providers at runtime
+  bus.on("provider:register", (p) => {
+    providerRegistry.set(p.id, {
+      id: p.id,
+      apiKey: p.apiKey,
+      baseURL: p.baseURL,
+      defaultModel: p.defaultModel,
+      models: p.models ?? [p.defaultModel],
+      type: p.type,
+      command: p.command,
+      args: p.args,
+    });
+  });
+
+  // Switch provider at runtime (only for internal agent mode)
+  bus.on("config:switch-provider", ({ provider: name }) => {
+    const p = providerRegistry.get(name);
+    if (!p) {
+      bus.emit("ui:error", { message: `Unknown provider: ${name}` });
+      return;
+    }
+    if (p.type === "acp") {
+      bus.emit("ui:error", { message: `Cannot switch to ACP provider at runtime` });
+      return;
+    }
+    if (!llmClient) {
+      bus.emit("ui:error", { message: `Provider switching requires internal agent mode` });
+      return;
+    }
+
+    // Reconfigure LLM client
+    const newApiKey = p.apiKey;
+    if (!newApiKey) {
+      bus.emit("ui:error", { message: `Provider "${name}" has no API key configured` });
+      return;
+    }
+    llmClient.reconfigure({
+      apiKey: newApiKey,
+      baseURL: p.baseURL,
+      model: p.defaultModel,
+    });
+
+    // Update agent loop modes
+    const newModes: AgentMode[] = p.models.map((m) => ({
+      model: m,
+      provider: name,
+      providerConfig: { apiKey: newApiKey, baseURL: p.baseURL },
+    }));
+    bus.emit("config:set-modes", { modes: newModes });
+
+    activeProvider = p;
+    bus.emit("ui:info", { message: `Switched to ${name} (${p.defaultModel})` });
+    bus.emit("config:changed", {});
+  });
 
   return {
     bus,

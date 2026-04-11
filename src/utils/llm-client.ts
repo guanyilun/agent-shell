@@ -28,6 +28,16 @@ export class LlmClient {
     this.model = config.model;
   }
 
+  /** Swap the underlying client config at runtime (e.g. provider switch). */
+  reconfigure(newConfig: LlmClientConfig): void {
+    this.config = newConfig;
+    this.client = new OpenAI({
+      apiKey: newConfig.apiKey,
+      baseURL: newConfig.baseURL,
+    });
+    this.model = newConfig.model;
+  }
+
   /**
    * Create a streaming chat completion.
    * Returns an async iterable of chunks.

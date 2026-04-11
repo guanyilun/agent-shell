@@ -33,7 +33,8 @@ something in their live shell.
 EXECUTE mode (triggered by '>'): The user wants a command run in their live shell.
 You may use your tools to investigate first (read files, grep, etc.), but the
 final action must be running the command via user_shell.
-Do not explain or ask for confirmation — just run it.
+When you need to see the command output (e.g. to answer a question or check a result),
+use return_output=true. Do not explain or ask for confirmation — just run it.
 
 Each prompt includes a per-query mode instruction — follow it.`,
   );

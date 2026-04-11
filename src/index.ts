@@ -91,6 +91,7 @@ function parseArgs(argv: string[]): AgentShellConfig {
   let agentArgs: string[] = [];
   let model: string | undefined;
   let extensions: string[] | undefined;
+  let provider: string | undefined;
   const shell = process.env.SHELL || "/bin/bash";
 
   // Internal agent mode
@@ -115,8 +116,10 @@ function parseArgs(argv: string[]): AgentShellConfig {
       apiKey = argv[++i]!;
     } else if (arg === "--base-url" && argv[i + 1]) {
       baseURL = argv[++i]!;
+    } else if (arg === "--provider" && argv[i + 1]) {
+      provider = argv[++i]!;
     } else if (arg === "--shell" && argv[i + 1]) {
-      return { agentCommand, agentArgs, shell: argv[++i]!, model, extensions, apiKey, baseURL };
+      return { agentCommand, agentArgs, shell: argv[++i]!, model, extensions, apiKey, baseURL, provider };
     } else if ((arg === "--extensions" || arg === "-e") && argv[i + 1]) {
       const exts = argv[++i]!.split(",").map(s => s.trim());
       extensions = extensions ? [...extensions, ...exts] : exts;
@@ -130,10 +133,13 @@ Quick Start:
   npm run pi                        Start with pi-acp agent
   npm run claude                    Start with Claude agent
 
+Provider Profiles:
+  --provider <name>   Use a provider from ~/.agent-sh/settings.json
+  --model <name>      Override default model (or select from provider's models list)
+
 Internal Agent Mode (direct LLM API):
   --api-key <key>     API key for OpenAI-compatible provider (or set OPENAI_API_KEY)
   --base-url <url>    Base URL for API (default: https://api.openai.com/v1, or set OPENAI_BASE_URL)
-  --model <name>      Model to use (default: gpt-4o)
 
 ACP Agent Mode (subprocess):
   --agent <cmd>       Agent command to launch (default: $AGENT_SH_AGENT or "pi-acp")
@@ -173,7 +179,7 @@ Inside the shell:
     }
   }
 
-  return { agentCommand, agentArgs, shell, model, extensions, apiKey, baseURL };
+  return { agentCommand, agentArgs, shell, model, extensions, apiKey, baseURL, provider };
 }
 
 function formatAgentInfo(
@@ -265,7 +271,7 @@ async function main(): Promise<void> {
     cwd: process.cwd(),
     onShowAgentInfo: () => {
       if (useInternalAgent) {
-        const modelName = config.model ?? core.llmClient!.model;
+        const modelName = core.llmClient!.model;
         return { info: `${p.dim}agent-sh (${modelName})${p.reset}` };
       }
       if (agentInfo) {

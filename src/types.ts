@@ -7,6 +7,15 @@ import type { BlockTransformOptions, FencedBlockTransformOptions } from "./utils
 export type { ContentBlock } from "./event-bus.js";
 export type { BlockTransformOptions, FencedBlockTransformOptions } from "./utils/stream-transform.js";
 
+/** A model entry in the cycling list, optionally tied to a provider. */
+export interface AgentMode {
+  model: string;
+  /** Provider id — when cycling changes provider, LlmClient is reconfigured. */
+  provider?: string;
+  /** Provider-specific config for reconfiguring LlmClient on switch. */
+  providerConfig?: { apiKey: string; baseURL?: string };
+}
+
 export interface AgentShellConfig {
   agentCommand: string;
   agentArgs: string[];
@@ -21,6 +30,10 @@ export interface AgentShellConfig {
   apiKey?: string;
   /** Base URL for OpenAI-compatible API (default: https://api.openai.com/v1). */
   baseURL?: string;
+
+  // ── Provider profiles ─────────────────────────────────────────
+  /** Named provider to use from settings.json. */
+  provider?: string;
 }
 
 /**

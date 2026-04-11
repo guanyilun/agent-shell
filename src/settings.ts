@@ -11,11 +11,35 @@ import * as os from "node:os";
 export const CONFIG_DIR = path.join(os.homedir(), ".agent-sh");
 const SETTINGS_PATH = path.join(CONFIG_DIR, "settings.json");
 
+/** Provider profile — a named LLM configuration. */
+export interface ProviderConfig {
+  /** API key (supports $ENV_VAR syntax for runtime expansion). */
+  apiKey?: string;
+  /** Base URL for OpenAI-compatible API. */
+  baseURL?: string;
+  /** Default model to use. Falls back to first entry in models list. */
+  defaultModel?: string;
+  /** Models available for cycling. */
+  models?: string[];
+  /** ACP agent mode — if set, uses ACP subprocess instead of internal agent. */
+  type?: "acp";
+  /** ACP agent command (only when type is "acp"). */
+  command?: string;
+  /** ACP agent args (only when type is "acp"). */
+  args?: string[];
+}
+
 export interface Settings {
   /** Extensions to load (npm packages or file paths). */
   extensions?: string[];
   /** Max agent query history entries to keep. */
   historySize?: number;
+
+  // ── Provider profiles ─────────────────────────────────────
+  /** Named provider configurations. */
+  providers?: Record<string, ProviderConfig>;
+  /** Which provider to use by default. */
+  defaultProvider?: string;
 
   // ── Context & truncation ──────────────────────────────────
   /** Recent exchanges included in agent context window. */
@@ -47,6 +71,8 @@ export interface Settings {
 const DEFAULTS: Required<Settings> = {
   extensions: [],
   historySize: 500,
+  providers: {},
+  defaultProvider: undefined as any,
   contextWindowSize: 20,
   contextBudget: 16384,
   shellTruncateThreshold: 10,
@@ -67,7 +93,10 @@ export function getSettings(): Settings & typeof DEFAULTS {
     try {
       const raw = fs.readFileSync(SETTINGS_PATH, "utf-8");
       cached = JSON.parse(raw) as Settings;
-    } catch {
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        console.error(`[agent-sh] Warning: invalid JSON in ${SETTINGS_PATH}: ${err.message}`);
+      }
       cached = {};
     }
   }
@@ -99,4 +128,57 @@ export function getExtensionSettings<T extends Record<string, unknown>>(
 /** Reset cached settings (for testing or after external edit). */
 export function reloadSettings(): void {
   cached = null;
+}
+
+/**
+ * Expand $ENV_VAR references in a string.
+ * Supports $VAR and ${VAR} syntax.
+ */
+export function expandEnvVars(value: string): string {
+  return value.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_, braced, plain) => {
+    const name = braced || plain;
+    return process.env[name] ?? "";
+  });
+}
+
+/** Resolved provider ready for use (env vars expanded, defaults applied). */
+export interface ResolvedProvider {
+  id: string;
+  apiKey?: string;
+  baseURL?: string;
+  defaultModel: string;  // always resolved (from defaultModel or first model)
+  models: string[];
+  type?: "acp";
+  command?: string;
+  args?: string[];
+}
+
+/**
+ * Resolve a provider config by name from settings.
+ * Returns null if provider not found.
+ */
+export function resolveProvider(name: string): ResolvedProvider | null {
+  const settings = getSettings();
+  const provider = settings.providers?.[name];
+  if (!provider) return null;
+
+  const models = provider.models ?? (provider.defaultModel ? [provider.defaultModel] : []);
+  const defaultModel = provider.defaultModel ?? models[0] ?? "gpt-4o";
+
+  return {
+    id: name,
+    apiKey: provider.apiKey ? expandEnvVars(provider.apiKey) : undefined,
+    baseURL: provider.baseURL,
+    defaultModel,
+    models: models.length ? models : [defaultModel],
+    type: provider.type,
+    command: provider.command,
+    args: provider.args,
+  };
+}
+
+/** Get all configured provider names. */
+export function getProviderNames(): string[] {
+  const settings = getSettings();
+  return Object.keys(settings.providers ?? {});
 }
