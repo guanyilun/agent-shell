@@ -715,6 +715,6 @@ export default function activate(ctx: ExtensionContext): void {
   }
 
   function showInfo(message: string): void {
-    writer.write(`\n${p.muted}${message}${p.reset}\n`);
+    writer.write(`${p.muted}${message}${p.reset}\n`);
   }
 }
