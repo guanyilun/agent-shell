@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ToolDefinition } from "./types.js";
 import type { ContextManager } from "../context-manager.js";
-import type { EventBus } from "../event-bus.js";
 import { discoverSkills } from "./skills.js";
 
 /** File names to scan for project conventions (checked in order). */
@@ -83,7 +82,6 @@ Each prompt includes a per-query mode instruction — follow it.
 export function buildDynamicContext(
   tools: ToolDefinition[],
   contextManager: ContextManager,
-  bus: EventBus,
 ): string {
   const sections: string[] = [];
 
@@ -118,10 +116,5 @@ export function buildDynamicContext(
     `Current date: ${new Date().toISOString().split("T")[0]}\nWorking directory: ${contextManager.getCwd()}`,
   );
 
-  // Extension hook
-  const result = bus.emitPipe("agent:dynamic-context", {
-    context: sections.join("\n\n"),
-  });
-
-  return result.context;
+  return sections.join("\n\n");
 }

@@ -16,6 +16,7 @@ import type { EventBus, ShellEvents } from "../event-bus.js";
 import type { AgentMode } from "../types.js";
 import type { ContextManager } from "../context-manager.js";
 import type { LlmClient } from "../utils/llm-client.js";
+import type { HandlerRegistry } from "../utils/handler-registry.js";
 import type { AgentBackend, ToolDefinition } from "./types.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { ConversationState } from "./conversation-state.js";
@@ -52,6 +53,7 @@ export class AgentLoop implements AgentBackend {
     private bus: EventBus,
     private contextManager: ContextManager,
     private llmClient: LlmClient,
+    private handlers: HandlerRegistry,
     modeConfig?: AgentMode[],
     initialModeIndex?: number,
   ) {
@@ -63,6 +65,9 @@ export class AgentLoop implements AgentBackend {
 
     // Register core tools
     this.registerCoreTools();
+
+    // Register handlers — extensions can advise these
+    this.registerHandlers();
   }
 
   /** Subscribe to bus events — activates this backend. */
@@ -245,6 +250,38 @@ export class AgentLoop implements AgentBackend {
     this.toolRegistry.register(createListSkillsTool(getCwd));
   }
 
+  /**
+   * Register named handlers that extensions can advise.
+   * These expose agent internals (conversation, context, prompt)
+   * through the same define/advise/call system used for rendering.
+   */
+  private registerHandlers(): void {
+    const h = this.handlers;
+
+    // ── Conversation ──
+    h.define("conversation:get", () =>
+      this.conversation.getMessages(),
+    );
+    h.define("conversation:token-estimate", () =>
+      this.estimateTokens(),
+    );
+    h.define("conversation:compact", (maxTurns: number) =>
+      this.conversation.compact(maxTurns),
+    );
+    h.define("conversation:inject", (text: string) =>
+      this.conversation.addSystemNote(text),
+    );
+    h.define("conversation:clear", () => {
+      this.conversation = new ConversationState();
+    });
+
+    // ── Prompts ──
+    h.define("system-prompt:get", () => STATIC_SYSTEM_PROMPT);
+    h.define("dynamic-context:build", () =>
+      buildDynamicContext(this.toolRegistry.all(), this.contextManager),
+    );
+  }
+
   private async handleQuery(
     query: string,
     modeInstruction?: string,
@@ -315,15 +352,12 @@ export class AgentLoop implements AgentBackend {
         this.bus.emit("ui:info", { message: "(conversation compacted)" });
       }
 
-      // Dynamic context injected as a context message (not system prompt — keeps it cacheable)
-      const dynamicContext = buildDynamicContext(
-        this.toolRegistry.all(),
-        this.contextManager,
-        this.bus,
-      );
+      // Use handlers so extensions can advise both
+      const systemPrompt = this.handlers.call("system-prompt:get");
+      const dynamicContext = this.handlers.call("dynamic-context:build");
 
       // Stream LLM response with retry
-      const result = await this.streamWithRetry(STATIC_SYSTEM_PROMPT, dynamicContext, signal);
+      const result = await this.streamWithRetry(systemPrompt, dynamicContext, signal);
 
       const { text, toolCalls, assistantContent, assistantToolCalls } = result;
 

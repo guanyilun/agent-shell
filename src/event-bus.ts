@@ -151,11 +151,6 @@ export interface ShellEvents {
     models?: string[];
   };
 
-  // Dynamic context (sync pipe: extensions append context before each query)
-  "agent:dynamic-context": {
-    context: string;
-  };
-
   // Autocomplete (sync pipe: extensions inspect buffer and append items)
   "autocomplete:request": {
     buffer: string;

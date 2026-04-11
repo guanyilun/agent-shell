@@ -119,7 +119,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
 
   // Create AgentLoop (unwired — tools only, no bus subscriptions yet)
   const agentLoop = llmClient
-    ? new AgentLoop(bus, contextManager, llmClient, modes, initialModeIndex)
+    ? new AgentLoop(bus, contextManager, llmClient, handlers, modes, initialModeIndex)
     : null;
 
   // ── Multi-backend registry ───────────────────────────────────
