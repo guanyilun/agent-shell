@@ -58,6 +58,7 @@ TypeScript and JavaScript are both supported (`.ts`, `.tsx`, `.mts`, `.js`, `.mj
 | `define` | `(name, fn) => void` | Register a named handler |
 | `advise` | `(name, wrapper) => void` | Wrap a named handler (receives `next` + args) |
 | `call` | `(name, ...args) => any` | Call a named handler |
+| `registerTool` | `(tool: ToolDefinition) => void` | Register a tool for the built-in agent (no-op for bridge backends) |
 
 ## Extension Settings
 
@@ -165,7 +166,7 @@ An extension can replace the entire agent backend — the component that receive
 
 During `activate()`, emit `agent:register-backend` to claim the backend role. This prevents the built-in AgentLoop from activating. From that point, your extension is responsible for handling queries.
 
-Here's a complete working backend (`examples/extensions/echo-backend.ts`):
+Here's a minimal working backend:
 
 ```typescript
 import type { ExtensionContext } from "../../src/types.js";
@@ -197,10 +198,6 @@ export default function activate({ bus }: ExtensionContext): void {
   // 3. Identify yourself (shown in the TUI prompt)
   bus.emit("agent:info", { name: "echo-backend", version: "1.0.0" });
 }
-```
-
-```bash
-agent-sh -e examples/extensions/echo-backend.ts
 ```
 
 ### Event protocol
@@ -269,14 +266,14 @@ Extensions load *before* `activateBackend()` runs. This is what makes `defaultBa
 
 The echo-backend shows the protocol. The `examples/extensions/` directory has two production bridges that wire real agent SDKs into agent-sh. They follow the same pattern — the difference is just which SDK they translate.
 
-#### Claude Code Bridge (`claude-code-bridge.ts`)
+#### Claude Code Bridge (`claude-code-bridge/`)
 
 Runs the [Claude Code Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) in-process. Claude Code handles model selection, tool execution, and permissions — agent-sh provides the shell and TUI.
 
 ```bash
-npm install @anthropic-ai/claude-agent-sdk
-agent-sh -e examples/extensions/claude-code-bridge.ts
-# Requires: Claude Code CLI installed and authenticated (claude login)
+cp -r examples/extensions/claude-code-bridge ~/.agent-sh/extensions/
+cd ~/.agent-sh/extensions/claude-code-bridge && npm install
+# Requires: ANTHROPIC_API_KEY in environment
 ```
 
 **How it works:**
@@ -286,13 +283,14 @@ agent-sh -e examples/extensions/claude-code-bridge.ts
 3. **On each `agent:submit`**, calls the SDK's `query()` with the user's prompt, a system prompt preset, and the MCP server attached
 4. **Iterates the SDK's async iterator** — maps `stream_event` (text/thinking deltas) and `assistant` messages (tool use blocks) to agent-sh events (`agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-started`)
 
-#### Pi Bridge (`pi-bridge.ts`)
+#### Pi Bridge (`pi-bridge/`)
 
 Runs [pi's coding agent](https://github.com/nickarrow/pi) in-process. Pi brings its own model registry, provider settings, session management, and tools.
 
 ```bash
-npm install @mariozechner/pi-agent-core @mariozechner/pi-ai @mariozechner/pi-coding-agent
-agent-sh -e examples/extensions/pi-bridge.ts
+cp -r examples/extensions/pi-bridge ~/.agent-sh/extensions/
+cd ~/.agent-sh/extensions/pi-bridge && npm install
+# Requires: pi configured separately (~/.pi/settings.json)
 ```
 
 **How it works:**
