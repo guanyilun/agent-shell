@@ -252,34 +252,68 @@ export class AgentLoop implements AgentBackend {
 
   /**
    * Register named handlers that extensions can advise.
-   * These expose agent internals (conversation, context, prompt)
-   * through the same define/advise/call system used for rendering.
+   * Only high-power use cases where multiple extensions compose.
    */
   private registerHandlers(): void {
     const h = this.handlers;
 
-    // ── Conversation ──
-    h.define("conversation:get", () =>
-      this.conversation.getMessages(),
-    );
-    h.define("conversation:token-estimate", () =>
-      this.estimateTokens(),
-    );
-    h.define("conversation:compact", (maxTurns: number) =>
-      this.conversation.compact(maxTurns),
-    );
-    h.define("conversation:inject", (text: string) =>
-      this.conversation.addSystemNote(text),
-    );
-    h.define("conversation:clear", () => {
-      this.conversation = new ConversationState();
-    });
-
-    // ── Prompts ──
-    h.define("system-prompt:get", () => STATIC_SYSTEM_PROMPT);
+    // Extensions compose additional context (git info, project rules, etc.)
     h.define("dynamic-context:build", () =>
       buildDynamicContext(this.toolRegistry.all(), this.contextManager),
     );
+
+    // Full control over what the LLM sees: takes messages[], returns messages[].
+    // Default: pass through. Extensions can advise to compact, summarize,
+    // filter, reorder, inject — whatever strategy fits.
+    h.define("conversation:prepare", (messages: unknown[]) => messages);
+
+    // Wraps each tool call: permission → execute → emit events.
+    // Extensions advise to add safe-mode, logging, metrics, custom policies.
+    h.define("tool:execute", async (ctx: {
+      name: string; id: string;
+      args: Record<string, unknown>;
+      tool: ToolDefinition;
+    }) => {
+      const { name, id, args, tool } = ctx;
+
+      // Permission gating
+      if (tool.requiresPermission) {
+        const perm = await this.bus.emitPipeAsync("permission:request", {
+          kind: "tool-call",
+          title: name,
+          metadata: { args },
+          decision: { outcome: "approved" },
+        });
+        if ((perm.decision as { outcome: string }).outcome !== "approved") {
+          return { content: "Permission denied by user.", exitCode: 1, isError: true };
+        }
+      }
+
+      // Emit tool-started for TUI
+      const display = tool.getDisplayInfo?.(args) ?? { kind: "execute" as const };
+      this.bus.emit("agent:tool-started", {
+        title: name, toolCallId: id,
+        kind: display.kind, locations: display.locations, rawInput: args,
+      });
+      this.bus.emit("agent:tool-call", { tool: name, args });
+
+      // Execute
+      const onChunk = tool.showOutput !== false
+        ? (chunk: string) => { this.bus.emit("agent:tool-output-chunk", { chunk }); }
+        : undefined;
+      const result = await tool.execute(args, onChunk);
+
+      // Emit completion events
+      this.bus.emit("agent:tool-completed", {
+        toolCallId: id, exitCode: result.exitCode,
+        rawOutput: result.content, kind: display.kind,
+      });
+      this.bus.emit("agent:tool-output", {
+        tool: name, output: result.content, exitCode: result.exitCode,
+      });
+
+      return result;
+    });
   }
 
   private async handleQuery(
@@ -329,12 +363,6 @@ export class AgentLoop implements AgentBackend {
     }
   }
 
-  /** Rough token estimate (~4 chars/token). */
-  private estimateTokens(): number {
-    const json = JSON.stringify(this.conversation.getMessages());
-    return Math.ceil(json.length / 4);
-  }
-
   /** Max tokens before auto-compaction (conservative default). */
   private maxContextTokens = 60_000;
 
@@ -347,13 +375,15 @@ export class AgentLoop implements AgentBackend {
 
     while (!signal.aborted) {
       // Auto-compact if conversation is getting large
-      if (this.estimateTokens() > this.maxContextTokens) {
+      const estimatedTokens = Math.ceil(JSON.stringify(this.conversation.getMessages()).length / 4);
+      if (estimatedTokens > this.maxContextTokens) {
         this.conversation.compact(10);
         this.bus.emit("ui:info", { message: "(conversation compacted)" });
       }
 
-      // Use handlers so extensions can advise both
-      const systemPrompt = this.handlers.call("system-prompt:get");
+      // System prompt is static (cacheable); dynamic context uses handler
+      // so extensions can compose additional context via advise()
+      const systemPrompt = STATIC_SYSTEM_PROMPT;
       const dynamicContext = this.handlers.call("dynamic-context:build");
 
       // Stream LLM response with retry
@@ -396,68 +426,12 @@ export class AgentLoop implements AgentBackend {
           continue;
         }
 
-        // Permission gating
-        if (tool.requiresPermission) {
-          const result = await this.bus.emitPipeAsync(
-            "permission:request",
-            {
-              kind: "tool-call",
-              title: tc.name,
-              metadata: { args },
-              decision: { outcome: "approved" },
-            },
-          );
-          if (
-            (result.decision as { outcome: string }).outcome !==
-            "approved"
-          ) {
-            this.conversation.addToolResult(
-              tc.id,
-              "Permission denied by user.",
-            );
-            continue;
-          }
-        }
-
-        // Emit tool-started for TUI
-        const display = tool.getDisplayInfo?.(args) ?? {
-          kind: "execute",
-        };
-        this.bus.emit("agent:tool-started", {
-          title: tc.name,
-          toolCallId: tc.id,
-          kind: display.kind,
-          locations: display.locations,
-          rawInput: args,
-        });
-
-        // Emit tool-call for ContextManager recording
-        this.bus.emit("agent:tool-call", { tool: tc.name, args });
-
-        // Execute tool
-        const onChunk =
-          tool.showOutput !== false
-            ? (chunk: string) => {
-                this.bus.emit("agent:tool-output-chunk", { chunk });
-              }
-            : undefined;
-
-        const result = await tool.execute(args, onChunk);
-
-        // Emit tool-completed for TUI
-        this.bus.emit("agent:tool-completed", {
-          toolCallId: tc.id,
-          exitCode: result.exitCode,
-          rawOutput: result.content,
-          kind: display.kind,
-        });
-
-        // Emit tool-output for ContextManager
-        this.bus.emit("agent:tool-output", {
-          tool: tc.name,
-          output: result.content,
-          exitCode: result.exitCode,
-        });
+        // Execute via handler — extensions can advise to add safe-mode,
+        // logging, metrics, custom permission policies, etc.
+        const result = await this.handlers.call(
+          "tool:execute",
+          { name: tc.name, id: tc.id, args, tool },
+        );
 
         // Add tool result to conversation
         const content = result.isError
@@ -540,15 +514,18 @@ export class AgentLoop implements AgentBackend {
     let text = "";
     const pendingToolCalls: PendingToolCall[] = [];
 
-    const messages = this.conversation.getMessages();
+    const rawMessages = [
+      { role: "system" as const, content: systemPrompt },
+      { role: "user" as const, content: `<context>\n${dynamicContext}\n</context>` },
+      { role: "assistant" as const, content: "Understood." },
+      ...this.conversation.getMessages(),
+    ];
+
+    // Let extensions transform the message array (compact, summarize, filter, etc.)
+    const messages = this.handlers.call("conversation:prepare", rawMessages);
 
     const stream = await this.llmClient.stream({
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `<context>\n${dynamicContext}\n</context>` },
-        { role: "assistant", content: "Understood." },
-        ...messages,
-      ],
+      messages,
       tools: this.toolRegistry.toAPITools(),
       model: this.currentModel,
       signal,

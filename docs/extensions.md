@@ -55,10 +55,11 @@ TypeScript and JavaScript are both supported (`.ts`, `.tsx`, `.mts`, `.js`, `.mj
 | `createBlockTransform` | `(opts) => void` | Register an inline delimiter transform (e.g. `$$...$$`) |
 | `createFencedBlockTransform` | `(opts) => void` | Register a fenced block transform (e.g. ` ```lang...``` `) |
 | `getExtensionSettings` | `(namespace, defaults) => T` | Read extension settings from `~/.agent-sh/settings.json` |
+| `registerTool` | `(tool: ToolDefinition) => void` | Register a tool for the built-in agent (no-op for bridge backends) |
+| `getTools` | `() => ToolDefinition[]` | Get all registered tools (for subagent tool subsets) |
 | `define` | `(name, fn) => void` | Register a named handler |
 | `advise` | `(name, wrapper) => void` | Wrap a named handler (receives `next` + args) |
 | `call` | `(name, ...args) => any` | Call a named handler |
-| `registerTool` | `(tool: ToolDefinition) => void` | Register a tool for the built-in agent (no-op for bridge backends) |
 
 ## Extension Settings
 
@@ -344,14 +345,84 @@ Multiple advisors chain — each wraps the last. First advisor to not call `next
 - **`onPipe`**: you want to transform *data* as it flows through the system (autocomplete items, response chunks, intercepted commands). You get a payload, return a modified payload.
 - **`advise`**: you want to replace *behavior* — how a code block renders, how an image displays. You get `next` and decide whether to call the original implementation or substitute your own.
 
+Handlers are reserved for **high-power use cases** where multiple independent extensions need to compose behavior on the same operation. Simple read/write access to internals is exposed as direct methods on `ExtensionContext` instead.
+
 ### Built-in handlers
 
-The tui-renderer registers these handlers that extensions can advise:
+#### Agent loop handlers
 
-| Handler | Arguments | Description |
+These are registered by the built-in agent backend and let extensions shape what the LLM sees and how tools execute.
+
+| Handler | Signature | Description |
 |---|---|---|
-| `render:code-block` | `(language: string, code: string, width: number)` | Render a fenced code block (default: syntax highlighting) |
-| `render:image` | `(data: Buffer)` | Display an image in the terminal (default: iTerm2/Kitty protocol) |
+| `dynamic-context:build` | `() → string` | Build per-query context injected before the conversation. Default: tools, conventions, shell history, cwd. |
+| `conversation:prepare` | `(messages[]) → messages[]` | Transform the full message array before it's sent to the LLM. Default: pass through. |
+| `tool:execute` | `(ctx) → ToolResult` | Wrap the full tool lifecycle: permission → execute → emit events. |
+
+**`dynamic-context:build`** — Each advisor appends its own context. Multiple extensions compose independently:
+
+```typescript
+// Add git context to every query
+ctx.advise("dynamic-context:build", (next) => {
+  const base = next();
+  const branch = execSync("git branch --show-current").toString().trim();
+  return base + `\nGit branch: ${branch}`;
+});
+```
+
+**`conversation:prepare`** — Full control over the message array the LLM receives. The default passes messages through unchanged. Extensions can implement compaction, summarization, filtering, sliding window, or any other strategy:
+
+```typescript
+// Keep only the last 20 messages to save tokens
+ctx.advise("conversation:prepare", (next, messages) => {
+  const prepared = next(messages);
+  if (prepared.length > 23) { // 3 prefix messages + 20 conversation
+    return [...prepared.slice(0, 3), ...prepared.slice(-20)];
+  }
+  return prepared;
+});
+```
+
+**`tool:execute`** — Wraps every tool call. The `ctx` argument contains `{ name, id, args, tool }`. Extensions can block tools, add logging, implement custom permission policies, retry on failure, or run tools in a sandbox:
+
+```typescript
+// Safe mode — block all file-modifying tools
+ctx.advise("tool:execute", async (next, ctx) => {
+  if (ctx.tool.modifiesFiles) {
+    return { content: "Blocked: read-only mode", exitCode: 1, isError: true };
+  }
+  return next(ctx);
+});
+
+// Audit log — record every tool execution
+ctx.advise("tool:execute", async (next, ctx) => {
+  const start = Date.now();
+  const result = await next(ctx);
+  log(`${ctx.name}: ${Date.now() - start}ms, exit=${result.exitCode}`);
+  return result;
+});
+
+// Custom permission policy — auto-approve reads, deny /etc access
+ctx.advise("tool:execute", async (next, ctx) => {
+  const kind = ctx.tool.getDisplayInfo?.(ctx.args)?.kind;
+  if (kind === "read") return next(ctx);  // skip permission prompt
+  if (ctx.name === "bash" && String(ctx.args.command).includes("/etc")) {
+    return { content: "Blocked: /etc access", exitCode: 1, isError: true };
+  }
+  return next(ctx);
+});
+```
+
+#### Rendering handlers
+
+These are registered by the tui-renderer and let extensions customize how content is displayed.
+
+| Handler | Signature | Description |
+|---|---|---|
+| `render:code-block` | `(language: string, code: string, width: number) → void` | Render a fenced code block (default: syntax highlighting) |
+| `render:image` | `(data: Buffer) → void` | Display an image in the terminal (default: iTerm2/Kitty protocol) |
+
+#### Custom handlers
 
 Extensions can define their own handlers for other extensions to advise:
 
