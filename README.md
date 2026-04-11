@@ -56,83 +56,27 @@ agent-sh --api-key "$KEY" --base-url http://localhost:11434/v1 --model llama3
 # See examples/extensions/ for setup instructions
 ```
 
-Requires Node.js 18+. See the [Usage Guide](docs/usage.md) for provider examples, model configuration, and environment variables.
-
-### Provider Examples
-
-```bash
-# OpenAI
-OPENAI_API_KEY="sk-..." agent-sh --model gpt-4o
-
-# Ollama (local, no API key)
-agent-sh --api-key dummy --base-url http://localhost:11434/v1 --model llama3
-
-# OpenRouter
-agent-sh --api-key "$OPENROUTER_KEY" --base-url https://openrouter.ai/api/v1 --model anthropic/claude-sonnet-4-20250514
-
-# Together AI
-agent-sh --api-key "$TOGETHER_KEY" --base-url https://api.together.xyz/v1 --model meta-llama/Llama-3-70b-chat-hf
-
-# LM Studio
-agent-sh --api-key dummy --base-url http://localhost:1234/v1 --model local-model
-```
+Requires Node.js 18+. Works with any OpenAI-compatible API — see the [Usage Guide](docs/usage.md) for provider examples (OpenAI, Ollama, OpenRouter, Together, Groq, LM Studio, vLLM).
 
 ## Input Modes
 
-agent-sh has two agent input modes, each triggered by a single character at the start of an empty line:
+agent-sh has two agent input modes, triggered by typing `?` or `>` at the start of an empty line:
 
-| Trigger | Mode | Behavior |
-|---|---|---|
-| `?` | **Query** | Agent uses its own tools (bash, file read/write, search) to investigate and answer. Stays in query mode after each response. |
-| `>` | **Execute** | Agent runs a command in your live shell via `user_shell`. Your aliases, env vars, and cwd apply. Returns to shell after execution. |
+- **`?` Query mode** — Agent uses its own tools (bash, file read/write, search) to investigate and answer. Stays in query mode for follow-ups.
+- **`>` Execute mode** — Agent runs a command in your live shell. Your aliases, env vars, and cwd apply. Returns to shell after.
 
-Regular shell input works as before — commands go straight to the PTY:
-
-| Input | Behavior |
-|---|---|
-| `ls -la` | Runs in real shell (PTY), output displayed normally |
-| `cd src && make` | Real shell — cd, env, aliases all just work |
-| `vim file.ts` | Opens vim in the same PTY, no hacks needed |
-| `? refactor this fn` | Query mode — agent investigates and responds |
-| `> restart the server` | Execute mode — agent runs it in your live shell |
-| `? /help` | Shows available slash commands (works in either mode) |
-| `Ctrl-C` | Standard signal to shell, or cancels active agent response |
-| `Ctrl-O` | Expand/collapse truncated diff preview |
-| `Ctrl-T` | Toggle thinking/reasoning text display |
-| `Shift-Tab` | Cycle agent mode (model switching, thinking levels) |
-| `Escape` | Exit agent input mode |
-
-Modes are extensible — extensions can register new modes via the `input-mode:register` event (see [Extensions](docs/extensions.md#custom-input-modes)).
-
-### Agent Input Keybindings
-
-When typing in either agent mode (`?` or `>`), full readline-style keybindings are available:
-
-| Key | Action |
-|---|---|
-| `↑` / `↓` | Browse query history (persisted across sessions) |
-| `Shift-Enter` | Insert newline (multiline input) |
-| `Shift-Tab` | Cycle agent mode |
-| `Ctrl-D` | Exit agent input mode (on empty line) |
-| `Ctrl-A` / `Home` | Move to start of line |
-| `Ctrl-E` / `End` | Move to end of line |
-| `Ctrl-B` / `←` | Move back one character |
-| `Ctrl-F` / `→` | Move forward one character |
-| `Option-B` / `Option-←` | Move back one word |
-| `Option-F` / `Option-→` | Move forward one word |
-| `Ctrl-U` | Delete to start of line |
-| `Ctrl-K` | Delete to end of line |
-| `Ctrl-W` / `Option-Backspace` | Delete word backward |
-| `Option-D` | Delete word forward |
+Everything else works as a normal shell — commands go straight to the PTY. `Ctrl-C` cancels an active agent response, `Ctrl-O` expands truncated diffs, `Shift-Tab` cycles models. Modes are extensible — see [Extensions: Custom Input Modes](docs/extensions.md#custom-input-modes).
 
 ### Slash Commands
+
+Type these in either agent mode:
 
 | Command | Description |
 |---|---|
 | `/help` | Show available commands |
 | `/clear` | Start a new agent session |
 | `/copy` | Copy last agent response to clipboard |
-| `/compact` | Ask agent to summarize the conversation |
+| `/compact` | Summarize the conversation to free context |
 | `/model` | Cycle to the next model (same as Shift+Tab) |
 | `/provider <name>` | Switch to a different provider |
 | `/backend [name]` | List backends, or switch to a named backend |
