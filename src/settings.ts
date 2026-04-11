@@ -69,7 +69,7 @@ const DEFAULTS: Required<Settings> = {
   historySize: 500,
   providers: {},
   defaultProvider: undefined as any,
-  defaultBackend: undefined as any,
+  defaultBackend: "agent-sh",
   contextWindowSize: 20,
   contextBudget: 16384,
   shellTruncateThreshold: 10,
