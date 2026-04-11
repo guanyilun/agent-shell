@@ -178,6 +178,43 @@ export class AgentLoop implements AgentBackend {
     return msg.includes("context") || msg.includes("token") || msg.includes("too long");
   }
 
+  /** Check if an error is retryable (transient). */
+  private isRetryable(e: unknown): boolean {
+    if (!(e instanceof Error)) return false;
+    const msg = e.message.toLowerCase();
+
+    // Network errors
+    if (msg.includes("econnreset") || msg.includes("econnrefused") ||
+        msg.includes("etimedout") || msg.includes("fetch failed") ||
+        msg.includes("network") || msg.includes("socket hang up")) {
+      return true;
+    }
+
+    // HTTP status-based (OpenAI SDK includes status in error)
+    const status = (e as any).status;
+    if (status === 429 || status === 500 || status === 502 || status === 503 || status === 529) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /** Extract retry delay from error headers or use exponential backoff. */
+  private getRetryDelay(e: unknown, attempt: number): number {
+    // Check for Retry-After header (OpenAI SDK exposes headers)
+    const headers = (e as any).headers;
+    if (headers) {
+      const retryAfter = headers["retry-after"] ?? headers.get?.("retry-after");
+      if (retryAfter) {
+        const seconds = parseInt(retryAfter, 10);
+        if (!isNaN(seconds)) return seconds * 1000;
+      }
+    }
+
+    // Exponential backoff: 1s, 2s, 4s, 8s, capped at 30s
+    return Math.min(1000 * Math.pow(2, attempt), 30_000);
+  }
+
   private registerCoreTools(): void {
     const getCwd = () => this.contextManager.getCwd();
     const getEnv = () => {
@@ -278,19 +315,8 @@ export class AgentLoop implements AgentBackend {
         this.contextManager,
       );
 
-      // Stream LLM response (retry once on context overflow)
-      let result: Awaited<ReturnType<typeof this.streamResponse>>;
-      try {
-        result = await this.streamResponse(systemPrompt, signal);
-      } catch (e) {
-        if (this.isContextOverflow(e)) {
-          this.conversation.compact(6);
-          this.bus.emit("ui:info", { message: "(context overflow — compacted and retrying)" });
-          result = await this.streamResponse(systemPrompt, signal);
-        } else {
-          throw e;
-        }
-      }
+      // Stream LLM response with retry
+      const result = await this.streamWithRetry(systemPrompt, signal);
 
       const { text, toolCalls, assistantContent, assistantToolCalls } = result;
 
@@ -403,6 +429,54 @@ export class AgentLoop implements AgentBackend {
     }
 
     return fullResponseText;
+  }
+
+  private readonly maxRetries = 3;
+
+  /**
+   * Stream with retry logic. Handles:
+   *   - Context overflow → compact and retry
+   *   - Rate limits (429) → backoff with Retry-After
+   *   - Transient errors (500/502/503, network) → exponential backoff
+   */
+  private async streamWithRetry(
+    systemPrompt: string,
+    signal: AbortSignal,
+  ): ReturnType<typeof this.streamResponse> {
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      try {
+        return await this.streamResponse(systemPrompt, signal);
+      } catch (e) {
+        if (signal.aborted) throw e;
+
+        // Context overflow — compact and retry (no backoff needed)
+        if (this.isContextOverflow(e)) {
+          this.conversation.compact(6);
+          this.bus.emit("ui:info", { message: "(context overflow — compacted, retrying)" });
+          continue;
+        }
+
+        // Retryable transient error — backoff
+        if (this.isRetryable(e) && attempt < this.maxRetries) {
+          const delay = this.getRetryDelay(e, attempt);
+          const status = (e as any).status;
+          const reason = status === 429 ? "rate limited" : `error ${status ?? "network"}`;
+          this.bus.emit("ui:info", {
+            message: `(${reason}, retrying in ${Math.ceil(delay / 1000)}s — attempt ${attempt + 2}/${this.maxRetries + 1})`,
+          });
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, delay);
+            signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true });
+          });
+          continue;
+        }
+
+        // Non-retryable or exhausted retries
+        throw e;
+      }
+    }
+    // Should not reach here, but TypeScript needs it
+    throw new Error("Retry loop exhausted");
   }
 
   /**
