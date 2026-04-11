@@ -33,7 +33,7 @@ export type { ShellEvents } from "./event-bus.js";
 export type { AgentShellConfig, ExtensionContext } from "./types.js";
 export { palette, setPalette, resetPalette } from "./utils/palette.js";
 export type { ColorPalette } from "./utils/palette.js";
-export type { AgentBackend } from "./agent/types.js";
+export type { AgentBackend, ToolDefinition } from "./agent/types.js";
 export { LlmClient } from "./utils/llm-client.js";
 
 export interface AgentShellCore {
@@ -304,6 +304,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
         createFencedBlockTransform: (o) =>
           streamTransform.createFencedBlockTransform(bus, o),
         getExtensionSettings: settingsMod.getExtensionSettings,
+        registerTool: (tool) => agentLoop?.registerTool(tool),
         define: (name, fn) => handlers.define(name, fn),
         advise: (name, wrapper) => handlers.advise(name, wrapper),
         call: (name, ...args) => handlers.call(name, ...args),

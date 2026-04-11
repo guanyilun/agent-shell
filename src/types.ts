@@ -3,6 +3,7 @@ import type { ContextManager } from "./context-manager.js";
 import type { LlmClient } from "./utils/llm-client.js";
 import type { ColorPalette } from "./utils/palette.js";
 import type { BlockTransformOptions, FencedBlockTransformOptions } from "./utils/stream-transform.js";
+import type { ToolDefinition } from "./agent/types.js";
 
 export type { ContentBlock } from "./event-bus.js";
 export type { BlockTransformOptions, FencedBlockTransformOptions } from "./utils/stream-transform.js";
@@ -52,6 +53,10 @@ export interface ExtensionContext {
   createFencedBlockTransform: (opts: FencedBlockTransformOptions) => void;
   /** Read extension-namespaced settings from ~/.agent-sh/settings.json. */
   getExtensionSettings: <T extends Record<string, unknown>>(namespace: string, defaults: T) => T;
+
+  // ── Tool registration (agent-sh backend only) ─────────────
+  /** Register a tool for the built-in agent. No-op when using bridge backends. */
+  registerTool: (tool: ToolDefinition) => void;
 
   // ── Named handler registry (Emacs-style advice) ───────────
   /** Register a named handler. */
