@@ -444,7 +444,7 @@ export class InputHandler {
             const name = spaceIdx === -1 ? query : query.slice(0, spaceIdx);
             const args = spaceIdx === -1 ? "" : query.slice(spaceIdx + 1).trim();
             this.bus.emit("command:execute", { name, args });
-            this.ctx.redrawPrompt();
+            this.ctx.freshPrompt();
           } else if (query) {
             this.pendingReturnMode = currentMode.returnToSelf ? currentMode.id : null;
             currentMode.onSubmit(query, this.bus);
