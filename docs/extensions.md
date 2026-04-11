@@ -236,9 +236,86 @@ A backend listens for input events and emits output events. The TUI and all exte
 | `agent:error` | `{ message }` | Error during processing |
 | `agent:usage` | `{ prompt_tokens, completion_tokens, total_tokens }` | Token usage stats |
 
+### Switching backends at runtime
+
+Multiple backends can be registered at the same time. Use the `/backend` command to list and switch between them:
+
+```
+/backend              # list all registered backends (active one marked)
+/backend claude-code  # switch to the claude-code backend
+/backend agent-sh     # switch back to the built-in backend
+```
+
+Switching deactivates the current backend (`kill()`) and activates the new one (`start()`). The built-in backend is always available as `"agent-sh"`.
+
+### Default backend
+
+By default, the built-in AgentLoop (`"agent-sh"`) activates. To make an extension backend the default, set `defaultBackend` in `~/.agent-sh/settings.json`:
+
+```json
+{
+  "extensions": ["./my-bridge.ts"],
+  "defaultBackend": "claude-code"
+}
+```
+
+On startup, `activateBackend()` checks this setting and activates the named backend if it was registered. If the named backend isn't found (e.g. the extension failed to load), it falls back to any registered backend, then to the built-in AgentLoop.
+
 ### Registration timing
 
-Extensions load *before* `activateBackend()` runs. When `activateBackend()` sees that an extension registered a backend, it calls the extension's `start?.()` (if provided) and skips the built-in AgentLoop entirely. This means your extension has full control — the default backend never wires up.
+Extensions load *before* `activateBackend()` runs. This is what makes `defaultBackend` work — by the time the core decides which backend to activate, all extensions have already registered theirs.
+
+### Real-world bridges
+
+The echo-backend shows the protocol. The `examples/extensions/` directory has two production bridges that wire real agent SDKs into agent-sh. They follow the same pattern — the difference is just which SDK they translate.
+
+#### Claude Code Bridge (`claude-code-bridge.ts`)
+
+Runs the [Claude Code Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) in-process. Claude Code handles model selection, tool execution, and permissions — agent-sh provides the shell and TUI.
+
+```bash
+npm install @anthropic-ai/claude-agent-sdk
+agent-sh -e examples/extensions/claude-code-bridge.ts
+# Requires: Claude Code CLI installed and authenticated (claude login)
+```
+
+**How it works:**
+
+1. **Registers as backend** via `agent:register-backend`
+2. **Creates a `user_shell` MCP tool** using the SDK's `tool()` + `createSdkMcpServer()`, wired to `bus.emitPipeAsync("shell:exec-request", ...)`. This gives Claude Code access to the live PTY.
+3. **On each `agent:submit`**, calls the SDK's `query()` with the user's prompt, a system prompt preset, and the MCP server attached
+4. **Iterates the SDK's async iterator** — maps `stream_event` (text/thinking deltas) and `assistant` messages (tool use blocks) to agent-sh events (`agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-started`)
+
+#### Pi Bridge (`pi-bridge.ts`)
+
+Runs [pi's coding agent](https://github.com/nickarrow/pi) in-process. Pi brings its own model registry, provider settings, session management, and tools.
+
+```bash
+npm install @mariozechner/pi-agent-core @mariozechner/pi-ai @mariozechner/pi-coding-agent
+agent-sh -e examples/extensions/pi-bridge.ts
+```
+
+**How it works:**
+
+1. **Registers as backend** with an async `start()` — pi needs to boot (load config from `~/.pi/`, create services, initialize tools)
+2. **Creates a `user_shell` tool** using pi's `ToolDefinition` interface (TypeBox schema). Includes `promptGuidelines` — pi's way of injecting per-tool instructions into the system prompt.
+3. **Subscribes to pi's event stream** (`session.subscribe`) — maps pi events to agent-sh events:
+   - `message_update` → `agent:response-chunk` or `agent:thinking-chunk`
+   - `tool_execution_start/update/end` → `agent:tool-started`, `agent:tool-output-chunk`, `agent:tool-completed`
+   - `agent_end` → `agent:response-done` + `agent:processing-done`
+4. **Session management** — `agent:reset-session` creates a new pi session via `runtime.newSession()`
+
+#### Writing your own bridge
+
+Both bridges follow the same 5-step structure:
+
+1. **Register as backend** — emit `agent:register-backend` with `name`, `start()`, `kill()`
+2. **Create a `user_shell` tool** in the target SDK's format — wire it to `bus.emitPipeAsync("shell:exec-request", ...)` so the external agent can run commands in the live PTY
+3. **Listen for `agent:submit`** — forward the query to the external agent
+4. **Map the agent's events** to agent-sh bus events (response chunks, tool starts/completions, thinking, errors)
+5. **Handle cancellation and reset** — wire `agent:cancel-request` and `agent:reset-session`
+
+The difference between the two bridges is just SDK shape: Claude Code uses an async iterator you `for await` over; pi uses a subscription callback. The translation layer is the same.
 
 ## Named Handlers (Advice System)
 
