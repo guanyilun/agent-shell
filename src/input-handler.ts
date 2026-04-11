@@ -5,6 +5,7 @@ import { palette as p } from "./utils/palette.js";
 import { LineEditor } from "./utils/line-editor.js";
 import { CONFIG_DIR, getSettings } from "./settings.js";
 import type { EventBus } from "./event-bus.js";
+import type { InputModeConfig } from "./types.js";
 
 const HISTORY_FILE = path.join(CONFIG_DIR, "history");
 
@@ -26,7 +27,10 @@ export interface InputContext {
 export class InputHandler {
   private ctx: InputContext;
   private lineBuffer = "";
-  private agentInputMode = false;
+  private activeMode: InputModeConfig | null = null;
+  private pendingReturnMode: string | null = null; // mode id to return to after processing
+  private modes = new Map<string, InputModeConfig>(); // keyed by trigger char
+  private modesById = new Map<string, InputModeConfig>(); // keyed by id
   private editor = new LineEditor();
   private autocompleteActive = false;
   private autocompleteIndex = 0;
@@ -52,8 +56,24 @@ export class InputHandler {
 
     // Re-render prompt when config changes (e.g. thinking level cycled)
     this.bus.on("config:changed", () => {
-      if (this.agentInputMode) this.writeAgentPromptLine();
+      if (this.activeMode) this.writeModePromptLine();
     });
+
+    // Listen for mode registrations from extensions
+    this.bus.on("input-mode:register", (config) => {
+      this.registerMode(config);
+    });
+  }
+
+  private registerMode(config: InputModeConfig): void {
+    if (this.modes.has(config.trigger)) {
+      this.bus.emit("ui:error", {
+        message: `Input mode "${config.id}" cannot register trigger "${config.trigger}" — already taken by "${this.modes.get(config.trigger)!.id}"`,
+      });
+      return;
+    }
+    this.modes.set(config.trigger, config);
+    this.modesById.set(config.id, config);
   }
 
   private loadHistory(): void {
@@ -76,8 +96,8 @@ export class InputHandler {
     }
   }
 
-  /** Write the agent prompt line with cursor at the correct position. */
-  private writeAgentPromptLine(showBuffer = true): void {
+  /** Write the mode prompt line with cursor at the correct position. */
+  private writeModePromptLine(showBuffer = true): void {
     const termW = process.stdout.columns || 80;
 
     // Move cursor to the start of the prompt area (first line of wrapped content)
@@ -88,9 +108,13 @@ export class InputHandler {
     process.stdout.write("\r\x1b[J");
 
     const agentInfo = this.onShowAgentInfo();
-    const infoPrefix = agentInfo.info ? `${agentInfo.info} ` : "";
-    const promptPrefix = infoPrefix + p.warning + p.bold + "❯ " + p.reset;
-    const promptVisLen = visibleLen(infoPrefix) + 2; // "❯ "
+    const indicator = this.activeMode?.indicator ?? "●";
+    const infoPrefix = agentInfo.info
+      ? `${agentInfo.info} ${p.success}${indicator}${p.reset} `
+      : `${p.success}${indicator}${p.reset} `;
+    const icon = this.activeMode?.promptIcon ?? "❯";
+    const promptPrefix = infoPrefix + p.warning + p.bold + icon + " " + p.reset;
+    const promptVisLen = visibleLen(infoPrefix) + visibleLen(icon) + 1; // icon + space
 
     if (!showBuffer || !this.editor.buffer.includes("\n")) {
       // Single-line: simple rendering
@@ -159,7 +183,7 @@ export class InputHandler {
     }
 
     // Intercept control chars for TUI (Ctrl+T, Ctrl+O) — don't pass to PTY
-    if (data.length === 1 && data.charCodeAt(0) < 32 && !this.agentInputMode) {
+    if (data.length === 1 && data.charCodeAt(0) < 32 && !this.activeMode) {
       const code = data.charCodeAt(0);
       // Keys consumed by TUI extensions
       if (code === 0x14 || code === 0x0f) { // Ctrl+T, Ctrl+O
@@ -172,9 +196,9 @@ export class InputHandler {
       }
     }
 
-    // If in agent input mode (typing a query after ">")
-    if (this.agentInputMode) {
-      this.handleAgentInput(data);
+    // If in an input mode (typing a query)
+    if (this.activeMode) {
+      this.handleModeInput(data);
       return;
     }
 
@@ -201,10 +225,11 @@ export class InputHandler {
         this.lineBuffer = "";
         this.ctx.writeToPty(ch);
       } else {
-        // Check if ">" at start of empty line → enter agent input mode
+        // Check if trigger char at start of empty line → enter that mode
         // But not if a foreground process (ssh, vim, etc.) is running
-        if (this.lineBuffer === "" && ch === ">" && !this.ctx.isForegroundBusy()) {
-          this.enterAgentInputMode();
+        const mode = this.modes.get(ch);
+        if (this.lineBuffer === "" && mode && !this.ctx.isForegroundBusy()) {
+          this.enterMode(mode);
           return; // don't process remaining chars
         }
         this.lineBuffer += ch;
@@ -213,18 +238,18 @@ export class InputHandler {
     }
   }
 
-  private enterAgentInputMode(): void {
-    this.agentInputMode = true;
+  private enterMode(mode: InputModeConfig): void {
+    this.activeMode = mode;
     this.editor.clear();
     // Enable kitty keyboard protocol (progressive enhancement flag 1)
     // so Shift+Enter sends \x1b[13;2u instead of plain \r
     process.stdout.write("\x1b[>1u");
-    this.writeAgentPromptLine(false);
+    this.writeModePromptLine(false);
   }
 
-  private exitAgentInputMode(): void {
+  private exitMode(): void {
     this.dismissAutocomplete();
-    this.agentInputMode = false;
+    this.activeMode = null;
     this.editor.clear();
     // Disable kitty keyboard protocol
     process.stdout.write("\x1b[<u");
@@ -245,9 +270,25 @@ export class InputHandler {
     this.ctx.redrawPrompt();
   }
 
-  private renderAgentInput(): void {
+  /**
+   * Called when agent processing completes. Returns true if the input
+   * handler re-entered a mode (so caller should skip shell prompt).
+   */
+  handleProcessingDone(): boolean {
+    if (this.pendingReturnMode) {
+      const mode = this.modesById.get(this.pendingReturnMode);
+      this.pendingReturnMode = null;
+      if (mode) {
+        this.enterMode(mode);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private renderModeInput(): void {
     this.clearAutocompleteLines();
-    this.writeAgentPromptLine();
+    this.writeModePromptLine();
     this.updateAutocomplete();
   }
 
@@ -294,7 +335,8 @@ export class InputHandler {
     }
     const agentInfo = this.onShowAgentInfo();
     const infoLength = visibleLen(agentInfo.info);
-    const col = infoLength + 2 + this.editor.cursor;
+    const icon = this.activeMode?.promptIcon ?? "❯";
+    const col = infoLength + visibleLen(icon) + 1 + this.editor.cursor;
     process.stdout.write(`\r\x1b[${col}C`);
   }
 
@@ -322,7 +364,7 @@ export class InputHandler {
     this.autocompleteItems = [];
     this.autocompleteIndex = 0;
 
-    this.writeAgentPromptLine();
+    this.writeModePromptLine();
     if (isFileAc) this.updateAutocomplete();
   }
 
@@ -344,7 +386,7 @@ export class InputHandler {
     this.autocompleteLines = 0;
   }
 
-  private handleAgentInput(data: string): void {
+  private handleModeInput(data: string): void {
     // Clear any pending escape timer — new data arrived
     if (this.escapeTimer) {
       clearTimeout(this.escapeTimer);
@@ -359,21 +401,21 @@ export class InputHandler {
       this.escapeTimer = setTimeout(() => {
         this.escapeTimer = null;
         const flushed = this.editor.flushPendingEscape();
-        if (flushed.length > 0) this.processAgentActions(flushed);
+        if (flushed.length > 0) this.processModeActions(flushed);
       }, 50);
     }
 
-    this.processAgentActions(actions);
+    this.processModeActions(actions);
   }
 
-  private processAgentActions(actions: ReturnType<typeof this.editor.feed>): void {
+  private processModeActions(actions: ReturnType<typeof this.editor.feed>): void {
 
     for (const act of actions) {
       switch (act.action) {
         case "changed":
           this.historyIndex = -1;
           this.autocompleteIndex = 0;
-          this.renderAgentInput();
+          this.renderModeInput();
           break;
 
         case "submit": {
@@ -393,7 +435,8 @@ export class InputHandler {
           this.clearAutocompleteLines();
           this.clearPromptArea();
           process.stdout.write("\x1b[<u"); // disable kitty keyboard protocol
-          this.agentInputMode = false;
+          const currentMode = this.activeMode!;
+          this.activeMode = null;
           this.editor.clear();
           this.dismissAutocomplete();
           if (query && query.startsWith("/")) {
@@ -403,9 +446,10 @@ export class InputHandler {
             this.bus.emit("command:execute", { name, args });
             this.ctx.redrawPrompt();
           } else if (query) {
-            this.bus.emit("agent:submit", { query });
+            this.pendingReturnMode = currentMode.returnToSelf ? currentMode.id : null;
+            currentMode.onSubmit(query, this.bus);
           } else {
-            this.exitAgentInputMode();
+            this.exitMode();
           }
           return;
         }
@@ -413,15 +457,15 @@ export class InputHandler {
         case "cancel":
           if (this.autocompleteActive) {
             this.dismissAutocomplete();
-            this.writeAgentPromptLine();
+            this.writeModePromptLine();
           } else {
-            this.exitAgentInputMode();
+            this.exitMode();
           }
           return;
 
         case "delete-empty":
           this.dismissAutocomplete();
-          this.exitAgentInputMode();
+          this.exitMode();
           return;
 
         case "tab":
@@ -441,7 +485,7 @@ export class InputHandler {
                 ? this.autocompleteItems.length - 1
                 : this.autocompleteIndex - 1;
             this.clearAutocompleteLines();
-            this.writeAgentPromptLine();
+            this.writeModePromptLine();
             this.renderAutocomplete();
           } else if (this.history.length > 0) {
             if (this.historyIndex === -1) {
@@ -452,7 +496,7 @@ export class InputHandler {
             }
             this.editor.buffer = this.history[this.historyIndex]!;
             this.editor.cursor = this.editor.buffer.length;
-            this.renderAgentInput();
+            this.renderModeInput();
           }
           break;
 
@@ -463,7 +507,7 @@ export class InputHandler {
                 ? 0
                 : this.autocompleteIndex + 1;
             this.clearAutocompleteLines();
-            this.writeAgentPromptLine();
+            this.writeModePromptLine();
             this.renderAutocomplete();
           } else if (this.historyIndex !== -1) {
             if (this.historyIndex < this.history.length - 1) {
@@ -474,7 +518,7 @@ export class InputHandler {
               this.editor.buffer = this.savedBuffer;
             }
             this.editor.cursor = this.editor.buffer.length;
-            this.renderAgentInput();
+            this.renderModeInput();
           }
           break;
       }

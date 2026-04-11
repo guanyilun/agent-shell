@@ -54,7 +54,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
 
   // Route frontend events to the agent — any frontend (Shell, WebSocket,
   // REST handler, test harness) can emit these without knowing about AcpClient.
-  bus.on("agent:submit", ({ query }) => {
+  bus.on("agent:submit", ({ query, modeInstruction, modeLabel }) => {
     (async () => {
       // Wait briefly for agent connection if start() is still in progress
       if (!connected) {
@@ -66,7 +66,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
         bus.emit("ui:error", { message: "Agent not connected. Please wait a moment and try again." });
         return;
       }
-      await client.sendPrompt(query);
+      await client.sendPrompt(query, { modeInstruction, modeLabel });
     })().catch((err) => {
       bus.emit("agent:error", {
         message: err instanceof Error ? err.message : String(err),

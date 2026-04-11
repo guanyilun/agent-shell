@@ -172,6 +172,10 @@ export class LineEditor {
     "ctrl+u":        () => this.deleteRange(0, this.cursor),
     "ctrl+k":        () => this.deleteRange(this.cursor, this.buffer.length),
     "ctrl+w":        () => this.deleteWordBackward() ? { action: "changed" } : null,
+    "alt+f":         () => this.wordForward() ? { action: "changed" } : null,
+    "alt+b":         () => this.wordBackward() ? { action: "changed" } : null,
+    "alt+d":         () => this.deleteWordForward() ? { action: "changed" } : null,
+    "alt+backspace": () => this.deleteWordBackward() ? { action: "changed" } : null,
     "shift+enter":   () => this.insertAt("\n"),
     "shift+tab":     () => ({ action: "shift+tab" as const }),
   };

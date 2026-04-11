@@ -129,7 +129,7 @@ export default function activate(ctx: ExtensionContext): void {
 
   bus.on("agent:query", (e) => {
     s.spinnerStartTime = 0;
-    showUserQuery(e.query);
+    showUserQuery(e.query, e.modeLabel);
     startAgentResponse();
     startThinkingSpinner();
   });
@@ -296,7 +296,7 @@ export default function activate(ctx: ExtensionContext): void {
     }
   }
 
-  function showUserQuery(query: string): void {
+  function showUserQuery(query: string, modeLabel?: string): void {
     const boxW = Math.min(84, writer.columns);
     const contentW = boxW - 4;
 
@@ -316,11 +316,18 @@ export default function activate(ctx: ExtensionContext): void {
       }
     }
 
+    // Mode-specific border color and title
+    const isExecute = modeLabel === "Execute";
+    const borderColor = isExecute ? p.success : p.accent;
+    const title = modeLabel
+      ? `${borderColor}${p.bold} ${modeLabel} ${p.reset}`
+      : `${p.accent}${p.bold}❯${p.reset}`;
+
     const framed = renderBoxFrame(lines, {
       width: boxW,
       style: "rounded",
-      borderColor: p.accent,
-      title: `${p.accent}${p.bold}❯${p.reset}`,
+      borderColor,
+      title,
     });
     writer.write("\n");
     for (const line of framed) {
@@ -661,7 +668,15 @@ export default function activate(ctx: ExtensionContext): void {
 
     if (s.spinner) {
       stopCurrentSpinner();
-      startThinkingSpinner();
+      if (s.showThinkingText) {
+        // Expanding: replace spinner with thinking text header
+        if (!s.renderer) startAgentResponse();
+        s.renderer!.writeLine(`${p.dim}Thinking (ctrl+t to collapse)${p.reset}`);
+        drain();
+      } else {
+        // Collapsing: restart spinner with updated hint
+        startThinkingSpinner();
+      }
       return;
     }
 

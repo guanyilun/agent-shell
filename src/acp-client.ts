@@ -165,7 +165,31 @@ export class AcpClient {
   /**
    * Send a user query to the agent.
    */
-  async sendPrompt(query: string): Promise<void> {
+  private firstPromptSent = false;
+
+  private static readonly SESSION_ORIENTATION = [
+    "You are running inside agent-sh, a terminal wrapper that gives the user two interaction modes:",
+    "",
+    "QUERY mode (triggered by '?'): The user is asking questions or requesting tasks.",
+    "Use your internal tools (bash, file operations, etc.) to accomplish tasks.",
+    "Do NOT use user_shell in this mode.",
+    "",
+    "EXECUTE mode (triggered by '>'): The user wants a command run in their live shell session.",
+    "Translate the request into shell command(s) and run them using user_shell,",
+    "which executes in the user's actual shell (with their aliases, env vars, and cwd).",
+    "Do NOT use your internal bash tool in this mode — always use user_shell.",
+    "Do not explain or ask for confirmation — just run it.",
+    "",
+    "Each prompt includes a per-query mode instruction — follow it.",
+    "",
+    "Available tools:",
+    "- user_shell: Runs commands in the user's live shell session (their PTY). Use in EXECUTE mode.",
+    "- shell_recall: Retrieves recent shell command history and output from the user's session.",
+    "  Use this to understand what the user has been doing before answering questions.",
+    "- Your standard tools (bash, file read/write, etc.): Use in AGENT mode.",
+  ].join("\n");
+
+  async sendPrompt(query: string, opts?: { modeInstruction?: string; modeLabel?: string }): Promise<void> {
     if (!this.connection || !this.sessionId) {
       this.bus.emit("agent:error", { message: "Not connected to agent" });
       return;
@@ -180,21 +204,27 @@ export class AcpClient {
     let cancelled = false;
 
     // Emit agent query event (TUI renders echo+spinner, ContextManager records it)
-    this.bus.emit("agent:query", { query });
+    this.bus.emit("agent:query", { query, modeLabel: opts?.modeLabel });
 
     // Build structured context from ContextManager
     const contextBlock = this.contextManager.getContext();
 
     try {
       this.log("sending prompt...");
+      const promptContent: { type: "text"; text: string }[] = [];
+      // Send session orientation on first prompt
+      if (!this.firstPromptSent) {
+        promptContent.push({ type: "text", text: AcpClient.SESSION_ORIENTATION });
+        this.firstPromptSent = true;
+      }
+      if (opts?.modeInstruction) {
+        promptContent.push({ type: "text", text: opts.modeInstruction });
+      }
+      promptContent.push({ type: "text", text: contextBlock + "\n" + query });
+
       const response = await this.connection.prompt({
         sessionId: this.sessionId,
-        prompt: [
-          {
-            type: "text",
-            text: contextBlock + "\n" + query,
-          },
-        ],
+        prompt: promptContent,
       });
 
       this.log(`prompt resolved: stopReason=${response.stopReason}`);
@@ -282,6 +312,7 @@ export class AcpClient {
     this.sessionId = sessionResponse.sessionId;
     this.lastResponseText = "";
     this.currentResponseText = "";
+    this.firstPromptSent = false;
     this.updateModes(sessionResponse);
   }
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
+import * as path from "node:path";
 import { Shell } from "./shell.js";
 import { createCore } from "./core.js";
 import { palette as p } from "./utils/palette.js";
@@ -12,16 +13,24 @@ import { loadExtensions } from "./extension-loader.js";
 import type { AgentShellConfig } from "./types.js";
 
 /**
- * Capture the user's full shell environment asynchronously.
+ * Capture the user's full shell environment.
  * This picks up env vars exported in .zshrc/.bashrc that the
- * Node.js process doesn't have.
+ * Node.js process doesn't have (e.g. when launched from an IDE).
  *
- * Uses -l (login shell) instead of -i to avoid TTY blocking issues.
+ * Uses -l (login shell) to get .zprofile/.bash_profile vars, then
+ * explicitly sources the interactive rc file (.zshrc/.bashrc) which
+ * -l alone doesn't load (that requires -i, which blocks on TTY).
  */
 async function captureShellEnvAsync(shell: string): Promise<Record<string, string>> {
   return new Promise((resolve) => {
     try {
-      const child = spawn(shell, ["-l", "-c", "env -0"], {
+      const shellName = path.basename(shell);
+      const isZsh = shellName.includes("zsh");
+      const sourceRc = isZsh
+        ? 'source ~/.zshrc 2>/dev/null;'
+        : '[ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null;';
+
+      const child = spawn(shell, ["-l", "-c", `${sourceRc} env -0`], {
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 5000,
       });
@@ -163,7 +172,7 @@ function formatAgentInfo(
     const label = thoughtLevel.replace(/^Thinking:\s*/i, "");
     infoStr += ` ${p.dim}[${label}]${p.reset}`;
   }
-  return `${infoStr} ${p.success}●${p.reset}`;
+  return infoStr;
 }
 
 async function main(): Promise<void> {
@@ -175,30 +184,25 @@ async function main(): Promise<void> {
 
   const config = parseArgs(process.argv.slice(2));
 
-  // Start with current process environment (fast, non-blocking)
-  // We'll enrich it with shell env asynchronously in the background
+  // Capture user's full shell environment (from .zshrc/.bashrc etc.)
+  // This must complete before spawning the agent so it sees all env vars.
   const baseEnv: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined) baseEnv[k] = v;
   }
   config.shellEnv = baseEnv;
 
-  // Asynchronously capture full shell environment without blocking startup
   const shellPath = config.shell || process.env.SHELL || "/bin/bash";
-  captureShellEnvAsync(shellPath).then((shellEnv) => {
+  try {
+    const shellEnv = await captureShellEnvAsync(shellPath);
     if (Object.keys(shellEnv).length > 0) {
-      const merged = mergeShellEnv(config.shellEnv!, shellEnv);
-      config.shellEnv = merged;
+      config.shellEnv = mergeShellEnv(config.shellEnv, shellEnv);
       if (process.env.DEBUG) {
-        console.error('[agent-sh] Shell environment enriched asynchronously');
+        console.error('[agent-sh] Shell environment captured');
       }
     }
-  }).catch(() => {
+  } catch {
     // Ignore errors, we already have process.env as fallback
-  });
-
-  if (process.env.DEBUG) {
-    console.error('[agent-sh] Using current process environment (async enrichment pending)');
   }
 
   // ── Core (frontend-agnostic) ──────────────────────────────────
@@ -252,6 +256,31 @@ async function main(): Promise<void> {
   if (process.env.DEBUG) {
     console.error('[agent-sh] Shell created');
   }
+
+  // ── Input modes ──────────────────────────────────────────────
+  bus.emit("input-mode:register", {
+    id: "query",
+    trigger: "?",
+    label: "query",
+    promptIcon: "❯",
+    indicator: "❓",
+    onSubmit(query, b) {
+      b.emit("agent:submit", { query, modeLabel: "Query", modeInstruction: "[mode: query]" });
+    },
+    returnToSelf: true,
+  });
+
+  bus.emit("input-mode:register", {
+    id: "execute",
+    trigger: ">",
+    label: "execute",
+    promptIcon: "⟩",
+    indicator: "●",
+    onSubmit(query, b) {
+      b.emit("agent:submit", { query, modeLabel: "Execute", modeInstruction: "[mode: execute]" });
+    },
+    returnToSelf: false,
+  });
 
   // ── Extensions ────────────────────────────────────────────────
   if (process.env.DEBUG) {

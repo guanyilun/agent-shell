@@ -48,6 +48,20 @@ export interface ExtensionContext {
   call: (name: string, ...args: any[]) => any;
 }
 
+/**
+ * Configuration for a registered input mode.
+ * Extensions emit "input-mode:register" with this shape to add new modes.
+ */
+export interface InputModeConfig {
+  id: string;              // unique identifier, e.g. "agent", "translate"
+  trigger: string;         // single char trigger at empty line start: "?", ">"
+  label: string;           // human-readable label shown in prompt
+  promptIcon: string;      // the chevron/icon character, e.g. "❯", "⟩"
+  indicator: string;       // status indicator shown before the icon, e.g. "❓", "●"
+  onSubmit(query: string, bus: EventBus): void;
+  returnToSelf: boolean;   // re-enter this mode after agent processing?
+}
+
 export interface TerminalSession {
   id: string;
   command: string;

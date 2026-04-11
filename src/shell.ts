@@ -267,7 +267,9 @@ export class Shell implements InputContext {
       this.paused = false;
       this.agentActive = false;
       this.echoSkip = true;
-      this.freshPrompt();
+      if (!this.inputHandler.handleProcessingDone()) {
+        this.freshPrompt();
+      }
     });
 
     // Permission prompts need stdout unpaused so the interactive UI renders,

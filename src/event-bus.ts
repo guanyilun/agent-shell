@@ -18,11 +18,14 @@ export interface ShellEvents {
   "shell:agent-exec-done": Record<string, never>;
 
   // Agent input (frontend → core: user submitted a query or wants to cancel)
-  "agent:submit": { query: string };
+  "agent:submit": { query: string; modeInstruction?: string; modeLabel?: string };
   "agent:cancel-request": Record<string, never>;
 
+  // Input mode registration (extensions → InputHandler)
+  "input-mode:register": import("./types.js").InputModeConfig;
+
   // Agent interaction
-  "agent:query": { query: string };
+  "agent:query": { query: string; modeLabel?: string };
   "agent:thinking-chunk": { text: string };
   "agent:response-chunk": { text: string; blocks?: ContentBlock[] };
   "agent:response-done": { response: string };
