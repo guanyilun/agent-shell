@@ -235,12 +235,9 @@ export default function activate({ bus, advise }: ExtensionContext): void {
     inputBuffer = "";
     inputCursor = 0;
 
-    // Restore screen from buffer then release
+    // Leave alternate screen — terminal restores the original screen
     restoreScreen();
     bus.emit("shell:stdout-release", {});
-
-    // Force foreground program to redraw
-    bus.emit("shell:pty-write", { data: "\x0c" });
   }
 
   // ── Input handling ────────────────────────────────────────
