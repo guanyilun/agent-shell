@@ -96,7 +96,7 @@ Additional options:
 | Key | Default | Description |
 |---|---|---|
 | `startupBanner` | `true` | Show startup banner with model info and usage hints |
-| `promptIndicator` | `true` | Show `⚡ agent-sh` badge in shell prompt |
+| `promptIndicator` | `true` | Show `⚡ agent-sh` in terminal tab/window title |
 
 Set either to `false` to disable.
 

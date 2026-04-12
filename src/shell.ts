@@ -55,6 +55,7 @@ export class Shell implements InputContext {
 
     const osc7Cmd = 'printf "\\e]7;file://%s%s\\a" "$(hostname)" "$PWD"';
     const promptMarker = 'printf "\\e]9999;PROMPT\\a"';
+    const titleCmd = 'printf "\\e]0;⚡ agent-sh: %s\\a" "${PWD/#$HOME/~}"';
 
     this.isZsh = isZsh;
     const settings = getSettings();
@@ -73,20 +74,10 @@ export class Shell implements InputContext {
         "__agent_sh_precmd() {",
         `  ${osc7Cmd}`,
         `  ${promptMarker}`,
+        ...(showIndicator ? [`  ${titleCmd}`] : []),
         "}",
         "precmd_functions+=(__agent_sh_precmd)",
       ];
-
-      if (showIndicator) {
-        zshrcLines.push(
-          "",
-          "# agent-sh prompt indicator (append to existing RPROMPT)",
-          '__agent_sh_indicator() {',
-          '  RPROMPT="${RPROMPT:+$RPROMPT }%F{6}⚡ agent-sh%f"',
-          "}",
-          "precmd_functions+=(__agent_sh_indicator)",
-        );
-      }
 
       zshrcLines.push(
         "",
@@ -126,20 +117,11 @@ export class Shell implements InputContext {
         `[ -f "${userHome}/.bashrc" ] && source "${userHome}/.bashrc"`,
         "",
         "# agent-sh hooks (invisible OSC sequences for cwd + prompt detection)",
-        `PROMPT_COMMAND="\${PROMPT_COMMAND:+\$PROMPT_COMMAND;}${osc7Cmd}; ${promptMarker}"`,
+        `PROMPT_COMMAND="\${PROMPT_COMMAND:+\$PROMPT_COMMAND;}${osc7Cmd}; ${promptMarker}${showIndicator ? `; ${titleCmd}` : ""}"`,
         "",
         "# End-of-prompt marker: append to PS1 (\\[...\\] marks it zero-width)",
         'case "$PS1" in *9998*) ;; *) PS1="${PS1}\\[\\e]9998;READY\\a\\]";; esac',
       ];
-
-      if (showIndicator) {
-        bashrcLines.push(
-          "",
-          "# agent-sh prompt indicator (subtle badge appended to PS1)",
-          '__agent_sh_ps1_suffix="\\[\\033[90m\\033[36m\\]⚡ agent-sh\\[\\033[0m\\] "',
-          'case "$PS1" in *agent-sh*) ;; *) PS1="$PS1\$__agent_sh_ps1_suffix";; esac',
-        );
-      }
 
       fs.writeFileSync(path.join(this.tmpDir, ".bashrc"), bashrcLines.join("\n") + "\n");
       shellArgs = ["--rcfile", path.join(this.tmpDir, ".bashrc")];
