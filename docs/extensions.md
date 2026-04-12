@@ -55,7 +55,7 @@ TypeScript and JavaScript are both supported (`.ts`, `.tsx`, `.mts`, `.js`, `.mj
 | `createBlockTransform` | `(opts) => void` | Register an inline delimiter transform (e.g. `$$...$$`) |
 | `createFencedBlockTransform` | `(opts) => void` | Register a fenced block transform (e.g. ` ```lang...``` `) |
 | `getExtensionSettings` | `(namespace, defaults) => T` | Read extension settings from `~/.agent-sh/settings.json` |
-| `registerTool` | `(tool: ToolDefinition) => void` | Register a tool for the built-in agent (no-op for bridge backends) |
+| `registerTool` | `(tool: ToolDefinition) => void` | Register a tool for the built-in agent (no-op for bridge backends). Tools can include optional `getDisplayInfo`, `formatCall`, and `formatResult` for TUI integration — see [Internal Agent: Tool interface](agent.md#tool-interface) |
 | `getTools` | `() => ToolDefinition[]` | Get all registered tools (for subagent tool subsets) |
 | `define` | `(name, fn) => void` | Register a named handler |
 | `advise` | `(name, wrapper) => void` | Wrap a named handler (receives `next` + args) |
@@ -228,11 +228,14 @@ A backend listens for input events and emits output events. The TUI and all exte
 | Event | Payload | When |
 |---|---|---|
 | `agent:thinking-chunk` | `{ text }` | Reasoning tokens (e.g. DeepSeek-r1) |
-| `agent:tool-started` | `{ title, toolCallId?, kind? }` | Tool execution beginning |
+| `agent:tool-batch` | `{ groups: [{ kind, tools: [{ name, displayDetail? }] }] }` | Before tool execution — all tools grouped by kind |
+| `agent:tool-started` | `{ title, toolCallId?, kind?, icon?, displayDetail?, locations?, batchIndex?, batchTotal? }` | Tool execution beginning |
 | `agent:tool-output-chunk` | `{ chunk }` | Streamed tool output |
-| `agent:tool-completed` | `{ toolCallId?, exitCode }` | Tool execution finished |
+| `agent:tool-completed` | `{ toolCallId?, exitCode, kind?, resultDisplay? }` | Tool execution finished |
 | `agent:error` | `{ message }` | Error during processing |
 | `agent:usage` | `{ prompt_tokens, completion_tokens, total_tokens }` | Token usage stats |
+
+The `agent:tool-batch` event lets the TUI prepare group headers before tools execute. `agent:tool-started` now carries display metadata (`icon`, `displayDetail` from `formatCall()`, batch position). `agent:tool-completed` includes a `resultDisplay` (from `formatResult()`) with an optional `summary` string and structured `body`.
 
 ### Switching backends at runtime
 
@@ -433,6 +436,16 @@ These are registered by the tui-renderer and let extensions customize how conten
 |---|---|---|
 | `render:code-block` | `(language: string, code: string, width: number) → void` | Render a fenced code block (default: syntax highlighting) |
 | `render:image` | `(data: Buffer) → void` | Display an image in the terminal (default: iTerm2/Kitty protocol) |
+| `render:result-body` | `(body: ToolResultBody, width: number) → string[]` | Render structured tool result body (default: diffs or line lists) |
+
+The `render:result-body` handler is called when a tool's `formatResult()` returns a structured `body`. Extensions can advise it to customize how specific result types are displayed:
+
+```typescript
+ctx.advise("render:result-body", (next, body, width) => {
+  if (body.kind === "diff") return myCustomDiffRenderer(body.diff, body.filePath, width);
+  return next(body, width);
+});
+```
 
 #### Custom handlers
 

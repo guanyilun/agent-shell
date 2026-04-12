@@ -46,8 +46,8 @@ All components communicate exclusively through typed bus events. The backend has
 3. All keyboard input goes directly to the PTY — zero latency, full terminal compatibility
 4. When you type `>` at the start of a line, agent-sh intercepts and enters agent input mode
 5. On Enter, the query is emitted as `agent:submit` and the agent decides which tools to use
-6. The backend handles the query — streaming LLM responses, executing tools, emitting events
-7. The TUI renderer extension renders streamed content inline (markdown, diffs, tool calls)
+6. The backend handles the query — streaming LLM responses, executing tools, emitting events. Read-only tools run in parallel; permission-requiring tools run sequentially.
+7. The TUI renderer extension renders streamed content inline (markdown, diffs, tool calls with tree-style grouping)
 8. When the backend finishes (`agent:processing-done`), normal shell operation resumes
 
 ## Shell ↔ Agent Boundary
@@ -56,9 +56,14 @@ The shell and the agent are **separate worlds** by default. The PTY runs your re
 
 The connection between them is **context**: each query includes shell context (recent commands, output, cwd). The agent sees what you've been doing but can't touch your shell state — unless it uses `user_shell`.
 
-### user_shell — The Bridge
+### user_shell & display — The Bridge
 
-For commands that *should* affect the live shell (`cd`, `export`, `source`, installing packages) or that the user wants to see (`cat`, `git log`), the agent uses `user_shell` or `display`. These tools write commands to the actual PTY via bus events:
+Two tools cross the shell↔agent boundary via `shell:exec-request`:
+
+- **`user_shell`** — for commands with lasting effects (`cd`, `export`, `source`, `npm install`). Output goes to the user's terminal; the agent gets `"Command executed"` by default (set `return_output=true` to inspect).
+- **`display`** — for read-only display (`cat`, `git log`, `diff`). Output goes to the user's terminal; the agent gets `"Output displayed to user."` — it never sees the content.
+
+Both write commands to the actual PTY via the same bus event:
 
 ```
 agent calls user_shell({ command: "cd src" })
@@ -69,7 +74,7 @@ agent calls user_shell({ command: "cd src" })
           → result returned to agent
 ```
 
-With the internal agent, `user_shell` is a built-in tool. Extension backends can implement it however they choose — see [Extensions: Custom Agent Backends](extensions.md#custom-agent-backends).
+With the internal agent, both are built-in tools. Extension backends can implement them however they choose — see [Extensions: Custom Agent Backends](extensions.md#custom-agent-backends).
 
 ## Agent Backend
 

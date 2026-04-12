@@ -202,9 +202,66 @@ The agent decides which tool to use based on intent — no user mode selection n
 | `edit_file` | Find-and-replace in a file (old_text → new_text) | Yes | Yes |
 | `grep` | Search file contents with regex (via ripgrep) | No | No |
 | `glob` | Find files by name pattern | No | No |
-| `ls` | List directory contents | No | No |
+| `ls` | List directory contents (with timestamps and sizes) | No | No |
 
 **Common pattern**: all file-based tools resolve relative paths from the current working directory (`contextManager.getCwd()`).
+
+### Tool-specific enhancements
+
+**`grep`** supports three output modes and pagination:
+
+- `output_mode`: `files_with_matches` (default, file paths only), `content` (matching lines with optional `context_before`/`context_after`), or `count` (match counts per file)
+- `case_insensitive`: case-insensitive search
+- `head_limit` / `offset`: pagination — default limits are 200 entries for `files_with_matches`, 150 for `content`/`count`. Pass `head_limit=0` for unlimited. Long lines in `content` mode are capped at 500 characters.
+
+**`read_file`** deduplicates reads:
+
+- Tracks file modification time. If a file hasn't changed since the last read (same offset/limit), returns a stub instead of re-reading — saves context tokens.
+- Files over 2MB require `offset` and `limit` to prevent OOM.
+- Cache is automatically invalidated when a file-modifying tool (`write_file`, `edit_file`) succeeds on the same path.
+
+**`edit_file`** provides diagnostic hints:
+
+- When `old_text` isn't found, the tool searches for the closest match and suggests fixes (e.g. whitespace differences, wrong line location).
+
+**`glob`** returns results sorted by modification time (newest first), capped at 200 files.
+
+**`ls`** returns formatted output with timestamps (YYYY-MM-DD HH:MM) and human-readable file sizes.
+
+### Tool batching and parallel execution
+
+When the LLM requests multiple tool calls in a single response, the agent groups and executes them efficiently:
+
+1. **Batch event** — before execution, the agent emits `agent:tool-batch` with tools grouped by kind (`read`, `search`, `execute`, etc.). The TUI uses this to render group headers with tree-style connectors.
+
+2. **Parallel execution** — read-only tools (no `requiresPermission`, no `modifiesFiles`) run in parallel via `Promise.all`. Permission-requiring tools run sequentially to avoid overlapping permission prompts.
+
+3. **Output truncation** — tool results over 16KB (~4K tokens) are head+tail truncated before being added to the conversation, preventing a single tool call from blowing through the context window.
+
+### Structured result display
+
+Tools can provide structured result information for the TUI via two optional methods on `ToolDefinition`:
+
+- **`formatCall(args)`** — returns a short display string when the tool is called (e.g. the file path or search pattern). Shown in the TUI next to the tool icon.
+- **`formatResult(args, result)`** — returns a `ToolResultDisplay` with an optional `summary` string (e.g. "42 files", "cached") and an optional structured `body` for richer rendering (diffs, line lists). The TUI's `render:result-body` handler renders the body — extensions can advise it.
+
+### Retry and error handling
+
+The agent retries transient failures with exponential backoff:
+
+- **Context overflow** — compacts the conversation and retries immediately
+- **Rate limits (429)** — respects `Retry-After` header, otherwise backs off exponentially
+- **Transient errors (500/502/503, network)** — exponential backoff (1s, 2s, 4s..., capped at 30s), up to 3 retries
+- **Non-retryable errors** — reported with provider-aware context (model name, endpoint, actionable hints)
+
+### Thinking levels
+
+The agent supports configurable thinking/reasoning levels for models that support `reasoning_effort`:
+
+- Levels: `off` (default), `low`, `medium`, `high`
+- Set via the `config:set-thinking` event (wired to `/thinking` slash command)
+- Query current state via `config:get-thinking` pipe
+- The agent validates that the current model/provider supports reasoning before enabling
 
 ### Tool interface
 
@@ -213,6 +270,7 @@ Every tool implements this interface:
 ```typescript
 interface ToolDefinition {
   name: string;
+  displayName?: string;           // short label for TUI (defaults to name)
   description: string;
   input_schema: Record<string, unknown>;  // JSON Schema for parameters
 
@@ -224,6 +282,11 @@ interface ToolDefinition {
   requiresPermission?: boolean;   // gate via permission:request
   modifiesFiles?: boolean;        // triggers file watcher
   showOutput?: boolean;           // stream output to TUI (default: true)
+
+  // Display hooks (all optional)
+  getDisplayInfo?: (args) => ToolDisplayInfo;  // icon, kind, file locations
+  formatCall?: (args) => string;               // short call summary for TUI
+  formatResult?: (args, result) => ToolResultDisplay;  // structured result
 }
 
 interface ToolResult {
@@ -231,9 +294,24 @@ interface ToolResult {
   exitCode: number | null;
   isError: boolean;
 }
+
+interface ToolResultDisplay {
+  summary?: string;      // one-line (e.g. "42 files", "+3/-1")
+  body?: ToolResultBody; // structured content for richer rendering
+}
+
+type ToolResultBody =
+  | { kind: "diff"; diff: unknown; filePath: string }
+  | { kind: "lines"; lines: string[]; maxLines?: number }
+
+interface ToolDisplayInfo {
+  kind: "read" | "write" | "execute" | "search" | "display";
+  locations?: { path: string; line?: number | null }[];
+  icon?: string;         // custom icon (e.g. "◆", "⌕")
+}
 ```
 
-The `onChunk` callback enables streaming tool output to the TUI in real-time (used by `bash`). Tools that don't stream (like `read_file`) just return the final result.
+The `onChunk` callback enables streaming tool output to the TUI in real-time (used by `bash`). Tools that don't stream (like `read_file`) just return the final result. Extensions can wrap `onChunk` via the `tool:execute` handler to intercept or transform streamed output (e.g. secret redaction).
 
 ## Streaming
 

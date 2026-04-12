@@ -182,9 +182,19 @@ When cycling across providers (e.g. from OpenAI to Ollama), the API key and base
 | `shellHeadLines` / `shellTailLines` | `5` / `5` | Lines kept from start/end of truncated output |
 | `recallExpandMaxLines` | `100` | Max lines for recall expand |
 | `maxCommandOutputLines` | `3` | Max tool output lines shown inline in TUI |
-| `readOutputMaxLines` | `0` | Max read tool output lines shown inline (0 = hidden) |
+| `readOutputMaxLines` | `10` | Max read tool output lines shown inline (0 = hidden) |
 | `diffMaxLines` | `20` | Max diff lines before "ctrl+o to expand" |
-| `enableMcp` | `true` | Register MCP server for bridge tools |
+
+## Startup Banner
+
+On launch, agent-sh displays a structured startup banner showing:
+
+- **Backend** — which agent backend is active (`agent-sh`, `claude-code`, `pi`, etc.)
+- **Model** — current model with provider in brackets (e.g. `gpt-4o [openai]`)
+- **Extensions** — loaded extensions (from CLI `-e`, settings, or `~/.agent-sh/extensions/`)
+- **Skills** — discovered skills (global + project)
+
+Set `startupBanner: false` in settings to disable.
 
 ## Shell Context
 
