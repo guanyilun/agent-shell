@@ -368,10 +368,13 @@ export class AgentLoop implements AgentBackend {
 
     // Wraps each tool call: permission → execute → emit events.
     // Extensions advise to add safe-mode, logging, metrics, custom policies.
+    // The ctx.onChunk callback is exposed so advisors can wrap it to
+    // intercept/transform streamed tool output (e.g. secret redaction).
     h.define("tool:execute", async (ctx: {
       name: string; id: string;
       args: Record<string, unknown>;
       tool: ToolDefinition;
+      onChunk?: (chunk: string) => void;
     }) => {
       const { name, id, args, tool } = ctx;
       const display = tool.getDisplayInfo?.(args) ?? { kind: "execute" as const };
@@ -438,9 +441,10 @@ export class AgentLoop implements AgentBackend {
       });
       this.bus.emit("agent:tool-call", { tool: name, args });
 
-      // Execute — suppress streaming output if diff was already shown
+      // Execute — use ctx.onChunk so advisors can wrap the streaming callback.
+      // Suppress streaming output if diff was already shown.
       const onChunk = (tool.showOutput !== false && !diffShown)
-        ? (chunk: string) => { this.bus.emit("agent:tool-output-chunk", { chunk }); }
+        ? ctx.onChunk
         : undefined;
       const result = await tool.execute(args, onChunk);
 
@@ -546,17 +550,16 @@ export class AgentLoop implements AgentBackend {
       // No tool calls → agent is done
       if (toolCalls.length === 0) break;
 
-      // Execute each tool call
-      for (const tc of toolCalls) {
-        if (signal.aborted) break;
-
+      // Execute tool calls — run read-only tools in parallel, permission-
+      // requiring tools sequentially (to avoid overlapping permission prompts).
+      const executeSingle = async (tc: PendingToolCall) => {
         const tool = this.toolRegistry.get(tc.name);
         if (!tool) {
           this.conversation.addToolResult(
             tc.id,
             `Error: Unknown tool "${tc.name}"`,
           );
-          continue;
+          return;
         }
 
         let args: Record<string, unknown>;
@@ -567,21 +570,70 @@ export class AgentLoop implements AgentBackend {
             tc.id,
             `Error: Invalid JSON arguments for ${tc.name}`,
           );
-          continue;
+          return;
         }
 
         // Execute via handler — extensions can advise to add safe-mode,
         // logging, metrics, custom permission policies, etc.
+        const defaultOnChunk = (chunk: string) => {
+          this.bus.emit("agent:tool-output-chunk", { chunk });
+        };
         const result = await this.handlers.call(
           "tool:execute",
-          { name: tc.name, id: tc.id, args, tool },
+          { name: tc.name, id: tc.id, args, tool, onChunk: defaultOnChunk },
         );
 
-        // Add tool result to conversation
-        const content = result.isError
+        // Add tool result to conversation (truncate large outputs to avoid
+        // blowing through the context window on a single tool call)
+        let content = result.isError
           ? `Error: ${result.content}`
           : result.content;
+        const maxBytes = 16_384; // ~4k tokens
+        if (content.length > maxBytes) {
+          const headBytes = Math.floor(maxBytes * 0.6);
+          const tailBytes = maxBytes - headBytes;
+          const lines = content.split("\n");
+          let headEnd = 0, headLen = 0;
+          for (let i = 0; i < lines.length && headLen + lines[i].length + 1 <= headBytes; i++) {
+            headLen += lines[i].length + 1;
+            headEnd = i + 1;
+          }
+          let tailStart = lines.length, tailLen = 0;
+          for (let i = lines.length - 1; i >= headEnd && tailLen + lines[i].length + 1 <= tailBytes; i--) {
+            tailLen += lines[i].length + 1;
+            tailStart = i;
+          }
+          const omitted = tailStart - headEnd;
+          content = [
+            ...lines.slice(0, headEnd),
+            `\n[… ${omitted} lines omitted (output truncated to ${Math.round(maxBytes / 1024)}KB) …]\n`,
+            ...lines.slice(tailStart),
+          ].join("\n");
+        }
         this.conversation.addToolResult(tc.id, content);
+      };
+
+      // Partition into parallel-safe (read-only) and sequential (needs permission)
+      const parallel: PendingToolCall[] = [];
+      const sequential: PendingToolCall[] = [];
+      for (const tc of toolCalls) {
+        const tool = this.toolRegistry.get(tc.name);
+        if (tool && !tool.requiresPermission && !tool.modifiesFiles) {
+          parallel.push(tc);
+        } else {
+          sequential.push(tc);
+        }
+      }
+
+      // Run read-only tools in parallel
+      if (parallel.length > 0 && !signal.aborted) {
+        await Promise.all(parallel.map(tc => signal.aborted ? Promise.resolve() : executeSingle(tc)));
+      }
+
+      // Run permission-requiring tools sequentially
+      for (const tc of sequential) {
+        if (signal.aborted) break;
+        await executeSingle(tc);
       }
 
       // Loop back — LLM sees tool results

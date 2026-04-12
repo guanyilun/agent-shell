@@ -38,6 +38,18 @@ export function createReadFileTool(getCwd: () => string): ToolDefinition {
       const absPath = path.resolve(getCwd(), filePath);
 
       try {
+        // Check file size before reading to avoid OOM on huge files
+        const stat = await fs.stat(absPath);
+        const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
+        if (stat.size > MAX_FILE_SIZE && !args.offset && !args.limit) {
+          const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
+          return {
+            content: `File is ${sizeMB}MB (${stat.size} bytes) — too large to read in full. Use offset and limit to read specific sections, e.g. offset=1 limit=200.`,
+            exitCode: 1,
+            isError: true,
+          };
+        }
+
         const content = await fs.readFile(absPath, "utf-8");
         const lines = content.split("\n");
 

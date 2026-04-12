@@ -15,13 +15,17 @@ export function createUserShellTool(opts: {
   return {
     name: "user_shell",
     description:
-      "Run a command in the user's live shell (visible in terminal). Output is returned to you by default. Use for cd, export, source, or commands the user wants to see. Set return_output=false for long-running or interactive commands.",
+      "Run a command in the user's live shell (visible in terminal). Output is NOT returned to you by default — set return_output=true if you need to inspect the result. Use for cd, export, source, or commands the user wants to see.",
     input_schema: {
       type: "object",
       properties: {
         command: {
           type: "string",
           description: "Command to execute in user's shell",
+        },
+        timeout: {
+          type: "number",
+          description: "Timeout in seconds (default: 30)",
         },
         return_output: {
           type: "boolean",
@@ -43,31 +47,55 @@ export function createUserShellTool(opts: {
 
     async execute(args) {
       const command = args.command as string;
+      const timeoutSec = (args.timeout as number) ?? 30;
       const returnOutput = (args.return_output as boolean) ?? false;
 
-      // Execute via the shell-exec extension's async pipe
-      const result = await opts.bus.emitPipeAsync(
-        "shell:exec-request",
-        {
-          command,
-          output: "",
-          cwd: opts.getCwd(),
-          done: false,
-        },
-      );
+      // Execute via the shell-exec extension's async pipe with timeout
+      let result: { output: string; exitCode: number | null; [k: string]: unknown };
+      try {
+        const execPromise = opts.bus.emitPipeAsync(
+          "shell:exec-request",
+          {
+            command,
+            output: "",
+            cwd: opts.getCwd(),
+            exitCode: null as number | null,
+            done: false,
+          },
+        );
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("timeout")), timeoutSec * 1000),
+        );
+        result = await Promise.race([execPromise, timeoutPromise]);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg === "timeout") {
+          return {
+            content: `Command timed out after ${timeoutSec}s.`,
+            exitCode: -1,
+            isError: true,
+          };
+        }
+        return { content: `Error: ${msg}`, exitCode: -1, isError: true };
+      }
+
+      const exitCode = result.exitCode ?? 0;
+      const isError = exitCode !== 0 && exitCode !== null;
 
       if (returnOutput) {
         return {
           content: result.output || "(no output)",
-          exitCode: 0,
-          isError: false,
+          exitCode,
+          isError,
         };
       }
 
       return {
-        content: "Command executed.",
-        exitCode: 0,
-        isError: false,
+        content: isError
+          ? `Command failed with exit code ${exitCode}.`
+          : "Command executed.",
+        exitCode,
+        isError,
       };
     },
   };

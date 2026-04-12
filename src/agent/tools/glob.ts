@@ -34,9 +34,15 @@ export function createGlobTool(getCwd: () => string): ToolDefinition {
       const pattern = args.pattern as string;
       const searchPath = (args.path as string) ?? ".";
 
-      // Use find + shell glob via bash, or rg --files --glob
+      // Use ripgrep for correct glob matching + .gitignore awareness
+      const shellEsc = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
+      const parts = [
+        "rg", "--files",
+        "--glob", shellEsc(pattern),
+        shellEsc(searchPath),
+      ];
       const { session, done } = executeCommand({
-        command: `find ${JSON.stringify(searchPath)} -path ${JSON.stringify(pattern)} -type f 2>/dev/null | head -200`,
+        command: parts.join(" ") + " | head -200",
         cwd: getCwd(),
         timeout: 10_000,
       });

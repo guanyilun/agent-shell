@@ -40,6 +40,7 @@ export function createGrepTool(getCwd: () => string): ToolDefinition {
       const searchPath = (args.path as string) ?? ".";
       const include = args.include as string | undefined;
 
+      const shellEsc = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
       const parts = [
         "rg",
         "--line-number",
@@ -48,9 +49,9 @@ export function createGrepTool(getCwd: () => string): ToolDefinition {
         "--max-count=200",
       ];
       if (include) {
-        parts.push("--glob", JSON.stringify(include));
+        parts.push("--glob", shellEsc(include));
       }
-      parts.push(JSON.stringify(pattern), JSON.stringify(searchPath));
+      parts.push("-e", shellEsc(pattern), shellEsc(searchPath));
 
       const { session, done } = executeCommand({
         command: parts.join(" "),

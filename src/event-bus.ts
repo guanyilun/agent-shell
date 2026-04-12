@@ -115,6 +115,7 @@ export interface ShellEvents {
     command: string;
     output: string;
     cwd: string;
+    exitCode: number | null;
     done: boolean;
   };
 

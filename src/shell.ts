@@ -324,17 +324,17 @@ export class Shell implements InputContext {
       process.stdout.write("\n");
       this.bus.emit("shell:agent-exec-start", {});
 
-      const output = await new Promise<{ output: string; cwd: string }>((resolve, reject) => {
+      const output = await new Promise<{ output: string; cwd: string; exitCode: number | null }>((resolve, reject) => {
         const timeout = setTimeout(() => {
           this.bus.off("shell:command-done", handler);
           this.ptyProcess.write("\x03");
           reject(new Error("Shell exec timed out after 30s"));
         }, 30_000);
 
-        const handler = (e: { command: string; output: string; cwd: string }) => {
+        const handler = (e: { command: string; output: string; cwd: string; exitCode: number | null }) => {
           clearTimeout(timeout);
           this.bus.off("shell:command-done", handler);
-          resolve({ output: e.output, cwd: e.cwd });
+          resolve({ output: e.output, cwd: e.cwd, exitCode: e.exitCode });
         };
         this.bus.on("shell:command-done", handler);
 
@@ -346,7 +346,7 @@ export class Shell implements InputContext {
       this.echoSkip = false;
       this.bus.emit("shell:agent-exec-done", {});
 
-      return { ...payload, output: output.output, cwd: output.cwd, done: true };
+      return { ...payload, output: output.output, cwd: output.cwd, exitCode: output.exitCode, done: true };
     });
   }
 
