@@ -48,6 +48,19 @@ function settle(ms = 100): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Interpret C-style escape sequences in a string (e.g. \r → CR, \x1b → ESC). */
+function interpretEscapes(str: string): string {
+  return str.replace(/\\(x[0-9a-fA-F]{2}|r|n|t|\\|0)/g, (_, seq: string) => {
+    if (seq === "r") return "\r";
+    if (seq === "n") return "\n";
+    if (seq === "t") return "\t";
+    if (seq === "\\") return "\\";
+    if (seq === "0") return "\0";
+    if (seq.startsWith("x")) return String.fromCharCode(parseInt(seq.slice(1), 16));
+    return seq;
+  });
+}
+
 export default function activate({ bus, advise, registerTool }: ExtensionContext): void {
   const term = new Terminal({
     cols: DEFAULT_COLS,
@@ -181,7 +194,8 @@ export default function activate({ bus, advise, registerTool }: ExtensionContext
     },
 
     async execute(args) {
-      const keys = args.keys as string;
+      const raw = args.keys as string;
+      const keys = interpretEscapes(raw);
       const settleMs = (args.settle_ms as number) ?? 150;
 
       bus.emit("shell:pty-write", { data: keys });
