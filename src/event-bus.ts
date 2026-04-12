@@ -132,6 +132,11 @@ export interface ShellEvents {
   // PTY or mode handler — enables overlay UIs during foreground programs.
   "input:intercept": { data: string; consumed: boolean };
 
+  // Stdout hold/release (ref-counted). While held, PTY output is not written
+  // to stdout — enables overlay extensions to render without interference.
+  "shell:stdout-hold": Record<string, never>;
+  "shell:stdout-release": Record<string, never>;
+
   // Terminal interception (sync pipe: extensions can intercept before execution)
   "agent:terminal-intercept": {
     command: string;

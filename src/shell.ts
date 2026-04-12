@@ -13,6 +13,7 @@ export class Shell implements InputContext {
   private inputHandler: InputHandler;
   private outputParser: OutputParser;
   private paused = false;
+  private stdoutHoldCount = 0;
   private echoSkip = false;
   private agentActive = false;
   private isZsh = false;
@@ -205,6 +206,12 @@ export class Shell implements InputContext {
     this.bus.on("shell:pty-write", ({ data }) => {
       this.ptyProcess.write(data);
     });
+
+    // Ref-counted stdout hold — overlay extensions suppress PTY output
+    this.bus.on("shell:stdout-hold", () => { this.stdoutHoldCount++; });
+    this.bus.on("shell:stdout-release", () => {
+      this.stdoutHoldCount = Math.max(0, this.stdoutHoldCount - 1);
+    });
   }
 
   // ── InputContext implementation (delegates to OutputParser) ──
@@ -268,7 +275,7 @@ export class Shell implements InputContext {
       this.bus.emit("shell:pty-data", { raw: data });
       this.outputParser.processData(data);
 
-      if (this.paused) return;
+      if (this.paused || this.stdoutHoldCount > 0) return;
 
       // During user_shell exec, skip the command echo (first line)
       if (this.echoSkip) {
