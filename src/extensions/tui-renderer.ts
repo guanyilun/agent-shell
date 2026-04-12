@@ -247,8 +247,17 @@ export default function activate(ctx: ExtensionContext): void {
       drain();
       s.hadToolCalls = true;
     } else if (GROUPABLE_KINDS.has(e.kind ?? "") && e.kind === s.toolGroupKind) {
-      // Consecutive same-kind read-only tool — collapse into group
+      // Consecutive same-kind read-only tool
       s.toolGroupCount++;
+      if (s.toolGroupCount <= 2) {
+        // Show the first 2 individually (with normal completion handling)
+        showToolCall(e.title, "", {
+          ...e,
+          batchIndex: e.batchIndex,
+          batchTotal: e.batchTotal,
+        });
+      }
+      // 3rd+ are collapsed — rendered as summary in finalizeToolGroup
     } else {
       finalizeToolGroup();
       if (GROUPABLE_KINDS.has(e.kind ?? "")) {
@@ -266,9 +275,9 @@ export default function activate(ctx: ExtensionContext): void {
 
   bus.on("agent:tool-completed", (e) => {
     s.toolExitCode = e.exitCode;
-    if (s.toolGroupCount > 1) {
-      // Grouped tool — just track success/failure, don't render individually
-      if (e.exitCode !== 0) s.toolGroupAllOk = false;
+    if (e.exitCode !== 0) s.toolGroupAllOk = false;
+    if (s.toolGroupCount > 2) {
+      // Collapsed tool (3rd+) — just track success/failure
       s.currentToolKind = undefined;
       s.spinnerStartTime = 0;
       startThinkingSpinner();
@@ -634,7 +643,8 @@ export default function activate(ctx: ExtensionContext): void {
 
   /** Finalize a group of collapsed tool calls, rendering the summary. */
   function finalizeToolGroup(): void {
-    if (s.toolGroupCount <= 1) {
+    if (s.toolGroupCount <= 2) {
+      // 0–2 tools: all were rendered individually, nothing to summarize
       s.toolGroupKind = undefined;
       s.toolGroupCount = 0;
       return;
@@ -646,8 +656,9 @@ export default function activate(ctx: ExtensionContext): void {
     const mark = s.toolGroupAllOk
       ? `${p.success}✓${p.reset}`
       : `${p.error}✗${p.reset}`;
+    const collapsed = s.toolGroupCount - 2; // first 2 were shown individually
     s.renderer!.writeLine(
-      `${p.warning}${icon}${p.reset} ${p.dim}… +${s.toolGroupCount - 1} more ${label}${p.reset} ${mark}`,
+      `${p.warning}${icon}${p.reset} ${p.dim}… +${collapsed} more ${label}${p.reset} ${mark}`,
     );
     drain();
     s.toolGroupKind = undefined;
