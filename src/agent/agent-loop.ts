@@ -18,6 +18,9 @@ import type { ContextManager } from "../context-manager.js";
 import type { LlmClient } from "../utils/llm-client.js";
 import type { HandlerRegistry } from "../utils/handler-registry.js";
 import { setMaxListeners } from "node:events";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { computeDiff } from "../utils/diff.js";
 import type { AgentBackend, ToolDefinition } from "./types.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { ConversationState } from "./conversation-state.js";
@@ -227,6 +230,42 @@ export class AgentLoop implements AgentBackend {
     return Math.min(1000 * Math.pow(2, attempt), 30_000);
   }
 
+  /** Format an error with provider context for user-facing display. */
+  private formatError(e: unknown): string {
+    const raw = e instanceof Error ? e.message : String(e);
+    const status = (e as any).status;
+    const model = this.currentModel;
+    const baseURL = (this.llmClient as any).config?.baseURL;
+    const provider = this.currentMode.provider;
+
+    // Connection errors — most likely misconfigured provider
+    if (raw.includes("ECONNREFUSED") || raw.includes("ECONNRESET") ||
+        raw.includes("ETIMEDOUT") || raw.includes("fetch failed") ||
+        raw.includes("socket hang up")) {
+      const target = baseURL ?? provider ?? "provider";
+      return `Could not connect to ${target} (${raw}). Check that the API endpoint is reachable.`;
+    }
+
+    // Auth errors
+    if (status === 401 || raw.toLowerCase().includes("auth")) {
+      return `Authentication failed for ${provider ?? "provider"} (model: ${model}). Check your API key.`;
+    }
+
+    // Model not found
+    if (status === 404) {
+      return `Model "${model}" not found at ${provider ?? baseURL ?? "provider"}. Check the model name.`;
+    }
+
+    // Rate limit (after retries exhausted)
+    if (status === 429) {
+      return `Rate limited by ${provider ?? "provider"} (model: ${model}). Try again in a moment.`;
+    }
+
+    // Generic with context
+    const context = provider ? ` (${provider}, model: ${model})` : ` (model: ${model})`;
+    return `${raw}${context}`;
+  }
+
   private registerCoreTools(): void {
     const getCwd = () => this.contextManager.getCwd();
     const getEnv = () => {
@@ -277,13 +316,56 @@ export class AgentLoop implements AgentBackend {
       tool: ToolDefinition;
     }) => {
       const { name, id, args, tool } = ctx;
+      const display = tool.getDisplayInfo?.(args) ?? { kind: "execute" as const };
+      let diffShown = false;
 
       // Permission gating
       if (tool.requiresPermission) {
+        let permKind = "tool-call";
+        let permTitle = name;
+        let metadata: Record<string, unknown> = { args };
+
+        // For file-modifying tools, pre-compute diff for display
+        if (tool.modifiesFiles && typeof args.path === "string") {
+          try {
+            const absPath = path.resolve(process.cwd(), args.path as string);
+            let oldContent: string | null = null;
+            try { oldContent = await fs.readFile(absPath, "utf-8"); } catch { /* new file */ }
+
+            let newContent: string | undefined;
+            if (typeof args.content === "string") {
+              // write_file
+              newContent = args.content;
+            } else if (typeof args.old_text === "string" && typeof args.new_text === "string" && oldContent) {
+              // edit_file
+              newContent = oldContent.replace(
+                (args.old_text as string).replace(/\r\n/g, "\n"),
+                (args.new_text as string).replace(/\r\n/g, "\n"),
+              );
+            }
+
+            if (newContent !== undefined) {
+              const diff = computeDiff(oldContent, newContent);
+              if (!diff.isIdentical) {
+                permKind = "file-write";
+                // Shorten path for display
+                const cwd = process.cwd();
+                const home = process.env.HOME;
+                let displayPath = absPath;
+                if (absPath.startsWith(cwd + "/")) displayPath = absPath.slice(cwd.length + 1);
+                else if (home && absPath.startsWith(home + "/")) displayPath = "~/" + absPath.slice(home.length + 1);
+                permTitle = displayPath;
+                metadata = { args, diff };
+                diffShown = true;
+              }
+            }
+          } catch { /* fall back to generic permission */ }
+        }
+
         const perm = await this.bus.emitPipeAsync("permission:request", {
-          kind: "tool-call",
-          title: name,
-          metadata: { args },
+          kind: permKind,
+          title: permTitle,
+          metadata,
           decision: { outcome: "approved" },
         });
         if ((perm.decision as { outcome: string }).outcome !== "approved") {
@@ -292,15 +374,14 @@ export class AgentLoop implements AgentBackend {
       }
 
       // Emit tool-started for TUI
-      const display = tool.getDisplayInfo?.(args) ?? { kind: "execute" as const };
       this.bus.emit("agent:tool-started", {
         title: name, toolCallId: id,
         kind: display.kind, locations: display.locations, rawInput: args,
       });
       this.bus.emit("agent:tool-call", { tool: name, args });
 
-      // Execute
-      const onChunk = tool.showOutput !== false
+      // Execute — suppress streaming output if diff was already shown
+      const onChunk = (tool.showOutput !== false && !diffShown)
         ? (chunk: string) => { this.bus.emit("agent:tool-output-chunk", { chunk }); }
         : undefined;
       const result = await tool.execute(args, onChunk);
@@ -349,7 +430,7 @@ export class AgentLoop implements AgentBackend {
       if (signal.aborted && signal.reason !== "silent") {
         this.bus.emit("agent:cancelled", {});
       } else if (!signal.aborted) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = this.formatError(e);
         this.bus.emit("agent:error", { message: msg });
       }
     } finally {

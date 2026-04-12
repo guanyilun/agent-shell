@@ -516,7 +516,7 @@ agent-sh -e ./examples/extensions/latex-images.ts
 
 ## Custom Input Modes
 
-Input modes change what happens when the user types and presses Enter. Each mode binds a trigger character (typed at the start of an empty line) to a custom `onSubmit` handler. The built-in modes (`?` for query, `>` for execute) are registered this way — they're not special.
+Input modes change what happens when the user types and presses Enter. Each mode binds a trigger character (typed at the start of an empty line) to a custom `onSubmit` handler. The built-in modes (`>` for execute, `?` for help) are registered this way — they're not special.
 
 The flow: user types trigger → prompt changes to show the mode → user types their input → presses Enter → `onSubmit` fires → your handler emits `agent:submit` with a `modeInstruction` that gets prepended to the agent's system prompt, telling it how to behave in this mode.
 

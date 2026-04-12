@@ -13,8 +13,8 @@ agent-sh flips this. It's your shell first — full PTY, your rc config, your al
 ⚡ src $ ls -la                          # real shell command
 ⚡ src $ cd ../tests && npm test          # real cd, env, aliases — all just work
 ⚡ src $ vim file.ts                      # opens vim in the same PTY
-⚡ src $ ? explain the last error         # query mode → agent investigates using its own tools
-⚡ src $ > deploy to staging              # execute mode → agent runs it in your live shell
+⚡ src $ > explain the last error          # execute mode → agent investigates using its own tools
+⚡ src $ ? deploy to staging              # help mode → agent runs it in your live shell
 ```
 
 ## Key Features
@@ -23,9 +23,9 @@ agent-sh flips this. It's your shell first — full PTY, your rc config, your al
 
 **Context-aware agent.** Every query includes your cwd, recent commands, and their output. Run a failing test, type `? fix this`, and the agent knows exactly what happened. It has built-in tools for file read/write/edit, bash, grep, glob — no external setup needed.
 
-**Two input modes.** `?` for questions and tasks — the agent investigates using its own isolated tools. `>` for commands that run directly in your live shell, affecting your real environment. The agent knows which mode it's in and behaves accordingly.
+**Two input modes.** `>` for questions and tasks — the agent investigates using its own isolated tools. `?` for commands that run directly in your live shell, affecting your real environment. The agent knows which mode it's in and behaves accordingly.
 
-**Any LLM, any backend.** Works with any OpenAI-compatible API out of the box. Define multiple providers in settings and cycle between models at runtime with Shift+Tab. Or swap in a completely different agent — [Claude Code](examples/extensions/claude-code-bridge.ts) and [pi](examples/extensions/pi-bridge.ts) run as drop-in backend extensions.
+**Any LLM, any backend.** Works with any OpenAI-compatible API out of the box. Define multiple providers in settings and cycle between models at runtime with Shift+Tab. Or swap in a completely different agent — [Claude Code](examples/extensions/claude-code-bridge/) and [pi](examples/extensions/pi-bridge/) run as drop-in backend extensions.
 
 **Extensible by design.** The entire system is built on a typed event bus. Extensions can add custom input modes, content transforms (render LaTeX as images, Mermaid as diagrams), themes, slash commands, or replace the agent backend entirely. The built-in TUI renderer is itself just an extension — nothing is special.
 
@@ -44,17 +44,19 @@ OPENAI_API_KEY="your-key" agent-sh --model gpt-4o
 agent-sh --api-key dummy --base-url http://localhost:11434/v1 --model llama3
 
 # Or with a backend extension (Claude Code, pi, etc.)
-agent-sh -e examples/extensions/claude-code-bridge.ts
+agent-sh -e examples/extensions/claude-code-bridge
 ```
 
 Requires Node.js 18+. See the [Usage Guide](docs/usage.md) for provider examples (OpenAI, Ollama, OpenRouter, Together, Groq, LM Studio, vLLM).
 
 ## Input Modes
 
-- **`?` Query mode** — Agent uses its own tools (bash, file read/write, search) to investigate and answer. Stays in query mode for follow-ups.
-- **`>` Execute mode** — Agent runs a command in your live shell. Your aliases, env vars, and cwd apply. Returns to shell after.
+- **`>` Execute mode** — Agent uses its own tools (bash, file read/write, search) to investigate and answer. Stays in execute mode for follow-ups.
+- **`?` Help mode** — Agent runs a command in your live shell. Your aliases, env vars, and cwd apply. Returns to shell after.
 
 Everything else works as a normal shell — commands go straight to the PTY. Modes are extensible — see [Extensions: Custom Input Modes](docs/extensions.md#custom-input-modes).
+
+> **Why `>` for the main mode?** `>` is easy to type and the most common interaction — asking the agent to do things. `?` is reserved for when you need the agent to run something directly in your live shell.
 
 ### Slash Commands
 

@@ -9,7 +9,7 @@
  *   npm install @anthropic-ai/claude-agent-sdk
  *
  * Usage:
- *   agent-sh -e examples/extensions/claude-code-bridge.ts
+ *   agent-sh -e examples/extensions/claude-code-bridge
  *
  * Requires: Claude Code CLI installed and authenticated (claude login).
  */
@@ -92,8 +92,8 @@ export default function activate(ctx: ExtensionContext): void {
               preset: "claude_code",
               append:
                 "You are running inside agent-sh, a terminal wrapper.\n" +
-                "QUERY mode ('?'): Use your standard tools. Do NOT use user_shell.\n" +
-                "EXECUTE mode ('>'): Run the command via mcp__agent-sh__user_shell. Just run it, no explanation.\n" +
+                "EXECUTE mode ('>'): Use your standard tools. Do NOT use user_shell.\n" +
+                "HELP mode ('?'): Run the command via mcp__agent-sh__user_shell. Just run it, no explanation.\n" +
                 "Each prompt includes a per-query mode instruction — follow it.",
             },
             mcpServers: { "agent-sh": shellServer },

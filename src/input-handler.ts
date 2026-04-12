@@ -417,11 +417,22 @@ export class InputHandler {
 
     for (const act of actions) {
       switch (act.action) {
-        case "changed":
+        case "changed": {
+          // If the buffer is exactly a trigger char for a different mode, switch to it
+          const switchMode = this.modes.get(this.editor.buffer);
+          if (this.editor.buffer.length === 1 && switchMode && switchMode !== this.activeMode) {
+            this.dismissAutocomplete();
+            this.clearPromptArea();
+            this.activeMode = switchMode;
+            this.editor.clear();
+            this.writeModePromptLine(false);
+            break;
+          }
           this.historyIndex = -1;
           this.autocompleteIndex = 0;
           this.renderModeInput();
           break;
+        }
 
         case "submit": {
           if (this.autocompleteActive) {

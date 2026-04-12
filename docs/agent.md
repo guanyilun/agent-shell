@@ -54,13 +54,13 @@ Shell output can be large. The context manager applies a budget to keep things r
 The system prompt is rebuilt on **every LLM call** (not cached), so context is always fresh. It includes:
 
 1. **Identity** — "You are an AI coding assistant in agent-sh..."
-2. **Input modes** — instructions for query mode vs execute mode
+2. **Input modes** — instructions for execute mode vs help mode
 3. **Available tools** — name + description of every registered tool
 4. **Tool usage guidelines** — read before editing, prefer edit over write, use grep/glob to find files, etc.
 5. **Shell context** — the assembled context from above
 6. **Metadata** — current date, working directory
 
-The per-query **mode instruction** (e.g. `[mode: query]` or `[mode: execute]`) is prepended to the user message, not the system prompt. This tells the agent how to behave for this specific query.
+The per-query **mode instruction** (e.g. `[mode: execute]` or `[mode: help]`) is prepended to the user message, not the system prompt. This tells the agent how to behave for this specific query.
 
 ## Project Conventions
 

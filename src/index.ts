@@ -131,9 +131,9 @@ Examples:
 
 Inside the shell:
   Type normally        Commands run in your real shell
-  ? <query>           Ask the AI agent a question (query mode)
-  > <command>         Have the agent run a command (execute mode)
-  ? /help             Show available slash commands
+  > <query>           Ask the AI agent a question (execute mode)
+  ? <command>         Have the agent run a command in your shell (help mode)
+  > /help             Show available slash commands
   Ctrl-C              Cancel agent response (or signal shell as usual)
 `);
       process.exit(0);
@@ -222,23 +222,23 @@ async function main(): Promise<void> {
 
   // ── Input modes ──────────────────────────────────────────────
   bus.emit("input-mode:register", {
-    id: "query",
-    trigger: "?",
-    label: "query",
+    id: "execute",
+    trigger: ">",
+    label: "execute",
     promptIcon: "❯",
-    indicator: "❓",
+    indicator: "●",
     onSubmit(query, b) {
-      b.emit("agent:submit", { query, modeLabel: "Query", modeInstruction: "[mode: query]" });
+      b.emit("agent:submit", { query, modeLabel: "Execute", modeInstruction: "[mode: execute]" });
     },
     returnToSelf: true,
   });
 
   bus.emit("input-mode:register", {
-    id: "execute",
-    trigger: ">",
-    label: "execute",
+    id: "help",
+    trigger: "?",
+    label: "help",
     promptIcon: "⟩",
-    indicator: "●",
+    indicator: "❓",
     onSubmit(query, b) {
       const onToolDone = (e: { kind?: string }) => {
         if (e.kind === "execute") {
@@ -252,7 +252,7 @@ async function main(): Promise<void> {
       b.on("agent:tool-completed", onToolDone);
       b.on("agent:processing-done", cleanup);
 
-      b.emit("agent:submit", { query, modeLabel: "Execute", modeInstruction: "[mode: execute]" });
+      b.emit("agent:submit", { query, modeLabel: "Help", modeInstruction: "[mode: help]" });
     },
     returnToSelf: false,
   });

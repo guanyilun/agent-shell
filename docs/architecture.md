@@ -44,8 +44,8 @@ All components communicate exclusively through typed bus events. The backend has
 1. agent-sh spawns a real PTY running your shell (zsh or bash, with your full rc config) and sets up raw stdin passthrough
 2. It creates the agent backend (AgentLoop or extension-provided) which self-wires to bus events
 3. All keyboard input goes directly to the PTY — zero latency, full terminal compatibility
-4. When you type `?` or `>` at the start of a line, agent-sh intercepts and enters an agent input mode
-5. On Enter, the query is emitted as `agent:submit` with a mode instruction (`[mode: query]` or `[mode: execute]`)
+4. When you type `>` or `?` at the start of a line, agent-sh intercepts and enters an agent input mode
+5. On Enter, the query is emitted as `agent:submit` with a mode instruction (`[mode: execute]` or `[mode: help]`)
 6. The backend handles the query — streaming LLM responses, executing tools, emitting events
 7. The TUI renderer extension renders streamed content inline (markdown, diffs, tool calls)
 8. When the backend finishes (`agent:processing-done`), normal shell operation resumes

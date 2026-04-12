@@ -13,7 +13,7 @@
  *   npm install @mariozechner/pi-agent-core @mariozechner/pi-ai @mariozechner/pi-coding-agent
  *
  * Usage:
- *   agent-sh -e examples/extensions/pi-bridge.ts
+ *   agent-sh -e examples/extensions/pi-bridge
  */
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import {
@@ -52,11 +52,11 @@ function createUserShellToolDef(bus: EventBus) {
       "Use for cd, export, source, or commands the user wants to see. " +
       "Output is shown directly to the user. Set return_output=true only " +
       "if you need to inspect the result.",
-    promptSnippet: "Execute commands in the user's live terminal (PTY). Use in EXECUTE mode.",
+    promptSnippet: "Execute commands in the user's live terminal (PTY). Use in HELP mode.",
     promptGuidelines: [
       "You are running inside agent-sh, a terminal wrapper with two interaction modes.",
-      "QUERY mode (triggered by '?'): Use your standard tools (bash, file ops). Do NOT use user_shell.",
-      "EXECUTE mode (triggered by '>'): Run the command via user_shell. Do not explain or confirm — just run it.",
+      "EXECUTE mode (triggered by '>'): Use your standard tools (bash, file ops). Do NOT use user_shell.",
+      "HELP mode (triggered by '?'): Run the command via user_shell. Do not explain or confirm — just run it.",
       "Each prompt includes a per-query mode instruction — follow it.",
       "user_shell executes in the user's actual shell (their aliases, env vars, cwd). Use bash for background work.",
     ],
