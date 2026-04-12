@@ -80,9 +80,9 @@ export class Shell implements InputContext {
       if (showIndicator) {
         zshrcLines.push(
           "",
-          "# agent-sh prompt indicator (subtle right-prompt badge)",
+          "# agent-sh prompt indicator (append to existing RPROMPT)",
           '__agent_sh_indicator() {',
-          '  RPROMPT="%F{8}%F{6}⚡ agent-sh%f"',
+          '  RPROMPT="${RPROMPT:+$RPROMPT }%F{6}⚡ agent-sh%f"',
           "}",
           "precmd_functions+=(__agent_sh_indicator)",
         );
@@ -137,7 +137,7 @@ export class Shell implements InputContext {
           "",
           "# agent-sh prompt indicator (subtle badge appended to PS1)",
           '__agent_sh_ps1_suffix="\\[\\033[90m\\033[36m\\]⚡ agent-sh\\[\\033[0m\\] "',
-          'case "$PS1" in *"__agent_sh_ps1_suffix"*) ;; *) PS1="$PS1\$__agent_sh_ps1_suffix";; esac',
+          'case "$PS1" in *agent-sh*) ;; *) PS1="$PS1\$__agent_sh_ps1_suffix";; esac',
         );
       }
 

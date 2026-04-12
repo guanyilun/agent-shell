@@ -300,14 +300,9 @@ async function main(): Promise<void> {
   // ── Startup banner ───────────────────────────────────────────
   const settings = getSettings();
   if (settings.startupBanner !== false) {
-    const termW = process.stdout.columns || 80;
     const lines: string[] = [];
 
-    const info = agentInfo as { name: string; version: string; model?: string } | null;
-    if (info) {
-      const modelPart = info.model ? ` · ${info.model}` : "";
-      lines.push(`${p.accent}${p.bold}agent-sh${p.reset}${p.dim} v${info.version}${modelPart}${p.reset}`);
-    } else if (core.llmClient) {
+    if (core.llmClient) {
       lines.push(`${p.accent}${p.bold}agent-sh${p.reset}${p.dim} · ${core.llmClient.model}${p.reset}`);
     } else {
       lines.push(`${p.accent}${p.bold}agent-sh${p.reset}`);
