@@ -19,6 +19,18 @@ export interface ShellEvents {
   "shell:agent-exec-start": Record<string, never>;
   "shell:agent-exec-done": Record<string, never>;
 
+  // Raw PTY output stream (every byte from the shell process).
+  // Extensions can use this to feed a virtual terminal, log, or replay.
+  "shell:pty-data": { raw: string };
+
+  // Terminal buffer snapshot (request/response pattern via bus)
+  "shell:buffer-request": Record<string, never>;
+  "shell:buffer-snapshot": {
+    text: string;
+    altScreen: boolean;
+    cursor: { x: number; y: number };
+  };
+
   // Agent input (frontend → core: user submitted a query or wants to cancel)
   "agent:submit": { query: string };
   "agent:cancel-request": { silent?: boolean };

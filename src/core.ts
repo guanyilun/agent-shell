@@ -57,7 +57,7 @@ export interface AgentShellCore {
 export function createCore(config: AgentShellConfig): AgentShellCore {
   const bus = new EventBus();
   const handlers = new HandlerRegistry();
-  const contextManager = new ContextManager(bus);
+  const contextManager = new ContextManager(bus, handlers);
 
   // ── Resolve provider ─────────────────────────────────────────
   const settings = settingsMod.getSettings();

@@ -260,6 +260,7 @@ export class Shell implements InputContext {
 
   private setupOutput(): void {
     this.ptyProcess.onData((data: string) => {
+      this.bus.emit("shell:pty-data", { raw: data });
       this.outputParser.processData(data);
 
       if (this.paused) return;

@@ -1,5 +1,6 @@
 import type { EventBus } from "./event-bus.js";
 import type { Exchange, ToolCallRecord } from "./types.js";
+import type { HandlerRegistry } from "./utils/handler-registry.js";
 import { getSettings } from "./settings.js";
 
 // Non-configurable thresholds (agent response and tool output follow shell settings)
@@ -17,8 +18,14 @@ export class ContextManager {
   private pendingToolCalls: ToolCallRecord[] = [];
   private firstPrompt = true;
   private agentShellActive = false; // true while user_shell command is executing
+  private handlers: HandlerRegistry | null = null;
 
-  constructor(bus: EventBus) {
+  constructor(bus: EventBus, handlers?: HandlerRegistry) {
+    if (handlers) {
+      this.handlers = handlers;
+      // Extensions can advise this to inject extra context (e.g. terminal buffer)
+      handlers.define("context:build-extra", () => "");
+    }
     this.currentCwd = process.cwd();
     this.sessionStart = Date.now();
 
@@ -355,6 +362,10 @@ export class ContextManager {
     for (const ex of exchanges) {
       out += "\n" + this.formatExchangeTruncated(ex);
     }
+
+    // Allow extensions to inject extra context (e.g. terminal buffer snapshot)
+    const extra = this.handlers?.call("context:build-extra") as string | undefined;
+    if (extra) out += "\n" + extra + "\n";
 
     out += "\n</shell_context>\n";
     return out;
