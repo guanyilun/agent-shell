@@ -197,9 +197,12 @@ export default function activate(ctx: ExtensionContext): void {
     if (pendingUsage && s.renderer) {
       const { prompt_tokens, completion_tokens } = pendingUsage;
       totalTokens += prompt_tokens + completion_tokens;
+      const ctxK = (totalTokens / 1000).toFixed(1);
+      const maxK = "128";
+      const pct = Math.min(100, (totalTokens / 128_000) * 100).toFixed(0);
       s.renderer.writeLine("");
       s.renderer.writeLine(
-        `${p.dim}📥 ${prompt_tokens}  📤 ${completion_tokens}  Σ ${totalTokens}${p.reset}`,
+        `${p.dim}↓${prompt_tokens} ↑${completion_tokens}  ctx: ${ctxK}k/${maxK}k (${pct}%)${p.reset}`,
       );
       drain();
       pendingUsage = null;
