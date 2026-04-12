@@ -172,6 +172,10 @@ export class InputHandler {
   }
 
   handleInput(data: string): void {
+    // Allow extensions to capture raw input (e.g. overlay prompt during vim)
+    const intercepted = this.bus.emitPipe("input:intercept", { data, consumed: false });
+    if (intercepted.consumed) return;
+
     // If agent is running (processing a query), only Ctrl-C and control keys
     if (this.ctx.isAgentActive()) {
       if (data === "\x03") {

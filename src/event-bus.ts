@@ -127,6 +127,11 @@ export interface ShellEvents {
   // Generic keypress forwarding (control chars not handled by input-handler)
   "input:keypress": { key: string };
 
+  // Raw input intercept (sync pipe: fired before any input processing).
+  // Extensions set `consumed: true` to swallow input before it reaches the
+  // PTY or mode handler — enables overlay UIs during foreground programs.
+  "input:intercept": { data: string; consumed: boolean };
+
   // Terminal interception (sync pipe: extensions can intercept before execution)
   "agent:terminal-intercept": {
     command: string;
