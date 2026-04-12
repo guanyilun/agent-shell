@@ -550,7 +550,8 @@ export class InputHandler {
             }
             this.editor.buffer = this.history[this.historyIndex]!;
             this.editor.cursor = this.editor.buffer.length;
-            this.renderModeInput();
+            this.clearAutocompleteLines();
+            this.writeModePromptLine();
           }
           break;
 
@@ -572,7 +573,8 @@ export class InputHandler {
               this.editor.buffer = this.savedBuffer;
             }
             this.editor.cursor = this.editor.buffer.length;
-            this.renderModeInput();
+            this.clearAutocompleteLines();
+            this.writeModePromptLine();
           }
           break;
       }
