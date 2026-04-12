@@ -81,8 +81,9 @@ export class Shell implements InputContext {
         zshrcLines.push(
           "",
           "# agent-sh prompt indicator (append to existing RPROMPT)",
+          '__agent_sh_orig_rprompt="$RPROMPT"',
           '__agent_sh_indicator() {',
-          '  RPROMPT="${RPROMPT:+$RPROMPT }%F{6}⚡ agent-sh%f"',
+          '  RPROMPT="${__agent_sh_orig_rprompt:+$__agent_sh_orig_rprompt }%F{6}⚡ agent-sh%f"',
           "}",
           "precmd_functions+=(__agent_sh_indicator)",
         );
