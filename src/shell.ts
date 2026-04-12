@@ -266,9 +266,18 @@ export class Shell implements InputContext {
    * Heavy redraw: send \n to PTY to trigger a full precmd → prompt cycle.
    * Use this after agent responses where stdout has moved far from where
    * zle expects the cursor. The blank line is acceptable as a separator.
+   *
+   * Routed through shell:redraw-prompt pipe so extensions (e.g. overlay)
+   * can suppress it by setting `handled: true`.
    */
   freshPrompt(): void {
-    this.ptyProcess.write("\n");
+    const result = this.bus.emitPipe("shell:redraw-prompt", {
+      cwd: this.outputParser.getCwd(),
+      handled: false,
+    });
+    if (!result.handled) {
+      this.ptyProcess.write("\n");
+    }
   }
 
   onCommandEntered(command: string, cwd: string): void {

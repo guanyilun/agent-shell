@@ -190,9 +190,20 @@ export default function activate({ bus, advise }: ExtensionContext): void {
   }
 
   function restoreScreen(): void {
-    // Leave alternate screen buffer — terminal automatically restores
-    // the original screen content (vim, shell, whatever was running)
+    // Leave alternate screen buffer — restores the OLD main buffer.
     process.stdout.write("\x1b[?1049l");
+
+    // The main buffer is stale (frozen when we entered alt screen).
+    // Any PTY output that happened while the overlay was active only
+    // went to the alt screen. Redraw with the current terminal state
+    // from our headless xterm.js buffer so the user sees up-to-date content.
+    const content = serialize.serialize();
+    const cursorY = term.buffer.active.cursorY;
+    const cursorX = term.buffer.active.cursorX;
+    process.stdout.write(
+      "\x1b[H\x1b[2J" + content +
+      `\x1b[${cursorY + 1};${cursorX + 1}H`
+    );
   }
 
   // ── Phase transitions ─────────────────────────────────────
@@ -235,8 +246,11 @@ export default function activate({ bus, advise }: ExtensionContext): void {
     inputBuffer = "";
     inputCursor = 0;
 
-    // Leave alternate screen — terminal restores the original screen
+    // Leave alternate screen and redraw with current terminal state
     restoreScreen();
+
+    // Reset any accumulated stdout-show refs from terminal_keys
+    bus.emit("shell:stdout-hide", {});
     bus.emit("shell:stdout-release", {});
   }
 
@@ -335,17 +349,28 @@ export default function activate({ bus, advise }: ExtensionContext): void {
 
   bus.on("agent:processing-done", () => {
     if (phase === "responding") {
+      // Flush any partial response line
       if (currentResponseLine) { responseLines.push(currentResponseLine); currentResponseLine = ""; }
+      // Show final response, then auto-dismiss after brief pause
       phase = "done";
       compositeAndRender();
+      // Any keypress also dismisses (see input:intercept "done" handler)
+      setTimeout(() => {
+        if (phase === "done") dismiss();
+      }, 2000);
     }
+  });
+
+  // Suppress Shell's freshPrompt \n when overlay is active — it would
+  // feed into whatever foreground program is running (e.g. Python input()).
+  bus.onPipe("shell:redraw-prompt", (payload) => {
+    if (phase !== "idle") return { ...payload, handled: true };
+    return payload;
   });
 
   bus.onPipe("input:intercept", (payload) => {
     if (phase === "done") {
-      if (payload.data === TRIGGER || payload.data === "\x1b" || payload.data === "\x03") {
-        dismiss();
-      }
+      dismiss();
       return { ...payload, consumed: true };
     }
     if (phase === "input") {

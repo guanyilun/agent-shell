@@ -259,7 +259,7 @@ export class InputHandler {
           this.enterMode(mode);
           return; // don't process remaining chars
         }
-        this.lineBuffer += ch;
+        if (!this.ctx.isForegroundBusy()) this.lineBuffer += ch;
         this.ctx.writeToPty(ch);
       }
     }

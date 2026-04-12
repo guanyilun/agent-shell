@@ -123,7 +123,15 @@ export class OutputParser {
       this.lastCommand = "";
       this.currentOutputCapture = "";
     } else {
+      // Cap capture buffer to avoid unbounded growth when a foreground
+      // program (tmux, vim, etc.) produces output without prompt markers.
+      // Keep only the tail — the final output is what matters for
+      // command-done context.
+      const MAX_CAPTURE = 128 * 1024; // 128 KB
       this.currentOutputCapture += data;
+      if (this.currentOutputCapture.length > MAX_CAPTURE) {
+        this.currentOutputCapture = this.currentOutputCapture.slice(-MAX_CAPTURE);
+      }
     }
   }
 
