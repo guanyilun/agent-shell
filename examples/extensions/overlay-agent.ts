@@ -1,7 +1,7 @@
 /**
  * Overlay agent extension.
  *
- * Provides a hotkey (Ctrl+]) to summon the agent from anywhere — even
+ * Provides a hotkey (Ctrl+\) to summon the agent from anywhere — even
  * inside vim, htop, or ssh. Composites a floating response box on top
  * of the current terminal content using a headless xterm.js buffer.
  *
@@ -20,7 +20,7 @@ const require = createRequire(import.meta.url);
 const { Terminal } = require("@xterm/headless") as typeof import("@xterm/headless");
 const { SerializeAddon } = require("@xterm/addon-serialize") as typeof import("@xterm/addon-serialize");
 
-const TRIGGER = "\x1d"; // Ctrl+]
+const TRIGGER = "\x1c"; // Ctrl+\
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
@@ -140,7 +140,7 @@ export default function activate({ bus, advise }: ExtensionContext): void {
         const left = `${DIM}${bgLine.slice(0, boxLeft)}${RESET}`;
         let footer = "";
         if (phase === "done") {
-          footer = ` Ctrl+] to return `;
+          footer = ` Ctrl+\ to return `;
         } else if (phase === "responding") {
           footer = ` streaming... `;
         } else if (phase === "input") {
