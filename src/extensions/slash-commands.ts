@@ -2,11 +2,14 @@
  * Slash commands extension.
  *
  * Registers built-in slash commands on the event bus:
+ * - Listens for "command:register" to accept commands from extensions
  * - Responds to "autocomplete:request" pipe for /-prefixed completions
  * - Handles "command:execute" events and dispatches to matching handler
  * - Uses "ui:info"/"ui:error" for user feedback (no direct TUI dependency)
+ *
+ * Argument completion is composable: any extension can onPipe("autocomplete:request")
+ * and check payload.command / payload.commandArgs to add completions for any command.
  */
-import { execSync } from "node:child_process";
 import { palette as p } from "../utils/palette.js";
 import type { ExtensionContext } from "../types.js";
 import { discoverSkills, loadSkillContent, type Skill } from "../agent/skills.js";
@@ -17,94 +20,83 @@ interface SlashCommand {
   handler: (args: string) => Promise<void> | void;
 }
 
-export default function activate({ bus, contextManager, quit }: ExtensionContext): void {
-  // Track last response for /copy
-  let lastResponseText = "";
-  bus.on("agent:processing-start", () => { lastResponseText = ""; });
-  bus.on("agent:response-chunk", ({ blocks }) => {
-    for (const b of blocks) if (b.type === "text") lastResponseText += b.text;
+export default function activate({ bus, contextManager }: ExtensionContext): void {
+  const commands = new Map<string, SlashCommand>();
+
+  const register = (cmd: SlashCommand) => {
+    const name = cmd.name.startsWith("/") ? cmd.name : `/${cmd.name}`;
+    commands.set(name, { ...cmd, name });
+  };
+
+  // ── Built-in commands ─────────────────────────────────────────
+
+  register({
+    name: "/help",
+    description: "Show available commands",
+    handler: () => {
+      const maxLen = Math.max(...[...commands.values()].map(c => c.name.length));
+      const pad = maxLen + 2;
+      const lines = [...commands.values()].map(
+        (c) => `  ${p.accent}${c.name.padEnd(pad)}${p.reset} ${c.description}`
+      );
+      bus.emit("ui:info", { message: "Available commands:\n" + lines.join("\n") });
+    },
   });
 
-  const commands: SlashCommand[] = [
-    {
-      name: "/help",
-      description: "Show available commands",
-      handler: () => {
-        const lines = commands.map(
-          (c) => `  ${p.accent}${c.name.padEnd(12)}${p.reset} ${c.description}`
-        );
-        bus.emit("ui:info", { message: "Available commands:\n" + lines.join("\n") });
-      },
+  register({
+    name: "/model",
+    description: "Cycle to next model, or switch to a specific one",
+    handler: (args) => {
+      const name = args.trim();
+      if (!name) {
+        const { models, active } = bus.emitPipe("config:get-models", { models: [], active: null });
+        const current = models.find((m) => m.model === active);
+        const label = current
+          ? `${current.model}${current.provider ? ` [${current.provider}]` : ""}`
+          : active ?? "none";
+        bus.emit("ui:info", { message: `Model: ${label}` });
+      } else {
+        bus.emit("config:switch-model", { model: name });
+      }
     },
-    {
-      name: "/clear",
-      description: "Start a new agent session",
-      handler: () => {
-        bus.emit("agent:reset-session", {});
-        bus.emit("ui:info", { message: "Session cleared." });
-      },
-    },
-    {
-      name: "/copy",
-      description: "Copy last agent response to clipboard",
-      handler: () => {
-        const text = lastResponseText;
-        if (!text) {
-          bus.emit("ui:info", { message: "No agent response to copy." });
-          return;
-        }
-        try {
-          if (process.platform === "darwin") {
-            execSync("pbcopy", { input: text });
-          } else {
-            execSync("xclip -selection clipboard", { input: text });
-          }
-          bus.emit("ui:info", { message: "Copied to clipboard." });
-        } catch {
-          bus.emit("ui:error", { message: "Failed to copy to clipboard." });
-        }
-      },
-    },
-    {
-      name: "/compact",
-      description: "Ask agent to summarize the conversation",
-      handler: async () => {
-        bus.emit("agent:submit", {
-          query: "Please provide a concise summary of our conversation so far and the current state of the work.",
-        });
-      },
-    },
-    {
-      name: "/model",
-      description: "Cycle to next model",
-      handler: () => {
-        bus.emit("config:cycle", {});
-      },
-    },
-    {
-      name: "/backend",
-      description: "List or switch agent backend",
-      handler: (args) => {
-        const name = args.trim();
-        if (!name) {
-          bus.emit("config:list-backends", {});
-        } else {
-          bus.emit("config:switch-backend", { name });
-        }
-      },
-    },
-{
-      name: "/quit",
-      description: "Exit agent-sh",
-      handler: () => {
-        quit();
-      },
-    },
-  ];
+  });
 
-  // ── Skill commands (/skill:<name>) ──────────────────────────────
+  register({
+    name: "/thinking",
+    description: "Set thinking/reasoning effort level",
+    handler: (args) => {
+      const level = args.trim();
+      if (!level) {
+        const { level: current, levels, supported } = bus.emitPipe("config:get-thinking", { level: "off", levels: [], supported: true });
+        const status = supported ? current : `${current} (not supported by current model)`;
+        bus.emit("ui:info", { message: `Thinking: ${status} (options: ${levels.join(", ")})` });
+      } else {
+        bus.emit("config:set-thinking", { level });
+      }
+    },
+  });
 
-  /** Get current skills (re-discovered on each call since cwd may change). */
+  register({
+    name: "/backend",
+    description: "List or switch agent backend",
+    handler: (args) => {
+      const name = args.trim();
+      if (!name) {
+        bus.emit("config:list-backends", {});
+      } else {
+        bus.emit("config:switch-backend", { name });
+      }
+    },
+  });
+
+  // ── Extension registration ────────────────────────────────────
+
+  bus.on("command:register", (cmd) => {
+    register(cmd);
+  });
+
+  // ── Skill commands (/skill:<name>) ────────────────────────────
+
   const getSkills = (): Skill[] => {
     const cwd = contextManager?.getCwd() ?? process.cwd();
     return discoverSkills(cwd);
@@ -124,20 +116,21 @@ export default function activate({ bus, contextManager, quit }: ExtensionContext
       return;
     }
 
-    // Inject skill content as a query — agent sees the full instructions
     const query = args.trim()
       ? `${content}\n\n${args.trim()}`
       : content;
     bus.emit("agent:submit", { query });
   };
 
-  // Provide command completions for /-prefixed input
+  // ── Autocomplete: command names ───────────────────────────────
+
   bus.onPipe("autocomplete:request", (payload) => {
     if (!payload.buffer.startsWith("/")) return payload;
-    const prefix = payload.buffer.toLowerCase();
+    // Argument completion is handled by separate pipe handlers below
+    if (payload.command) return payload;
 
-    // Built-in commands
-    const matching = commands
+    const prefix = payload.buffer.toLowerCase();
+    const matching = [...commands.values()]
       .filter((c) => c.name.toLowerCase().startsWith(prefix))
       .map((c) => ({ name: c.name, description: c.description }));
 
@@ -156,16 +149,65 @@ export default function activate({ bus, contextManager, quit }: ExtensionContext
     return { ...payload, items: [...payload.items, ...matching] };
   });
 
-  // Handle command execution
+  // ── Autocomplete: /model arguments ─────────────────────────────
+
+  bus.onPipe("autocomplete:request", (payload) => {
+    if (payload.command !== "/model") return payload;
+    const partial = (payload.commandArgs ?? "").toLowerCase();
+    const { models, active } = bus.emitPipe("config:get-models", { models: [], active: null });
+    const items = models
+      .filter((m) => m.model.toLowerCase().includes(partial))
+      .slice(0, 15)
+      .map((m) => ({
+        name: `/model ${m.model}`,
+        description: `${m.provider ? `[${m.provider}]` : ""}${m.model === active ? " (active)" : ""}`,
+      }));
+    if (items.length === 0) return payload;
+    return { ...payload, items: [...payload.items, ...items] };
+  });
+
+  // ── Autocomplete: /thinking arguments ─────────────────────────
+
+  bus.onPipe("autocomplete:request", (payload) => {
+    if (payload.command !== "/thinking") return payload;
+    const partial = (payload.commandArgs ?? "").toLowerCase();
+    const { level: current, levels } = bus.emitPipe("config:get-thinking", { level: "off", levels: [], supported: true });
+    const items = levels
+      .filter((l) => l.startsWith(partial))
+      .map((l) => ({
+        name: `/thinking ${l}`,
+        description: l === current ? "(active)" : "",
+      }));
+    if (items.length === 0) return payload;
+    return { ...payload, items: [...payload.items, ...items] };
+  });
+
+  // ── Autocomplete: /backend arguments ──────────────────────────
+
+  bus.onPipe("autocomplete:request", (payload) => {
+    if (payload.command !== "/backend") return payload;
+    const partial = (payload.commandArgs ?? "").toLowerCase();
+    const { names, active } = bus.emitPipe("config:get-backends", { names: [], active: null });
+    const items = names
+      .filter((n) => n.toLowerCase().startsWith(partial))
+      .map((n) => ({
+        name: `/backend ${n}`,
+        description: n === active ? "(active)" : "",
+      }));
+    if (items.length === 0) return payload;
+    return { ...payload, items: [...payload.items, ...items] };
+  });
+
+  // ── Dispatch ──────────────────────────────────────────────────
+
   bus.on("command:execute", (e) => {
-    // Check for /skill:<name> commands
     if (e.name.startsWith("/skill:")) {
       const skillName = e.name.slice("/skill:".length);
       handleSkillCommand(skillName, e.args);
       return;
     }
 
-    const cmd = commands.find((c) => c.name === e.name);
+    const cmd = commands.get(e.name);
     if (cmd) {
       const result = cmd.handler(e.args);
       if (result instanceof Promise) {

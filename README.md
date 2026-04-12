@@ -63,13 +63,8 @@ Everything else works as a normal shell — commands go straight to the PTY. Mod
 | Command | Description |
 |---|---|
 | `/help` | Show available commands |
-| `/clear` | Start a new agent session |
-| `/copy` | Copy last agent response to clipboard |
-| `/compact` | Summarize the conversation to free context |
-| `/model` | Cycle to the next model (same as Shift+Tab) |
-| `/provider <name>` | Switch to a different provider |
+| `/model [name]` | Cycle to the next model, or switch to a specific one |
 | `/backend [name]` | List backends, or switch to a named backend |
-| `/quit` | Exit agent-sh |
 
 ## Configuration
 

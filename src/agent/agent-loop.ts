@@ -52,6 +52,9 @@ export class AgentLoop implements AgentBackend {
   private currentModeIndex = 0;
   private boundListeners: Array<{ event: string; fn: (...args: any[]) => void }> = [];
   private lastProjectSkillNames = new Set<string>();
+  private static readonly THINKING_LEVELS = ["off", "low", "medium", "high"];
+
+  private thinkingLevel = "off";
 
   constructor(
     private bus: EventBus,
@@ -91,6 +94,52 @@ export class AgentLoop implements AgentBackend {
       this.abortController?.abort(e.silent ? "silent" : undefined);
     });
     on("config:cycle", () => this.cycleMode());
+    on("config:switch-model", ({ model: target }) => {
+      const idx = this.modes.findIndex((m) => m.model === target);
+      if (idx === -1) {
+        this.bus.emit("ui:error", { message: `Unknown model: ${target}` });
+        return;
+      }
+      this.currentModeIndex = idx;
+      const m = this.modes[idx];
+      if (m.providerConfig) {
+        this.llmClient.reconfigure({ ...m.providerConfig, model: m.model });
+      } else {
+        this.llmClient.model = m.model;
+      }
+      const label = m.provider ? `${m.provider}: ${m.model}` : m.model;
+      this.bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: m.model, provider: m.provider, contextWindow: m.contextWindow });
+      this.bus.emit("ui:info", { message: `Model: ${label}` });
+      this.bus.emit("config:changed", {});
+    });
+    this.bus.onPipe("config:get-models", (payload) => {
+      const models = this.modes.map((m) => ({ model: m.model, provider: m.provider ?? "" }));
+      const active = this.modes[this.currentModeIndex]?.model ?? null;
+      return { models, active };
+    });
+    on("config:set-thinking", ({ level }) => {
+      if (!AgentLoop.THINKING_LEVELS.includes(level)) {
+        this.bus.emit("ui:error", { message: `Unknown thinking level: ${level}. Use: ${AgentLoop.THINKING_LEVELS.join(", ")}` });
+        return;
+      }
+      const mode = this.currentMode;
+      if (level !== "off" && mode.reasoning === false) {
+        this.bus.emit("ui:error", { message: `Model ${mode.model} does not support thinking.` });
+        return;
+      }
+      if (level !== "off" && mode.supportsReasoningEffort === false) {
+        this.bus.emit("ui:error", { message: `Provider ${mode.provider ?? "unknown"} does not support reasoning_effort.` });
+        return;
+      }
+      this.thinkingLevel = level;
+      this.bus.emit("ui:info", { message: `Thinking: ${level}` });
+      this.bus.emit("config:changed", {});
+    });
+    this.bus.onPipe("config:get-thinking", () => {
+      const mode = this.currentMode;
+      const supported = mode.reasoning !== false && mode.supportsReasoningEffort !== false;
+      return { level: this.thinkingLevel, levels: AgentLoop.THINKING_LEVELS, supported };
+    });
     on("config:set-modes", ({ modes: newModes }) => {
       this.modes = newModes;
       this.currentModeIndex = 0;
@@ -151,6 +200,15 @@ export class AgentLoop implements AgentBackend {
 
   private cancel(): void {
     this.abortController?.abort();
+  }
+
+  /** Check if reasoning_effort should be sent for the current model/provider. */
+  private shouldSendReasoningEffort(): boolean {
+    if (this.thinkingLevel === "off") return false;
+    const mode = this.currentMode;
+    if (mode.reasoning === false) return false;
+    if (mode.supportsReasoningEffort === false) return false;
+    return true;
   }
 
 
@@ -614,6 +672,7 @@ export class AgentLoop implements AgentBackend {
       messages,
       tools: this.toolRegistry.toAPITools(),
       model: this.currentModel,
+      reasoning_effort: this.shouldSendReasoningEffort() ? this.thinkingLevel : undefined,
       signal,
     });
 

@@ -47,17 +47,23 @@ export class LlmClient {
     tools?: ChatCompletionTool[];
     model?: string;
     max_tokens?: number;
+    /** Reasoning effort level (e.g. "low", "medium", "high"). Provider-dependent. */
+    reasoning_effort?: string;
     signal?: AbortSignal;
   }) {
+    const body = {
+      model: opts.model ?? this.model,
+      messages: opts.messages,
+      tools: opts.tools?.length ? opts.tools : undefined,
+      max_tokens: opts.max_tokens ?? 8192,
+      stream: true as const,
+      stream_options: { include_usage: true },
+      ...(opts.reasoning_effort
+        ? { reasoning_effort: opts.reasoning_effort as "low" | "medium" | "high" }
+        : {}),
+    };
     return this.client.chat.completions.create(
-      {
-        model: opts.model ?? this.model,
-        messages: opts.messages,
-        tools: opts.tools?.length ? opts.tools : undefined,
-        max_tokens: opts.max_tokens ?? 8192,
-        stream: true,
-        stream_options: { include_usage: true },
-      },
+      body,
       { signal: opts.signal },
     );
   }
