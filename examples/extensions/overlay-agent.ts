@@ -1,7 +1,7 @@
 /**
  * Overlay agent extension.
  *
- * Provides a hotkey (Ctrl+G) to summon the agent from anywhere — even
+ * Provides a hotkey (Ctrl+]) to summon the agent from anywhere — even
  * inside vim, htop, or ssh. Renders a minimal input bar at the bottom
  * of the terminal, captures keystrokes via `input:intercept`, and
  * dispatches the query via the bus.
@@ -14,7 +14,7 @@
  */
 import type { ExtensionContext } from "agent-sh/types";
 
-const TRIGGER = "\x07"; // Ctrl+G
+const TRIGGER = "\x1d"; // Ctrl+]
 
 export default function activate({ bus }: ExtensionContext): void {
   let active = false;
