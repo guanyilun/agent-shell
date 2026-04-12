@@ -30,8 +30,8 @@ function createUserShellTool(bus: EventBus) {
 
   return tool(
     "user_shell",
-    "Run a command in the user's live shell (visible in terminal). " +
-    "Use for cd, export, source, or commands the user wants to see. " +
+    "Run a command with lasting effects in the user's live shell (cd, export, " +
+    "install packages, start servers) or show output the user wants to see. " +
     "Set return_output=true only if you need to inspect the result.",
     {
       command: z.string().describe("Command to execute in user's shell"),
@@ -71,12 +71,8 @@ export default function activate(ctx: ExtensionContext): void {
   const listeners: Array<{ event: string; fn: Function }> = [];
 
   const wireListeners = () => {
-    const onSubmit = async ({ query: userQuery, modeInstruction, modeLabel }: any) => {
-      const prompt = modeInstruction
-        ? `${modeInstruction}\n${userQuery}`
-        : userQuery;
-
-      bus.emit("agent:query", { query: userQuery, modeLabel });
+    const onSubmit = async ({ query: userQuery }: any) => {
+      bus.emit("agent:query", { query: userQuery });
       bus.emit("agent:processing-start", {});
 
       let fullResponseText = "";
@@ -84,7 +80,7 @@ export default function activate(ctx: ExtensionContext): void {
 
       try {
         activeQuery = query({
-          prompt,
+          prompt: userQuery,
           options: {
             cwd: process.cwd(),
             systemPrompt: {
@@ -92,9 +88,9 @@ export default function activate(ctx: ExtensionContext): void {
               preset: "claude_code",
               append:
                 "You are running inside agent-sh, a terminal wrapper.\n" +
-                "EXECUTE mode ('>'): Use your standard tools. Do NOT use user_shell.\n" +
-                "HELP mode ('?'): Run the command via mcp__agent-sh__user_shell. Just run it, no explanation.\n" +
-                "Each prompt includes a per-query mode instruction — follow it.",
+                "Use your standard tools (Read, Edit, Write, Bash, Glob, Grep) for investigation.\n" +
+                "Use mcp__agent-sh__user_shell to run commands in the user's live shell when they ask to see output or need lasting effects (cd, install, start servers).\n" +
+                "Default to standard tools. Use user_shell when the user is the intended audience for the output or the command has real effects.",
             },
             mcpServers: { "agent-sh": shellServer },
             allowedTools: [

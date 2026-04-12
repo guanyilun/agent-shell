@@ -89,8 +89,8 @@ export class AgentLoop implements AgentBackend {
       this.boundListeners.push({ event, fn });
     };
 
-    on("agent:submit", ({ query, modeInstruction }) => {
-      this.handleQuery(query, modeInstruction).catch(() => {});
+    on("agent:submit", ({ query }) => {
+      this.handleQuery(query).catch(() => {});
     });
     on("agent:cancel-request", (e) => {
       this.abortController?.abort(e.silent ? "silent" : undefined);
@@ -478,10 +478,7 @@ export class AgentLoop implements AgentBackend {
     });
   }
 
-  private async handleQuery(
-    query: string,
-    modeInstruction?: string,
-  ): Promise<void> {
+  private async handleQuery(query: string): Promise<void> {
     // Cancel any in-flight loop (concurrent prompt handling)
     if (this.abortController) {
       this.abortController.abort();
@@ -497,11 +494,7 @@ export class AgentLoop implements AgentBackend {
     let responseText = "";
 
     try {
-      // Prepend mode instruction to the user message
-      const userMessage = modeInstruction
-        ? `${modeInstruction}\n${query}`
-        : query;
-      this.conversation.addUserMessage(userMessage);
+      this.conversation.addUserMessage(query);
 
       responseText = await this.executeLoop(signal);
     } catch (e) {

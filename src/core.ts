@@ -45,7 +45,7 @@ export interface AgentShellCore {
   /** Activate the agent backend (call after extensions load). */
   activateBackend(): void;
   /** Convenience: emit agent:submit and await the response. */
-  query(text: string, opts?: { mode?: string }): Promise<string>;
+  query(text: string): Promise<string>;
   /** Convenience: emit agent:cancel-request. */
   cancel(): void;
   /** Build an ExtensionContext for loading extensions against this core. */
@@ -285,7 +285,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
       }
     },
 
-    async query(text, opts) {
+    async query(text) {
       return new Promise((resolve, reject) => {
         let response = "";
         let settled = false;
@@ -315,10 +315,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
         bus.on("agent:processing-done", onDone);
         bus.on("agent:error", onError);
 
-        bus.emit("agent:submit", {
-          query: text,
-          modeInstruction: opts?.mode,
-        });
+        bus.emit("agent:submit", { query: text });
       });
     },
 

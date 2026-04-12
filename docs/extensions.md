@@ -209,7 +209,7 @@ A backend listens for input events and emits output events. The TUI and all exte
 
 | Event | Payload | Description |
 |---|---|---|
-| `agent:submit` | `{ query, modeInstruction?, modeLabel? }` | User submitted a query |
+| `agent:submit` | `{ query }` | User submitted a query |
 | `agent:cancel-request` | `{ silent? }` | User requested cancellation |
 | `agent:reset-session` | `{}` | User issued reset — clear conversation state |
 
@@ -218,7 +218,7 @@ A backend listens for input events and emits output events. The TUI and all exte
 | Step | Event | Payload | Notes |
 |---|---|---|---|
 | 1 | `agent:processing-start` | `{}` | Starts spinner in TUI |
-| 2 | `agent:query` | `{ query, modeLabel? }` | Echoes the query for display |
+| 2 | `agent:query` | `{ query }` | Echoes the query for display |
 | 3 | `agent:response-chunk` | `{ blocks: ContentBlock[] }` | Use `emitTransform` so content pipeline runs. Emit 0+ times |
 | 4 | `agent:response-done` | `{ response }` | Full response text |
 | 5 | `agent:processing-done` | `{}` | Stops spinner, returns control to prompt |

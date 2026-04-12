@@ -48,17 +48,16 @@ function createUserShellToolDef(bus: EventBus) {
     name: "user_shell",
     label: "user_shell",
     description:
-      "Run a command in the user's live shell (visible in terminal). " +
-      "Use for cd, export, source, or commands the user wants to see. " +
+      "Run a command with lasting effects in the user's live shell (cd, export, " +
+      "install packages, start servers) or show output the user wants to see. " +
       "Output is shown directly to the user. Set return_output=true only " +
       "if you need to inspect the result.",
-    promptSnippet: "Execute commands in the user's live terminal (PTY). Use in HELP mode.",
+    promptSnippet: "Execute commands in the user's live terminal (PTY).",
     promptGuidelines: [
-      "You are running inside agent-sh, a terminal wrapper with two interaction modes.",
-      "EXECUTE mode (triggered by '>'): Use your standard tools (bash, file ops). Do NOT use user_shell.",
-      "HELP mode (triggered by '?'): Run the command via user_shell. Do not explain or confirm — just run it.",
-      "Each prompt includes a per-query mode instruction — follow it.",
-      "user_shell executes in the user's actual shell (their aliases, env vars, cwd). Use bash for background work.",
+      "You are running inside agent-sh, a terminal wrapper.",
+      "Use your standard tools (bash, file ops) for investigation — output goes to you, not the user.",
+      "Use user_shell to run commands in the user's live shell when they ask to see output or need lasting effects (cd, install, start servers).",
+      "Default to standard tools. Use user_shell when the user is the intended audience for the output or the command has real effects.",
     ],
     parameters: schema,
 
@@ -203,7 +202,7 @@ export default function activate(ctx: ExtensionContext): void {
   const listeners: Array<{ event: string; fn: Function }> = [];
 
   const wireListeners = () => {
-    const onSubmit = async ({ query, modeInstruction, modeLabel }: any) => {
+    const onSubmit = async ({ query }: any) => {
       if (!session) {
         bus.emit("agent:error", {
           message: booting ? "pi is still starting up..." : "pi session not initialized",
@@ -212,12 +211,11 @@ export default function activate(ctx: ExtensionContext): void {
         return;
       }
 
-      const prompt = modeInstruction ? `${modeInstruction}\n${query}` : query;
-      bus.emit("agent:query", { query, modeLabel });
+      bus.emit("agent:query", { query });
       bus.emit("agent:processing-start", {});
 
       try {
-        await session.prompt(prompt);
+        await session.prompt(query);
       } catch (err) {
         bus.emit("agent:error", {
           message: err instanceof Error ? err.message : String(err),
