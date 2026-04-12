@@ -211,6 +211,11 @@ export class MarkdownRenderer {
 
     // Render rows
     const hasHeader = sepIdx.includes(1) && dataRows.length > 1;
+
+    // Top border
+    const topBorder = colWidths.map((w) => "─".repeat(w)).join(`─┬─`);
+    this.writeLine(`${p.dim}┌─${topBorder}─┐${p.reset}`);
+
     for (let i = 0; i < dataRows.length; i++) {
       const row = dataRows[i]!;
       const isHeader = hasHeader && i === 0;
@@ -227,6 +232,10 @@ export class MarkdownRenderer {
         this.writeLine(`${p.dim}├─${sep}─┤${p.reset}`);
       }
     }
+
+    // Bottom border
+    const bottomBorder = colWidths.map((w) => "─".repeat(w)).join(`─┴─`);
+    this.writeLine(`${p.dim}└─${bottomBorder}─┘${p.reset}`);
   }
 
   private renderLine(line: string): string {
