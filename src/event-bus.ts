@@ -74,6 +74,13 @@ export interface ShellEvents {
     decision: Record<string, unknown>;
   };
 
+  // Slash command registration (extensions → slash-commands)
+  "command:register": {
+    name: string;
+    description: string;
+    handler: (args: string) => Promise<void> | void;
+  };
+
   // Slash command execution
   "command:execute": {
     name: string;
@@ -117,6 +124,7 @@ export interface ShellEvents {
   // Session reset (slash command → backend: clear conversation state)
   "agent:reset-session": Record<string, never>;
 
+
   // Extension registers itself as agent backend (extension → core)
   "agent:register-backend": {
     name: string;
@@ -129,12 +137,22 @@ export interface ShellEvents {
 
   // List registered backends (slash command → core, returns via ui:info)
   "config:list-backends": Record<string, never>;
+  // Query backend names (sync pipe — for autocomplete)
+  "config:get-backends": { names: string[]; active: string | null };
 
   // Session mode/config updated (from agent backend)
   "config:changed": Record<string, never>;
 
   // Cycle session mode (input-handler → backend: cycles models within provider)
   "config:cycle": Record<string, never>;
+  // Switch to a specific model by name (slash command → backend)
+  "config:switch-model": { model: string };
+  // Query available models (sync pipe — for autocomplete)
+  "config:get-models": { models: { model: string; provider: string }[]; active: string | null };
+  // Set thinking/reasoning effort level (slash command → backend)
+  "config:set-thinking": { level: string };
+  // Query current thinking level (sync pipe — for autocomplete)
+  "config:get-thinking": { level: string; levels: string[]; supported: boolean };
 
   // Switch provider at runtime (slash command → core)
   "config:switch-provider": { provider: string };
@@ -148,12 +166,18 @@ export interface ShellEvents {
     apiKey?: string;
     baseURL?: string;
     defaultModel: string;
-    models?: string[];
+    models?: (string | { id: string; reasoning?: boolean; contextWindow?: number })[];
+    /** Provider supports the reasoning_effort parameter. Default: true. */
+    supportsReasoningEffort?: boolean;
   };
 
   // Autocomplete (sync pipe: extensions inspect buffer and append items)
   "autocomplete:request": {
     buffer: string;
+    /** Parsed slash command name (e.g. "/backend"), or null if not a command. */
+    command: string | null;
+    /** Text after the command name (e.g. "clau" for "/backend clau"), or null. */
+    commandArgs: string | null;
     items: { name: string; description: string }[];
   };
 }

@@ -17,6 +17,10 @@ export interface AgentMode {
   providerConfig?: { apiKey: string; baseURL?: string };
   /** Context window size in tokens (for usage display). */
   contextWindow?: number;
+  /** Model supports reasoning/thinking tokens. */
+  reasoning?: boolean;
+  /** Provider supports the reasoning_effort parameter. */
+  supportsReasoningEffort?: boolean;
 }
 
 export interface AgentShellConfig {
@@ -55,6 +59,10 @@ export interface ExtensionContext {
   createFencedBlockTransform: (opts: FencedBlockTransformOptions) => void;
   /** Read extension-namespaced settings from ~/.agent-sh/settings.json. */
   getExtensionSettings: <T extends Record<string, unknown>>(namespace: string, defaults: T) => T;
+
+  // ── Slash command registration ─────────────────────────────
+  /** Register a slash command available in any input mode. */
+  registerCommand: (name: string, description: string, handler: (args: string) => Promise<void> | void) => void;
 
   // ── Tool registration (agent-sh backend only) ─────────────
   /** Register a tool for the built-in agent. No-op when using bridge backends. */

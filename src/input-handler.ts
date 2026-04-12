@@ -293,8 +293,20 @@ export class InputHandler {
   }
 
   private updateAutocomplete(): void {
+    const buf = this.editor.buffer;
+    let command: string | null = null;
+    let commandArgs: string | null = null;
+    if (buf.startsWith("/")) {
+      const spaceIdx = buf.indexOf(" ");
+      if (spaceIdx !== -1) {
+        command = buf.slice(0, spaceIdx);
+        commandArgs = buf.slice(spaceIdx + 1);
+      }
+    }
     const { items } = this.bus.emitPipe("autocomplete:request", {
-      buffer: this.editor.buffer,
+      buffer: buf,
+      command,
+      commandArgs,
       items: [],
     });
     if (items.length > 0) {

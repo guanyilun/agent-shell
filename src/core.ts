@@ -81,11 +81,14 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
     for (const [id, p] of providerRegistry) {
       if (!p.apiKey) continue;
       for (const model of p.models) {
+        const mc = p.modelCapabilities?.get(model);
         allModes.push({
           model,
           provider: id,
           providerConfig: { apiKey: p.apiKey, baseURL: p.baseURL },
-          contextWindow: p.contextWindow,
+          contextWindow: mc?.contextWindow ?? p.contextWindow,
+          reasoning: mc?.reasoning,
+          supportsReasoningEffort: p.supportsReasoningEffort,
         });
       }
     }
@@ -180,15 +183,35 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
     bus.emit("ui:info", { message: `Backends: ${list}` });
   });
 
+  bus.onPipe("config:get-backends", (payload) => {
+    const names: string[] = [];
+    if (agentLoop) names.push("agent-sh");
+    for (const name of backends.keys()) names.push(name);
+    return { names, active: activeBackendName };
+  });
+
   // ── Runtime provider management ──────────────────────────────
 
   bus.on("provider:register", (p) => {
+    const rawModels = p.models ?? (p.defaultModel ? [p.defaultModel] : []);
+    const modelIds: string[] = [];
+    const caps = new Map<string, { reasoning?: boolean; contextWindow?: number }>();
+    for (const m of rawModels) {
+      if (typeof m === "string") {
+        modelIds.push(m);
+      } else {
+        modelIds.push(m.id);
+        caps.set(m.id, { reasoning: m.reasoning, contextWindow: m.contextWindow });
+      }
+    }
     providerRegistry.set(p.id, {
       id: p.id,
       apiKey: p.apiKey,
       baseURL: p.baseURL,
       defaultModel: p.defaultModel,
-      models: p.models ?? (p.defaultModel ? [p.defaultModel] : []),
+      models: modelIds,
+      supportsReasoningEffort: p.supportsReasoningEffort,
+      modelCapabilities: caps.size > 0 ? caps : undefined,
     });
   });
 
@@ -219,12 +242,17 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
       model: switchModel,
     });
 
-    const newModes: AgentMode[] = p.models.map((m) => ({
-      model: m,
-      provider: name,
-      providerConfig: { apiKey: newApiKey, baseURL: p.baseURL },
-      contextWindow: p.contextWindow,
-    }));
+    const newModes: AgentMode[] = p.models.map((m) => {
+      const mc = p.modelCapabilities?.get(m);
+      return {
+        model: m,
+        provider: name,
+        providerConfig: { apiKey: newApiKey, baseURL: p.baseURL },
+        contextWindow: mc?.contextWindow ?? p.contextWindow,
+        reasoning: mc?.reasoning,
+        supportsReasoningEffort: p.supportsReasoningEffort,
+      };
+    });
     bus.emit("config:set-modes", { modes: newModes });
 
     activeProvider = p;
@@ -309,6 +337,8 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
         createFencedBlockTransform: (o) =>
           streamTransform.createFencedBlockTransform(bus, o),
         getExtensionSettings: settingsMod.getExtensionSettings,
+        registerCommand: (name, description, handler) =>
+          bus.emit("command:register", { name, description, handler }),
         registerTool: (tool) => agentLoop?.registerTool(tool),
         getTools: () => agentLoop?.getTools() ?? [],
         define: (name, fn) => handlers.define(name, fn),

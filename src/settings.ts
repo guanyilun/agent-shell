@@ -156,6 +156,10 @@ export interface ResolvedProvider {
   defaultModel?: string;
   models: string[];
   contextWindow?: number;
+  /** Provider supports the reasoning_effort parameter. Default: true. */
+  supportsReasoningEffort?: boolean;
+  /** Per-model capabilities, keyed by model id. */
+  modelCapabilities?: Map<string, { reasoning?: boolean; contextWindow?: number }>;
 }
 
 /**
