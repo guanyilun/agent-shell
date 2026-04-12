@@ -89,8 +89,8 @@ export class AgentLoop implements AgentBackend {
       this.boundListeners.push({ event, fn });
     };
 
-    on("agent:submit", ({ query, modeInstruction, modeLabel }) => {
-      this.handleQuery(query, modeInstruction, modeLabel).catch(() => {});
+    on("agent:submit", ({ query, modeInstruction }) => {
+      this.handleQuery(query, modeInstruction).catch(() => {});
     });
     on("agent:cancel-request", (e) => {
       this.abortController?.abort(e.silent ? "silent" : undefined);
@@ -481,7 +481,6 @@ export class AgentLoop implements AgentBackend {
   private async handleQuery(
     query: string,
     modeInstruction?: string,
-    modeLabel?: string,
   ): Promise<void> {
     // Cancel any in-flight loop (concurrent prompt handling)
     if (this.abortController) {
@@ -493,7 +492,7 @@ export class AgentLoop implements AgentBackend {
     // raise the limit to avoid spurious warnings on multi-tool queries.
     setMaxListeners(50, signal);
 
-    this.bus.emit("agent:query", { query, modeLabel });
+    this.bus.emit("agent:query", { query });
     this.bus.emit("agent:processing-start", {});
     let responseText = "";
 

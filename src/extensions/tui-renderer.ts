@@ -149,7 +149,7 @@ export default function activate(ctx: ExtensionContext): void {
 
   bus.on("agent:query", (e) => {
     s.spinnerStartTime = 0;
-    showUserQuery(e.query, e.modeLabel);
+    showUserQuery(e.query);
     startAgentResponse();
     startThinkingSpinner();
   });
@@ -394,7 +394,7 @@ export default function activate(ctx: ExtensionContext): void {
     }
   }
 
-  function showUserQuery(query: string, modeLabel?: string): void {
+  function showUserQuery(query: string): void {
     const boxW = writer.columns;
     const contentW = boxW - 4;
 
