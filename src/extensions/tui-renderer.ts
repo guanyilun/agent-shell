@@ -305,7 +305,7 @@ export default function activate(ctx: ExtensionContext): void {
   }
 
   function showUserQuery(query: string, modeLabel?: string): void {
-    const boxW = Math.min(84, writer.columns);
+    const boxW = writer.columns;
     const contentW = boxW - 4;
 
     const lines: string[] = [];
