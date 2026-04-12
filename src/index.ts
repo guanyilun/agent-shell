@@ -144,6 +144,11 @@ Inside the shell:
 }
 
 async function main(): Promise<void> {
+  if (process.env.AGENT_SH) {
+    console.error("agent-sh: already running inside an agent-sh session (nested sessions are not supported).");
+    process.exit(1);
+  }
+
   process.on("SIGTTOU", () => {});
   process.on("SIGTTIN", () => {});
 
