@@ -23,6 +23,10 @@ export interface ShellEvents {
   // Extensions can use this to feed a virtual terminal, log, or replay.
   "shell:pty-data": { raw: string };
 
+  // Write raw bytes to the PTY (keystroke injection).
+  // Extensions use this to send keystrokes into the user's live shell.
+  "shell:pty-write": { data: string };
+
   // Terminal buffer snapshot (request/response pattern via bus)
   "shell:buffer-request": Record<string, never>;
   "shell:buffer-snapshot": {

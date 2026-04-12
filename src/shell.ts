@@ -200,6 +200,11 @@ export class Shell implements InputContext {
     this.setupOutput();
     this.setupInput();
     this.setupAgentLifecycle();
+
+    // Allow extensions to inject raw keystrokes into the PTY
+    this.bus.on("shell:pty-write", ({ data }) => {
+      this.ptyProcess.write(data);
+    });
   }
 
   // ── InputContext implementation (delegates to OutputParser) ──
