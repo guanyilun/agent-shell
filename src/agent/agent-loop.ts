@@ -171,6 +171,7 @@ export class AgentLoop implements AgentBackend {
     const label = newMode.provider
       ? `${newMode.provider}: ${newMode.model}`
       : newMode.model;
+    this.bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: newMode.model, provider: newMode.provider });
     this.bus.emit("ui:info", { message: `Model: ${label}` });
     this.bus.emit("config:changed", {});
   }

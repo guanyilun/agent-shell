@@ -114,7 +114,7 @@ export default function activate(ctx: ExtensionContext): void {
   const s = createRenderState();
 
   // Track backend/model info for display on response border
-  let backendInfo: { name: string; model?: string } | null = null;
+  let backendInfo: { name: string; model?: string; provider?: string } | null = null;
   bus.on("agent:info", (info) => { backendInfo = info; });
 
   // ── Register fenced block transform (code blocks → ContentBlock) ──
@@ -331,14 +331,18 @@ export default function activate(ctx: ExtensionContext): void {
       ? `${borderColor}${p.bold} ${modeLabel} ${p.reset}`
       : `${p.accent}${p.bold}❯${p.reset}`;
 
-    // Backend/model label on the right
-    const modelLabel = backendInfo?.model
-      ? `${p.dim}${backendInfo.model}${p.reset}`
-      : backendInfo?.name && backendInfo.name !== "agent-sh"
-        ? `${p.dim}${backendInfo.name}${p.reset}`
-        : llmClient?.model
-          ? `${p.dim}${llmClient.model}${p.reset}`
-          : undefined;
+    // Backend/model label on the right (provider/model, highlighted)
+    const model = backendInfo?.model ?? llmClient?.model;
+    const provider = backendInfo?.provider;
+    const backendName = backendInfo?.name && backendInfo.name !== "agent-sh" ? backendInfo.name : undefined;
+    let modelLabel: string | undefined;
+    if (provider && model) {
+      modelLabel = `${p.dim}${provider}/${p.reset}${p.bold}${model}${p.reset}`;
+    } else if (model) {
+      modelLabel = `${p.bold}${model}${p.reset}`;
+    } else if (backendName) {
+      modelLabel = `${p.bold}${backendName}${p.reset}`;
+    }
 
     const framed = renderBoxFrame(lines, {
       width: boxW,

@@ -149,7 +149,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
       }
       agentLoop.wire();
       activeBackendName = "agent-sh";
-      bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: llmClient?.model });
+      bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: llmClient?.model, provider: activeProvider?.id });
     } else {
       await backend!.start?.();
       activeBackendName = name;
@@ -226,6 +226,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
     bus.emit("config:set-modes", { modes: newModes });
 
     activeProvider = p;
+    bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: switchModel, provider: name });
     bus.emit("ui:info", { message: `Switched to ${name} (${switchModel})` });
     bus.emit("config:changed", {});
   });
