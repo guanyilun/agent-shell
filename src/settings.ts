@@ -21,6 +21,8 @@ export interface ProviderConfig {
   defaultModel?: string;
   /** Models available for cycling. */
   models?: string[];
+  /** Context window size in tokens (e.g. 128000). Used for usage display. */
+  contextWindow?: number;
 }
 
 export interface Settings {
@@ -145,6 +147,7 @@ export interface ResolvedProvider {
   baseURL?: string;
   defaultModel?: string;
   models: string[];
+  contextWindow?: number;
 }
 
 /**
@@ -165,6 +168,7 @@ export function resolveProvider(name: string): ResolvedProvider | null {
     baseURL: provider.baseURL,
     defaultModel,
     models: models.length ? models : (defaultModel ? [defaultModel] : []),
+    contextWindow: provider.contextWindow,
   };
 }
 

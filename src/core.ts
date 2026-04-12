@@ -85,6 +85,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
           model,
           provider: id,
           providerConfig: { apiKey: p.apiKey, baseURL: p.baseURL },
+          contextWindow: p.contextWindow,
         });
       }
     }
@@ -149,7 +150,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
       }
       agentLoop.wire();
       activeBackendName = "agent-sh";
-      bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: llmClient?.model, provider: activeProvider?.id });
+      bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: llmClient?.model, provider: activeProvider?.id, contextWindow: activeProvider?.contextWindow });
     } else {
       await backend!.start?.();
       activeBackendName = name;
@@ -222,11 +223,12 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
       model: m,
       provider: name,
       providerConfig: { apiKey: newApiKey, baseURL: p.baseURL },
+      contextWindow: p.contextWindow,
     }));
     bus.emit("config:set-modes", { modes: newModes });
 
     activeProvider = p;
-    bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: switchModel, provider: name });
+    bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: switchModel, provider: name, contextWindow: p.contextWindow });
     bus.emit("ui:info", { message: `Switched to ${name} (${switchModel})` });
     bus.emit("config:changed", {});
   });
@@ -245,7 +247,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
       } else if (agentLoop) {
         agentLoop.wire();
         activeBackendName = "agent-sh";
-        bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: llmClient?.model, provider: activeProvider?.id });
+        bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: llmClient?.model, provider: activeProvider?.id, contextWindow: activeProvider?.contextWindow });
       } else if (backends.size > 0) {
         activateByName(backends.keys().next().value!);
       }

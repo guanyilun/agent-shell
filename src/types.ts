@@ -15,6 +15,8 @@ export interface AgentMode {
   provider?: string;
   /** Provider-specific config for reconfiguring LlmClient on switch. */
   providerConfig?: { apiKey: string; baseURL?: string };
+  /** Context window size in tokens (for usage display). */
+  contextWindow?: number;
 }
 
 export interface AgentShellConfig {

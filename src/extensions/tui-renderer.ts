@@ -114,7 +114,7 @@ export default function activate(ctx: ExtensionContext): void {
   const s = createRenderState();
 
   // Track backend/model info for display on response border
-  let backendInfo: { name: string; model?: string; provider?: string } | null = null;
+  let backendInfo: { name: string; model?: string; provider?: string; contextWindow?: number } | null = null;
   bus.on("agent:info", (info) => { backendInfo = info; });
 
   // ── Register fenced block transform (code blocks → ContentBlock) ──
@@ -197,9 +197,10 @@ export default function activate(ctx: ExtensionContext): void {
     if (pendingUsage && s.renderer) {
       const { prompt_tokens, completion_tokens } = pendingUsage;
       totalTokens += prompt_tokens + completion_tokens;
+      const maxTokens = backendInfo?.contextWindow ?? 128_000;
       const ctxK = (totalTokens / 1000).toFixed(1);
-      const maxK = "128";
-      const pct = Math.min(100, (totalTokens / 128_000) * 100).toFixed(0);
+      const maxK = (maxTokens / 1000).toFixed(0);
+      const pct = Math.min(100, (totalTokens / maxTokens) * 100).toFixed(0);
       s.renderer.writeLine("");
       s.renderer.writeLine(
         `${p.dim}↓${prompt_tokens} ↑${completion_tokens}  ctx: ${ctxK}k/${maxK}k (${pct}%)${p.reset}`,
