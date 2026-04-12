@@ -39,8 +39,6 @@
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "pi": "node dist/index.js --agent pi-acp",
-    "claude": "node dist/index.js --agent claude-agent-acp",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

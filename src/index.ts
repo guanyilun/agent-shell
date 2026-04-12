@@ -243,7 +243,7 @@ async function main(): Promise<void> {
     id: "help",
     trigger: "?",
     label: "help",
-    promptIcon: "⟩",
+    promptIcon: "❯",
     indicator: "❓",
     onSubmit(query, b) {
       const onToolDone = (e: { kind?: string }) => {
@@ -300,18 +300,20 @@ async function main(): Promise<void> {
   // ── Startup banner ───────────────────────────────────────────
   const settings = getSettings();
   if (settings.startupBanner !== false) {
-    const lines: string[] = [];
-
-    if (core.llmClient) {
-      lines.push(`${p.accent}${p.bold}agent-sh${p.reset}${p.dim} · ${core.llmClient.model}${p.reset}`);
-    } else {
-      lines.push(`${p.accent}${p.bold}agent-sh${p.reset}`);
-    }
-
+    const title = core.llmClient
+      ? `${p.accent}${p.bold}agent-sh${p.reset}${p.dim} · ${core.llmClient.model}${p.reset}`
+      : `${p.accent}${p.bold}agent-sh${p.reset}`;
     const hint = `${p.muted}Type ${p.warning}>${p.muted} to ask AI · ${p.warning}?${p.muted} to run in shell · ${p.warning}/help${p.muted} for commands${p.reset}`;
-    lines.push(hint);
 
-    process.stdout.write("\n" + lines.join("\n") + "\n");
+    const termW = process.stdout.columns || 80;
+    const borderLine = `${p.muted}${"─".repeat(Math.min(termW, 60))}${p.reset}`;
+
+    process.stdout.write(
+      "\n" + borderLine + "\n" +
+      "  " + title + "\n" +
+      "  " + hint + "\n" +
+      borderLine + "\n\n",
+    );
   }
 
   // ── Terminal lifecycle ────────────────────────────────────────

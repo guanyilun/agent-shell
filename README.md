@@ -34,20 +34,13 @@ agent-sh flips this. It's your shell first — full PTY, your rc config, your al
 ## Quick Start
 
 ```bash
-# Install
 npm install -g agent-sh
-
-# Run with any OpenAI-compatible API
-OPENAI_API_KEY="your-key" agent-sh --model gpt-4o
-
-# Or with a local model
-agent-sh --api-key dummy --base-url http://localhost:11434/v1 --model llama3
-
-# Or with a backend extension (Claude Code, pi, etc.)
-agent-sh -e examples/extensions/claude-code-bridge
+agent-sh
 ```
 
-Requires Node.js 18+. See the [Usage Guide](docs/usage.md) for provider examples (OpenAI, Ollama, OpenRouter, Together, Groq, LM Studio, vLLM).
+Set `OPENAI_API_KEY` in your environment (or configure providers in `~/.agent-sh/settings.json`). Works with any OpenAI-compatible API — see the [Usage Guide](docs/usage.md) for provider examples (OpenAI, Ollama, OpenRouter, Together, Groq, LM Studio, vLLM).
+
+Requires Node.js 18+.
 
 ## Input Modes
 
@@ -114,10 +107,11 @@ See the [Usage Guide](docs/usage.md#configuration) for the full settings referen
 ## Development
 
 ```bash
-npm run dev                        # development mode (no build step)
-npm run build                      # build
-npm start                          # run built version
-DEBUG=1 npm start                  # debug mode (logs protocol details)
+git clone https://github.com/guanyilun/agent-sh.git
+cd agent-sh
+npm install
+npm run build
+npm start
 ```
 
 ## License
