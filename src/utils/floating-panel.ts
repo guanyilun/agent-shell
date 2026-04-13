@@ -253,7 +253,6 @@ export class FloatingPanel {
   private autoDismissTimer: ReturnType<typeof setTimeout> | null = null;
   private ptyBuffer = "";  // PTY output accumulated while overlay is open
   private usedAltScreen = false;  // whether we entered our own alt screen
-  private holdKept = false;  // stdout hold maintained while hidden (agent still active)
   private wrapCache = new Map<string, string[]>();  // line → wrapped lines (invalidated on width change)
   private wrapCacheWidth = 0;
 
@@ -534,16 +533,8 @@ export class FloatingPanel {
       this.ptyBuffer = "";
     }
 
-    if (this.phase === "active") {
-      // Agent still running — keep stdout hold so TUI renderer stays
-      // suppressed, but use stdout-show to let PTY output through.
-      this.bus.emit("shell:stdout-show", {});
-      this.holdKept = true;
-    } else {
-      this.bus.emit("shell:stdout-hide", {});
-      this.bus.emit("shell:stdout-release", {});
-      this.holdKept = false;
-    }
+    this.bus.emit("shell:stdout-hide", {});
+    this.bus.emit("shell:stdout-release", {});
 
     this.handlers.call(`${this.prefix}:dismiss`);
   }
@@ -552,25 +543,7 @@ export class FloatingPanel {
   show(): void {
     if (this._visible || this.phase === "idle") return;
     this.prevFrame = [];
-
-    if (this.holdKept) {
-      // Hold was maintained — undo the stdout-show and re-enter screen
-      // without a second hold (already held).
-      this.bus.emit("shell:stdout-hide", {});
-      this.holdKept = false;
-
-      this._visible = true;
-      this.ptyBuffer = "";
-      this.usedAltScreen = !(this.buffer?.altScreen);
-      if (this.usedAltScreen) process.stdout.write("\x1b[?1049h");
-      this.resizeHandler = () => { this.prevFrame = []; this.render(); };
-      process.stdout.on("resize", this.resizeHandler);
-      this.render();
-    } else {
-      // Hold was released — fresh enter with new hold.
-      this.enterScreen();
-    }
-
+    this.enterScreen();
     this.handlers.call(`${this.prefix}:show`);
   }
 
@@ -578,14 +551,6 @@ export class FloatingPanel {
   dismiss(): void {
     if (this.phase === "idle") return;
     if (this.autoDismissTimer) { clearTimeout(this.autoDismissTimer); this.autoDismissTimer = null; }
-
-    // If hold was kept from a previous hide, release it before cleanup
-    if (this.holdKept) {
-      this.bus.emit("shell:stdout-hide", {});
-      this.bus.emit("shell:stdout-release", {});
-      this.holdKept = false;
-    }
-
     if (this._visible) this.hide();
 
     this.phase = "idle";
@@ -666,13 +631,6 @@ export class FloatingPanel {
   }
 
   setDone(): void {
-    // If hidden with hold kept, release now — agent work is done.
-    if (this.holdKept) {
-      this.bus.emit("shell:stdout-hide", {});
-      this.bus.emit("shell:stdout-release", {});
-      this.holdKept = false;
-    }
-
     if (this.config.autoDismissMs > 0) {
       // Legacy behavior: enter done state, auto-dismiss after delay
       this.phase = "done";

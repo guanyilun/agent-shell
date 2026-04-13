@@ -142,6 +142,11 @@ export default function activate(ctx: ExtensionContext): void {
   bus.on("shell:stdout-hold", () => { writer.hold(); });
   bus.on("shell:stdout-release", () => { writer.release(); });
 
+  // Gate: other extensions (e.g. overlay) can advise this to suppress
+  // TUI rendering of agent output while they own the display.
+  define("tui:should-render-agent", (): boolean => true);
+  function shouldRender(): boolean { return ctx.call("tui:should-render-agent"); }
+
   // Track backend/model info for display on response border
   let backendInfo: { name: string; model?: string; provider?: string; contextWindow?: number } | null = null;
   bus.on("agent:info", (info) => { backendInfo = info; });
@@ -159,6 +164,7 @@ export default function activate(ctx: ExtensionContext): void {
   // ── Event subscriptions ─────────────────────────────────────
 
   bus.on("agent:query", (e) => {
+    if (!shouldRender()) return;
     s.spinnerStartTime = 0;
     showUserQuery(e.query);
     startAgentResponse();
@@ -166,6 +172,7 @@ export default function activate(ctx: ExtensionContext): void {
   });
 
   bus.on("agent:thinking-chunk", (e) => {
+    if (!shouldRender()) return;
     s.thinkingPending = true;
     if (!s.isThinking) {
       s.isThinking = true;
@@ -188,6 +195,7 @@ export default function activate(ctx: ExtensionContext): void {
   });
 
   bus.on("agent:response-chunk", (e) => {
+    if (!shouldRender()) return;
     const { blocks } = e;
     // Inject spacing: append \n to text blocks that precede non-text blocks
     for (let i = 0; i < blocks.length; i++) {
@@ -220,6 +228,7 @@ export default function activate(ctx: ExtensionContext): void {
   bus.on("agent:usage", (e) => { pendingUsage = e; });
 
   bus.on("agent:response-done", () => {
+    if (!shouldRender()) return;
     s.isThinking = false;
     if (pendingUsage && s.renderer) {
       const { prompt_tokens, completion_tokens } = pendingUsage;
@@ -248,6 +257,7 @@ export default function activate(ctx: ExtensionContext): void {
   let batchGroups = new Map<string, { total: number; rendered: number; headerShown: boolean }>();
 
   bus.on("agent:tool-batch", (e) => {
+    if (!shouldRender()) return;
     fencedTransform.flush();
     finalizeToolGroup();
     batchGroups = new Map();
@@ -261,6 +271,7 @@ export default function activate(ctx: ExtensionContext): void {
   });
 
   bus.on("agent:tool-started", (e) => {
+    if (!shouldRender()) return;
     fencedTransform.flush();
     stopCurrentSpinner();
     s.currentToolKind = e.kind;
@@ -329,6 +340,7 @@ export default function activate(ctx: ExtensionContext): void {
   });
 
   bus.on("agent:tool-completed", (e) => {
+    if (!shouldRender()) return;
     s.toolExitCode = e.exitCode;
     if (e.exitCode !== 0) s.toolGroupAllOk = false;
 
@@ -344,10 +356,11 @@ export default function activate(ctx: ExtensionContext): void {
       startThinkingSpinner();
     }
   });
-  bus.on("agent:tool-output-chunk", (e) => writeCommandOutput(e.chunk));
-  bus.on("agent:tool-output", () => flushCommandOutput());
+  bus.on("agent:tool-output-chunk", (e) => { if (shouldRender()) writeCommandOutput(e.chunk); });
+  bus.on("agent:tool-output", () => { if (shouldRender()) flushCommandOutput(); });
 
   bus.on("agent:cancelled", () => {
+    if (!shouldRender()) return;
     s.isThinking = false;
     stopCurrentSpinner();
     showInfo("(cancelled)");
@@ -355,12 +368,14 @@ export default function activate(ctx: ExtensionContext): void {
   });
 
   bus.on("agent:processing-done", () => {
+    if (!shouldRender()) return;
     s.isThinking = false;
     stopCurrentSpinner();
     endAgentResponse();
   });
 
   bus.on("agent:error", (e) => {
+    if (!shouldRender()) return;
     stopCurrentSpinner();
     showCollapsedThinking();
     if (!s.renderer) startAgentResponse();
@@ -371,6 +386,7 @@ export default function activate(ctx: ExtensionContext): void {
   });
 
   bus.on("permission:request", (e) => {
+    if (!shouldRender()) return;
     stopCurrentSpinner();
     flushCommandOutput();
     if (s.renderer) {

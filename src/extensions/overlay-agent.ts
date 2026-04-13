@@ -23,10 +23,15 @@ interface ChatMessage {
   lines: string[];
 }
 
-export default function activate({ bus, createFloatingPanel }: ExtensionContext): void {
+export default function activate({ bus, advise, createFloatingPanel }: ExtensionContext): void {
   const panel = createFloatingPanel({
     trigger: "\x1c", // Ctrl+\
     dimBackground: true,
+  });
+
+  // Suppress TUI renderer when overlay owns agent output
+  advise("tui:should-render-agent", (next) => {
+    return panel.active ? false : next();
   });
 
   // ── Conversation state (persists across hide/show) ─────────
