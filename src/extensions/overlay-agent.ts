@@ -5,6 +5,9 @@
  * inside vim, htop, or ssh. Composites a floating response box on top
  * of the current terminal content.
  *
+ * Rendering reuses the shared tui:render-* handlers so that extensions
+ * advising those handlers affect both the main TUI and the overlay.
+ *
  * Requires: npm install @xterm/headless@5.5.0 @xterm/addon-serialize@0.13.0
  */
 import type { ExtensionContext } from "../types.js";
@@ -13,8 +16,8 @@ import { palette as p } from "../utils/palette.js";
 import {
   renderToolCall,
   createSpinner,
-  renderSpinnerLine,
   formatElapsed,
+  SPINNER_FRAMES,
   type SpinnerState,
 } from "../utils/tool-display.js";
 
@@ -23,7 +26,9 @@ interface ChatMessage {
   lines: string[];
 }
 
-export default function activate({ bus, advise, createFloatingPanel }: ExtensionContext): void {
+export default function activate(ctx: ExtensionContext): void {
+  const { bus, advise, call, createFloatingPanel } = ctx;
+
   const panel = createFloatingPanel({
     trigger: "\x1c", // Ctrl+\
     dimBackground: true,
@@ -42,7 +47,6 @@ export default function activate({ bus, advise, createFloatingPanel }: Extension
   // ── Spinner state ──────────────────────────────────────────
   let spinner: SpinnerState | null = null;
   let spinnerInterval: ReturnType<typeof setInterval> | null = null;
-  let spinnerStartTime = 0;
 
   // ── Tool state ─────────────────────────────────────────────
   let toolStartTime = 0;
@@ -58,7 +62,7 @@ export default function activate({ bus, advise, createFloatingPanel }: Extension
       for (const line of msg.lines) {
         panel.appendLine(line);
       }
-      panel.appendLine(""); // gap between messages
+      panel.appendLine("");
     }
   }
 
@@ -68,7 +72,6 @@ export default function activate({ bus, advise, createFloatingPanel }: Extension
     if (panel.visible) panel.appendLine(line);
   }
 
-  /** Drain rendered markdown lines into message history and panel (if visible). */
   function drainRenderer(): void {
     if (!renderer) return;
     for (const line of renderer.drainLines()) {
@@ -76,16 +79,12 @@ export default function activate({ bus, advise, createFloatingPanel }: Extension
     }
   }
 
-  /** Flush the markdown renderer and drain. */
   function flushRenderer(): void {
-    if (!renderer) {
-      return;
-    }
+    if (!renderer) return;
     renderer.flush();
     drainRenderer();
   }
 
-  /** Start a new assistant message in the conversation. */
   function startAssistantMessage(): void {
     flushRenderer();
     currentAssistantMsg = { role: "assistant", lines: [] };
@@ -93,22 +92,23 @@ export default function activate({ bus, advise, createFloatingPanel }: Extension
     renderer = new MarkdownRenderer(getContentWidth());
   }
 
-  /** Finalize the current assistant message. */
   function finalizeAssistantMessage(): void {
     flushRenderer();
     renderer = null;
     currentAssistantMsg = null;
   }
 
-  // ── Spinner helpers ────────────────────────────────────────
+  // ── Spinner — reuses tui:render-spinner handler ────────────
 
   function startSpinner(label: string): void {
     stopSpinner();
-    spinnerStartTime = Date.now();
-    spinner = createSpinner({ startTime: spinnerStartTime });
+    spinner = createSpinner();
     spinnerInterval = setInterval(() => {
       if (!spinner || !panel.visible) return;
-      const line = renderSpinnerLine(spinner, label, { startTime: spinnerStartTime });
+      const frame = SPINNER_FRAMES[spinner.frame % SPINNER_FRAMES.length]!;
+      spinner.frame++;
+      const elapsed = formatElapsed(Date.now() - spinner.startTime);
+      const line: string = call("tui:render-spinner", label, frame, elapsed, undefined);
       panel.setFooter(line);
     }, 80);
   }
@@ -123,19 +123,17 @@ export default function activate({ bus, advise, createFloatingPanel }: Extension
   }
 
   // ── Panel lifecycle ────────────────────────────────────────
+
   panel.handlers.advise("panel:submit", (_next, query: string) => {
-    const userMsg: ChatMessage = {
+    messages.push({
       role: "user",
       lines: [`${p.accent}${p.bold}❯${p.reset} ${query}`],
-    };
-    messages.push(userMsg);
+    });
 
     panel.setActive();
     rebuildContent();
-
     startAssistantMessage();
     startSpinner("Thinking");
-
     bus.emit("agent:submit", { query });
   });
 
@@ -144,12 +142,12 @@ export default function activate({ bus, advise, createFloatingPanel }: Extension
   });
 
   panel.handlers.advise("panel:show", (_next) => {
-    // Rebuild from message history to restore content that arrived while hidden
     rebuildContent();
     if (renderer) drainRenderer();
   });
 
   // ── Stream agent response into panel ───────────────────────
+
   bus.on("agent:response-chunk", (e) => {
     if (!panel.active) return;
     if (!currentAssistantMsg) startAssistantMessage();
@@ -160,15 +158,20 @@ export default function activate({ bus, advise, createFloatingPanel }: Extension
         drainRenderer();
       } else if (block.type === "code-block") {
         flushRenderer();
-        // Render code block with language label
-        const label = block.language ? `${p.dim}${block.language}${p.reset}` : "";
-        if (label) {
-          appendLine(label);
-        }
-        for (const codeLine of block.code.split("\n")) {
-          appendLine(`  ${p.dim}${codeLine}${p.reset}`);
-        }
+        // Reuse the shared code-block handler
+        call("render:code-block", block.language, block.code, getContentWidth());
       }
+    }
+  });
+
+  // Capture lines emitted by render:code-block into the overlay
+  advise("render:code-block", (next, language: string, code: string, width: number) => {
+    if (!panel.active) return next(language, code, width);
+    // Render code block as indented dim lines for the overlay
+    const label = language ? `${p.dim}${language}${p.reset}` : "";
+    if (label) appendLine(label);
+    for (const codeLine of code.split("\n")) {
+      appendLine(`  ${p.dim}${codeLine}${p.reset}`);
     }
   });
 
@@ -187,10 +190,7 @@ export default function activate({ bus, advise, createFloatingPanel }: Extension
       displayDetail: e.displayDetail,
     }, getContentWidth());
 
-    for (const line of lines) {
-      appendLine(line);
-    }
-
+    for (const line of lines) appendLine(line);
     startSpinner(e.title);
   });
 
@@ -199,13 +199,8 @@ export default function activate({ bus, advise, createFloatingPanel }: Extension
     stopSpinner();
 
     const elapsed = toolStartTime ? formatElapsed(Date.now() - toolStartTime) : "";
-    const timer = elapsed ? ` ${p.dim}${elapsed}${p.reset}` : "";
-    const mark = e.exitCode === 0
-      ? `${p.success}✓${p.reset}${timer}`
-      : `${p.error}✗ exit ${e.exitCode}${p.reset}${timer}`;
-
+    const mark: string = call("tui:render-tool-complete", e.exitCode, elapsed, undefined);
     appendLine(`  ${mark}`);
-
     startSpinner("Thinking");
   });
 
