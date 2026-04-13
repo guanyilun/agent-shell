@@ -255,7 +255,7 @@ export function formatElapsed(ms: number): string {
 
 // ── Spinner with elapsed timer ───────────────────────────────────
 
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 export interface SpinnerState {
   frame: number;

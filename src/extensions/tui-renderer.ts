@@ -19,6 +19,7 @@ import {
   createSpinner,
   renderSpinnerLine,
   formatElapsed,
+  SPINNER_FRAMES,
   type SpinnerState,
   type SpinnerOpts,
 } from "../utils/tool-display.js";
@@ -147,6 +148,88 @@ export default function activate(ctx: ExtensionContext): void {
   define("tui:should-render-agent", (): boolean => true);
   function shouldRender(): boolean { return ctx.call("tui:should-render-agent"); }
 
+  // ── Advisable rendering handlers ───────────────────────────────
+  // Extensions advise these to customize how the TUI renders content.
+  // Each handler receives data and returns rendered strings.
+
+  define("tui:response-start", (): void => {});
+  define("tui:response-end", (_hadToolCalls: boolean): void => {});
+
+  define("tui:render-info", (message: string): string =>
+    `${p.muted}${message}${p.reset}`);
+
+  define("tui:render-error", (message: string): string =>
+    `${p.error}Error: ${message}${p.reset}`);
+
+  define("tui:render-usage", (promptTokens: number, completionTokens: number, maxTokens: number): string => {
+    const ctxK = (promptTokens / 1000).toFixed(1);
+    const maxK = (maxTokens / 1000).toFixed(0);
+    const pct = Math.min(100, (promptTokens / maxTokens) * 100).toFixed(0);
+    return `${p.dim}⬆ ${promptTokens}  ⬇ ${completionTokens}  ctx: ${ctxK}k/${maxK}k (${pct}%)${p.reset}`;
+  });
+
+  define("tui:render-content-gap", (fromKind: string, toKind: string): string | null =>
+    fromKind !== toKind ? "\n" : null);
+
+  define("tui:render-tool-complete", (exitCode: number | null, elapsed: string, summary: string | undefined): string => {
+    const timer = elapsed ? ` ${p.dim}${elapsed}${p.reset}` : "";
+    const summaryStr = summary ? ` ${p.dim}${summary}${p.reset}` : "";
+    if (exitCode === null) return `${p.muted}(timed out)${p.reset}`;
+    if (exitCode === 0) return `${p.success}✓${p.reset}${summaryStr}${timer}`;
+    return `${p.error}✗ exit ${exitCode}${p.reset}${summaryStr}${timer}`;
+  });
+
+  define("tui:render-tool-group-summary", (count: number, rendered: number, allOk: boolean, summaries: string[]): string => {
+    const mark = allOk ? `${p.success}✓${p.reset}` : `${p.error}✗${p.reset}`;
+    const summaryStr = summaries.length > 0 ? ` ${p.dim}${summaries.join(", ")}${p.reset}` : "";
+    const collapsed = count - rendered;
+    if (collapsed > 0) {
+      return `  ${p.muted}└${p.reset} ${p.dim}+${collapsed} more${p.reset} ${mark}${summaryStr}`;
+    }
+    return `  ${p.muted}└${p.reset} ${mark}${summaryStr}`;
+  });
+
+  define("tui:render-command-output", (line: string, _kind: string | undefined): string =>
+    `${p.dim}  ${line}${p.reset}`);
+
+  define("tui:render-spinner", (label: string, frame: string, elapsed: string, hint: string | undefined): string => {
+    const timer = elapsed ? ` ${p.dim}${elapsed}${p.reset}` : "";
+    const hintStr = hint ? ` ${p.dim}${hint}${p.reset}` : "";
+    return `${p.accent}${frame}${p.reset} ${label}...${timer}${hintStr}`;
+  });
+
+  define("tui:render-user-query", (query: string, width: number, modelLabel: string | undefined): string[] => {
+    const contentW = width - 4;
+    let lines: string[] = [];
+    for (const raw of query.split("\n")) {
+      if (raw.length <= contentW) {
+        lines.push(`${p.accent}${raw}${p.reset}`);
+      } else {
+        let remaining = raw;
+        while (remaining.length > contentW) {
+          let breakAt = remaining.lastIndexOf(" ", contentW);
+          if (breakAt <= 0) breakAt = contentW;
+          lines.push(`${p.accent}${remaining.slice(0, breakAt)}${p.reset}`);
+          remaining = remaining.slice(breakAt).trimStart();
+        }
+        if (remaining) lines.push(`${p.accent}${remaining}${p.reset}`);
+      }
+    }
+    const MAX_QUERY_LINES = 20;
+    if (lines.length > MAX_QUERY_LINES) {
+      const overflow = lines.length - MAX_QUERY_LINES;
+      lines = [...lines.slice(0, MAX_QUERY_LINES), `${p.dim}… ${overflow} more lines${p.reset}`];
+    }
+    const title = `${p.accent}${p.bold}❯${p.reset}`;
+    return renderBoxFrame(lines, {
+      width,
+      style: "rounded",
+      borderColor: p.accent,
+      title,
+      titleRight: modelLabel,
+    });
+  });
+
   // Track backend/model info for display on response border
   let backendInfo: { name: string; model?: string; provider?: string; contextWindow?: number } | null = null;
   bus.on("agent:info", (info) => { backendInfo = info; });
@@ -233,15 +316,8 @@ export default function activate(ctx: ExtensionContext): void {
     if (pendingUsage && s.renderer) {
       const { prompt_tokens, completion_tokens } = pendingUsage;
       const maxTokens = backendInfo?.contextWindow ?? 128_000;
-      // prompt_tokens of the latest call = current context usage
-      // (it includes the full conversation history)
-      const ctxK = (prompt_tokens / 1000).toFixed(1);
-      const maxK = (maxTokens / 1000).toFixed(0);
-      const pct = Math.min(100, (prompt_tokens / maxTokens) * 100).toFixed(0);
       s.renderer.writeLine("");
-      s.renderer.writeLine(
-        `${p.dim}⬆ ${prompt_tokens}  ⬇ ${completion_tokens}  ctx: ${ctxK}k/${maxK}k (${pct}%)${p.reset}`,
-      );
+      s.renderer.writeLine(ctx.call("tui:render-usage", prompt_tokens, completion_tokens, maxTokens));
       drain();
       pendingUsage = null;
     }
@@ -433,9 +509,9 @@ export default function activate(ctx: ExtensionContext): void {
   function startAgentResponse(): void {
     s.renderer = new MarkdownRenderer(writer.columns);
     s.hadToolCalls = false;
-    // Preserve lastContentKind across responses so text→tool gaps work
     s.renderer.printTopBorder();
     drain();
+    ctx.call("tui:response-start");
   }
 
   /**
@@ -446,12 +522,12 @@ export default function activate(ctx: ExtensionContext): void {
   let lastEmittedLineBlank = false;
 
   function contentGap(kind: "text" | "tool" | "diff" | "code" | "info"): void {
-    if (s.lastContentKind && s.lastContentKind !== kind) {
-      if (s.renderer) {
-        s.renderer.flush();
-        drain();
+    if (s.lastContentKind) {
+      const gap: string | null = ctx.call("tui:render-content-gap", s.lastContentKind, kind);
+      if (gap) {
+        if (s.renderer) { s.renderer.flush(); drain(); }
+        writer.write(gap);
       }
-      writer.write("\n");
     }
     s.lastContentKind = kind;
   }
@@ -469,6 +545,7 @@ export default function activate(ctx: ExtensionContext): void {
     closeToolLine();
     stopCurrentSpinner();
     if (s.renderer) {
+      ctx.call("tui:response-end", s.hadToolCalls);
       s.renderer.flush();
       s.renderer.printBottomBorder();
       drain();
@@ -478,40 +555,6 @@ export default function activate(ctx: ExtensionContext): void {
   }
 
   function showUserQuery(query: string): void {
-    const boxW = writer.columns;
-    const contentW = boxW - 4;
-
-    let lines: string[] = [];
-    for (const raw of query.split("\n")) {
-      if (raw.length <= contentW) {
-        lines.push(`${p.accent}${raw}${p.reset}`);
-      } else {
-        let remaining = raw;
-        while (remaining.length > contentW) {
-          let breakAt = remaining.lastIndexOf(" ", contentW);
-          if (breakAt <= 0) breakAt = contentW;
-          lines.push(`${p.accent}${remaining.slice(0, breakAt)}${p.reset}`);
-          remaining = remaining.slice(breakAt).trimStart();
-        }
-        if (remaining) lines.push(`${p.accent}${remaining}${p.reset}`);
-      }
-    }
-
-    // Truncate very long queries to keep the response visible
-    const MAX_QUERY_LINES = 20;
-    if (lines.length > MAX_QUERY_LINES) {
-      const overflow = lines.length - MAX_QUERY_LINES;
-      lines = [
-        ...lines.slice(0, MAX_QUERY_LINES),
-        `${p.dim}… ${overflow} more lines${p.reset}`,
-      ];
-    }
-
-    // Mode-specific border color and title
-    const borderColor = p.accent;
-    const title = `${p.accent}${p.bold}❯${p.reset}`;
-
-    // Backend/model label on the right (backend/model, highlighted)
     const model = backendInfo?.model ?? llmClient?.model;
     const backend = backendInfo?.name;
     let modelLabel: string | undefined;
@@ -523,13 +566,7 @@ export default function activate(ctx: ExtensionContext): void {
       modelLabel = `${p.bold}${backend}${p.reset}`;
     }
 
-    const framed = renderBoxFrame(lines, {
-      width: boxW,
-      style: "rounded",
-      borderColor,
-      title,
-      titleRight: modelLabel,
-    });
+    const framed: string[] = ctx.call("tui:render-user-query", query, writer.columns, modelLabel);
     writer.write("\n");
     for (const line of framed) {
       writer.write(line + "\n");
@@ -773,13 +810,7 @@ export default function activate(ctx: ExtensionContext): void {
     if (!s.renderer) return;
     stopCurrentSpinner();
     const elapsed = s.toolStartTime ? formatElapsed(Date.now() - s.toolStartTime) : "";
-    const timer = elapsed ? ` ${p.dim}${elapsed}${p.reset}` : "";
-    const summary = resultDisplay?.summary ? ` ${p.dim}${resultDisplay.summary}${p.reset}` : "";
-    const mark = exitCode === null
-      ? `${p.muted}(timed out)${p.reset}`
-      : exitCode === 0
-        ? `${p.success}✓${p.reset}${summary}${timer}`
-        : `${p.error}✗ exit ${exitCode}${p.reset}${summary}${timer}`;
+    const mark: string = ctx.call("tui:render-tool-complete", exitCode, elapsed, resultDisplay?.summary);
 
     if (s.toolLineOpen && s.commandOutputLineCount === 0) {
       writer.write(` ${mark}\n`);
@@ -824,7 +855,10 @@ export default function activate(ctx: ExtensionContext): void {
     s.spinner = createSpinner({ startTime: s.spinnerStartTime });
     s.spinnerInterval = setInterval(() => {
       if (s.spinner) {
-        const line = renderSpinnerLine(s.spinner, s.spinnerLabel, s.spinnerOpts);
+        const frame = SPINNER_FRAMES[s.spinner.frame % SPINNER_FRAMES.length]!;
+        s.spinner.frame++;
+        const elapsed = formatElapsed(Date.now() - s.spinner.startTime);
+        const line: string = ctx.call("tui:render-spinner", s.spinnerLabel, frame, elapsed, s.spinnerOpts.hint);
         writer.write(`\r  ${line}\x1b[K`);
       }
     }, 80);
@@ -860,21 +894,11 @@ export default function activate(ctx: ExtensionContext): void {
     }
     closeToolLine();
     if (!s.renderer) startAgentResponse();
-    const mark = s.toolGroupAllOk
-      ? `${p.success}✓${p.reset}`
-      : `${p.error}✗${p.reset}`;
-    const summary = s.toolGroupSummaries.length > 0
-      ? ` ${p.dim}${s.toolGroupSummaries.join(", ")}${p.reset}`
-      : "";
-    const collapsed = s.toolGroupCount - s.toolGroupRendered;
-    if (collapsed > 0) {
-      s.renderer!.writeLine(
-        `  ${p.muted}└${p.reset} ${p.dim}+${collapsed} more${p.reset} ${mark}${summary}`,
-      );
-    } else {
-      // All items visible — close the tree with └ mark + summary
-      s.renderer!.writeLine(`  ${p.muted}└${p.reset} ${mark}${summary}`);
-    }
+    const groupLine: string = ctx.call(
+      "tui:render-tool-group-summary",
+      s.toolGroupCount, s.toolGroupRendered, s.toolGroupAllOk, s.toolGroupSummaries,
+    );
+    s.renderer!.writeLine(groupLine);
     drain();
     s.toolGroupKind = undefined;
     s.toolGroupCount = 0;
@@ -892,9 +916,10 @@ export default function activate(ctx: ExtensionContext): void {
     s.commandOutputBuffer += chunk;
     const lines = s.commandOutputBuffer.split("\n");
     s.commandOutputBuffer = lines.pop()!;
+    const renderLine = (l: string) => ctx.call("tui:render-command-output", l, s.currentToolKind) as string;
     for (const line of lines) {
       if (s.commandOutputLineCount < maxLines) {
-        s.renderer.writeLine(`${p.dim}  ${line}${p.reset}`);
+        s.renderer.writeLine(renderLine(line));
         s.commandOutputLineCount++;
       } else {
         s.commandOutputOverflow++;
@@ -912,9 +937,10 @@ export default function activate(ctx: ExtensionContext): void {
     const maxLines = s.currentToolKind === "read"
       ? getSettings().readOutputMaxLines
       : getSettings().maxCommandOutputLines;
+    const renderLine = (l: string) => ctx.call("tui:render-command-output", l, s.currentToolKind) as string;
     if (s.commandOutputBuffer) {
       if (s.commandOutputLineCount < maxLines) {
-        s.renderer.writeLine(`${p.dim}  ${s.commandOutputBuffer}${p.reset}`);
+        s.renderer.writeLine(renderLine(s.commandOutputBuffer));
         s.commandOutputLineCount++;
       } else {
         s.commandOutputOverflow++;
@@ -929,13 +955,13 @@ export default function activate(ctx: ExtensionContext): void {
       const tail = s.commandOverflowLines.slice(-FAIL_OVERFLOW_MAX);
       const skipped = s.commandOverflowLines.length - tail.length;
       if (skipped > 0) {
-        s.renderer.writeLine(`${p.dim}  … ${skipped} lines hidden${p.reset}`);
+        s.renderer.writeLine(renderLine(`… ${skipped} lines hidden`));
       }
       for (const line of tail) {
-        s.renderer.writeLine(`${p.dim}  ${line}${p.reset}`);
+        s.renderer.writeLine(renderLine(line));
       }
     } else if (s.commandOutputOverflow > 0 && maxLines > 0) {
-      s.renderer.writeLine(`${p.dim}  … ${s.commandOutputOverflow} more lines${p.reset}`);
+      s.renderer.writeLine(renderLine(`… ${s.commandOutputOverflow} more lines`));
     }
 
     s.commandOutputOverflow = 0;
@@ -1057,10 +1083,10 @@ export default function activate(ctx: ExtensionContext): void {
   }
 
   function showError(message: string): void {
-    writer.write(`\n${p.error}Error: ${message}${p.reset}\n`);
+    writer.write("\n" + ctx.call("tui:render-error", message) + "\n");
   }
 
   function showInfo(message: string): void {
-    writer.write(`${p.muted}${message}${p.reset}\n`);
+    writer.write(ctx.call("tui:render-info", message) + "\n");
   }
 }
