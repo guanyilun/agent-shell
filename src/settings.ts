@@ -11,6 +11,16 @@ import * as os from "node:os";
 export const CONFIG_DIR = path.join(os.homedir(), ".agent-sh");
 const SETTINGS_PATH = path.join(CONFIG_DIR, "settings.json");
 
+/** Per-model capability overrides. */
+export interface ModelCapabilityConfig {
+  /** Model identifier. */
+  id: string;
+  /** Whether the model supports reasoning/thinking tokens. */
+  reasoning?: boolean;
+  /** Context window size in tokens for this specific model. */
+  contextWindow?: number;
+}
+
 /** Provider profile — a named LLM configuration. */
 export interface ProviderConfig {
   /** API key (supports $ENV_VAR syntax for runtime expansion). */
@@ -19,8 +29,8 @@ export interface ProviderConfig {
   baseURL?: string;
   /** Default model to use. Falls back to first entry in models list. */
   defaultModel?: string;
-  /** Models available for cycling. */
-  models?: string[];
+  /** Models available for cycling. Plain strings or objects with capabilities. */
+  models?: (string | ModelCapabilityConfig)[];
   /** Context window size in tokens (e.g. 128000). Used for usage display. */
   contextWindow?: number;
 }
@@ -171,16 +181,30 @@ export function resolveProvider(name: string): ResolvedProvider | null {
   const provider = settings.providers?.[name];
   if (!provider) return null;
 
-  const models = provider.models ?? (provider.defaultModel ? [provider.defaultModel] : []);
-  const defaultModel = provider.defaultModel ?? models[0];
+  const rawModels = provider.models ?? (provider.defaultModel ? [provider.defaultModel] : []);
+  const modelIds: string[] = [];
+  const caps = new Map<string, { reasoning?: boolean; contextWindow?: number }>();
+  for (const m of rawModels) {
+    if (typeof m === "string") {
+      modelIds.push(m);
+    } else {
+      modelIds.push(m.id);
+      if (m.reasoning !== undefined || m.contextWindow !== undefined) {
+        caps.set(m.id, { reasoning: m.reasoning, contextWindow: m.contextWindow });
+      }
+    }
+  }
+
+  const defaultModel = provider.defaultModel ?? modelIds[0];
 
   return {
     id: name,
     apiKey: provider.apiKey ? expandEnvVars(provider.apiKey) : undefined,
     baseURL: provider.baseURL,
     defaultModel,
-    models: models.length ? models : (defaultModel ? [defaultModel] : []),
+    models: modelIds.length ? modelIds : (defaultModel ? [defaultModel] : []),
     contextWindow: provider.contextWindow,
+    modelCapabilities: caps.size > 0 ? caps : undefined,
   };
 }
 
