@@ -14,7 +14,7 @@
 
 **Problem**: "context overflow" or response cut off
 
-**Solution**: The conversation is too long. Use `/clear` to start fresh, or the agent will auto-compact after the error.
+**Solution**: The conversation is too long. Use `/compact` to manually free up space, or the agent will auto-compact after the error.
 
 **Problem**: Tool calls not working (agent responds but doesn't use tools)
 

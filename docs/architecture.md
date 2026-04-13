@@ -18,7 +18,7 @@ index.ts — interactive terminal frontend:
   │
   ├── Built-in extensions:
   │     tuiRenderer       — markdown rendering, inline diffs, thinking display, spinner
-  │     slashCommands     — /help, /clear, /copy, /compact, /quit
+  │     slashCommands     — /help, /model, /thinking, /compact, /context
   │     fileAutocomplete  — @ file path completion
   │     shellRecall       — shell_recall terminal interception
   │     commandSuggest    — fix suggestions on failed commands (fast-path LLM)
@@ -125,7 +125,9 @@ agent-sh/
 │   │   ├── index.ts        # Factory: config → AgentLoop
 │   │   ├── agent-loop.ts   # Internal agent (OpenAI-compat API, bus-driven)
 │   │   ├── tool-registry.ts       # Map-based tool registry
-│   │   ├── conversation-state.ts  # Chat messages, priority compaction, eviction archive
+│   │   ├── conversation-state.ts  # Three-tier conversation: active + nuclear + history
+│   │   ├── nuclear-form.ts       # Nuclear one-liner generation + serialization
+│   │   ├── history-file.ts       # Persistent JSONL history file
 │   │   ├── system-prompt.ts       # System prompt builder
 │   │   └── tools/          # Built-in tool implementations
 │   │       ├── bash.ts, read-file.ts, write-file.ts, edit-file.ts

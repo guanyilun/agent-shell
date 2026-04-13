@@ -24,6 +24,7 @@ import { computeDiff } from "../utils/diff.js";
 import type { AgentBackend, ToolDefinition } from "./types.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { ConversationState } from "./conversation-state.js";
+import { HistoryFile } from "./history-file.js";
 import { STATIC_SYSTEM_PROMPT, buildDynamicContext } from "./system-prompt.js";
 import { TokenBudget } from "../token-budget.js";
 
@@ -49,7 +50,8 @@ interface PendingToolCall {
 export class AgentLoop implements AgentBackend {
   private abortController: AbortController | null = null;
   private toolRegistry = new ToolRegistry();
-  private conversation = new ConversationState();
+  private historyFile = new HistoryFile();
+  private conversation = new ConversationState(this.historyFile);
   private fileReadCache: FileReadCache = new Map();
   private tokenBudget: TokenBudget;
   private modes: AgentMode[];
@@ -174,9 +176,31 @@ export class AgentLoop implements AgentBackend {
     });
     on("agent:reset-session", () => {
       this.cancel();
-      this.conversation = new ConversationState();
+      this.conversation = new ConversationState(this.historyFile);
       this.lastProjectSkillNames.clear();
     });
+    on("agent:compact-request", () => {
+      const budgetTokens = this.tokenBudget.conversationBudgetTokens;
+      this.conversation.compact(budgetTokens);
+      this.conversation.flush().catch(() => {});
+      this.bus.emit("ui:info", { message: "(conversation compacted)" });
+    });
+    this.bus.onPipe("context:get-stats", () => {
+      return {
+        activeTokens: this.conversation.estimateTokens(),
+        nuclearEntries: this.conversation.getNuclearEntryCount(),
+        recallArchiveSize: this.conversation.getRecallArchiveSize(),
+        budgetTokens: this.tokenBudget.conversationBudgetTokens,
+      };
+    });
+
+    // Load prior history from disk (non-blocking)
+    this.historyFile.readRecent().then((entries) => {
+      if (entries.length > 0) {
+        this.conversation.loadPriorHistory(entries);
+      }
+    }).catch(() => {});
+
     on("shell:cwd-change", ({ cwd }) => {
       const projectSkills = discoverProjectSkills(cwd);
       const newNames = new Set(projectSkills.map(s => s.name));
@@ -402,11 +426,11 @@ export class AgentLoop implements AgentBackend {
         const action = args.action as string;
         let content: string;
         if (action === "search") {
-          content = this.conversation.search((args.query as string) ?? "");
+          content = await this.conversation.search((args.query as string) ?? "");
         } else if (action === "expand") {
-          content = this.conversation.expand(args.turn_id as number);
+          content = await this.conversation.expand(args.turn_id as number);
         } else {
-          content = this.conversation.browse();
+          content = await this.conversation.browse();
         }
         return { content, exitCode: 0, isError: false };
       },
@@ -601,6 +625,7 @@ export class AgentLoop implements AgentBackend {
       const budgetTokens = this.tokenBudget.conversationBudgetTokens;
       if (this.conversation.estimateTokens() > budgetTokens) {
         this.conversation.compact(budgetTokens);
+        await this.conversation.flush();
         this.bus.emit("ui:info", { message: "(conversation compacted)" });
       }
 
@@ -763,6 +788,7 @@ export class AgentLoop implements AgentBackend {
           // Use 60% of the budget to leave headroom
           const aggressiveBudget = Math.floor(this.tokenBudget.conversationBudgetTokens * 0.6);
           this.conversation.compact(aggressiveBudget, 6);
+          await this.conversation.flush();
           this.bus.emit("ui:info", { message: "(context overflow — compacted, retrying)" });
           continue;
         }

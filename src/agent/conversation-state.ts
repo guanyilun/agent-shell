@@ -1,13 +1,25 @@
 import type { ChatCompletionMessageParam } from "../utils/llm-client.js";
+import { getSettings } from "../settings.js";
+import {
+  type NuclearEntry,
+  toNuclearEntries,
+  formatNuclearLine,
+  isReadOnly,
+  READ_ONLY_TOOLS,
+  WRITE_TOOLS,
+} from "./nuclear-form.js";
+import type { HistoryFile } from "./history-file.js";
 
 /**
- * Manages the OpenAI chat messages array for the agent loop.
- * Separate from ContextManager — this is the LLM conversation,
- * not the shell history.
+ * Three-tier conversation state — works like shell history.
  *
- * Supports priority-based compaction: when the conversation exceeds the
- * token budget, low-priority turns are evicted to an archive that the
- * agent can search/expand via the conversation_recall tool.
+ * Tier 1: Active context   — full content in LLM messages array
+ * Tier 2: Nuclear memory   — one-liner summaries IN the conversation +
+ *                            recall archive (in-memory) for full content
+ * Tier 3: History file     — nuclear entries persisted to disk
+ *
+ * Content flows downward as the context window fills:
+ *   Tier 1 → compact → Tier 2 → flush → Tier 3
  */
 
 // ── Priority tiers (lower number = evicted first) ─────────────────
@@ -21,31 +33,33 @@ const enum Priority {
   MEDIUM = 2,
   /** User messages, error messages, assistant reasoning. */
   HIGH = 3,
-  /** First user message (original task) + last N turns — never evicted. */
+  /** First user message + last N turns — never evicted. */
   PINNED = 4,
 }
 
-/** Read-only tools whose results are cheap to reproduce. */
-const READ_ONLY_TOOLS = new Set([
-  "grep", "ls", "read_file", "glob", "bash", "search",
-]);
-
-/** Tools that produce durable changes — higher priority. */
-const WRITE_TOOLS = new Set([
-  "write_file", "edit_file", "write", "edit", "patch",
-]);
-
-/** An archived turn that was evicted from the active conversation. */
-export interface EvictedTurn {
-  id: number;
-  messages: ChatCompletionMessageParam[];
-  summary: string;
-}
-
 export class ConversationState {
+  // ── Tier 1: Active context ────────────────────────────────────
   private messages: ChatCompletionMessageParam[] = [];
-  private evicted: EvictedTurn[] = [];
-  private nextTurnId = 1;
+
+  // ── Tier 2: Nuclear memory ────────────────────────────────────
+  private nuclearEntries: NuclearEntry[] = [];
+  private recallArchive = new Map<number, ChatCompletionMessageParam[]>();
+
+  // ── Tier 3 reference ──────────────────────────────────────────
+  private historyFile: HistoryFile | null;
+
+  // ── Shared state ──────────────────────────────────────────────
+  private nextSeq = 1;
+
+  constructor(historyFile?: HistoryFile) {
+    this.historyFile = historyFile ?? null;
+  }
+
+  get instanceId(): string {
+    return this.historyFile?.instanceId ?? "0000";
+  }
+
+  // ── Message API (unchanged) ───────────────────────────────────
 
   addUserMessage(text: string): void {
     this.messages.push({ role: "user", content: text });
@@ -81,7 +95,6 @@ export class ConversationState {
     });
   }
 
-  /** Inject a system-level note into the conversation (e.g. context change). */
   addSystemNote(text: string): void {
     this.messages.push({ role: "user", content: text });
   }
@@ -90,40 +103,36 @@ export class ConversationState {
     return this.messages;
   }
 
-  // ── Compaction ──────────────────────────────────────────────────
+  // ── Token estimation ──────────────────────────────────────────
 
-  /**
-   * Estimate token count for the current conversation.
-   * Uses ~4 chars per token heuristic.
-   */
   estimateTokens(): number {
     return Math.ceil(JSON.stringify(this.messages).length / 4);
   }
 
+  // ── Tier 1 → Tier 2: Compaction ───────────────────────────────
+
   /**
-   * Priority-based compaction. Evicts lowest-priority turns until the
-   * estimated token count is under the target budget.
-   *
-   * Pinned content (first user message + recent turns) is never evicted.
+   * Priority-based compaction. Evicts lowest-priority turns, replacing
+   * them with nuclear one-liner summaries that stay in the conversation.
+   * Read-only tool results are dropped entirely.
    */
   compact(targetTokens: number, recentTurnsToKeep = 10): void {
     if (this.estimateTokens() <= targetTokens) return;
 
-    // Parse the message array into logical "turns" (boundaries at user messages)
     const turns = this.parseTurns();
-    if (turns.length <= 2) return; // nothing to evict
+    if (turns.length <= 2) return;
 
-    // Assign priorities — pin first turn and recent turns
+    // Assign priorities
     const pinnedCount = Math.min(recentTurnsToKeep, turns.length - 1);
     for (const turn of turns) {
       turn.priority = this.inferPriority(turn.messages);
     }
-    turns[0]!.priority = Priority.PINNED; // original task
+    turns[0]!.priority = Priority.PINNED;
     for (let i = turns.length - pinnedCount; i < turns.length; i++) {
       turns[i]!.priority = Priority.PINNED;
     }
 
-    // Build eviction candidates sorted by priority (lowest first), then oldest first
+    // Sort candidates: lowest priority first, then oldest
     const candidates = turns
       .map((t, idx) => ({ turn: t, idx }))
       .filter((c) => c.turn.priority !== Priority.PINNED)
@@ -139,117 +148,216 @@ export class ConversationState {
       evictedIndices.add(c.idx);
       currentTokens -= turnTokens;
 
-      // Archive the evicted turn
-      this.evicted.push({
-        id: this.nextTurnId++,
-        messages: c.turn.messages,
-        summary: this.summarizeTurn(c.turn.messages),
-      });
+      // Generate nuclear entries from this turn
+      const entries = toNuclearEntries(c.turn.messages, this.nextSeq, this.instanceId);
+      this.nextSeq += entries.length;
+
+      for (const entry of entries) {
+        if (isReadOnly(entry)) {
+          // Read-only: archive only (dropped from conversation), agent can re-read
+          this.recallArchive.set(entry.seq, c.turn.messages);
+        } else {
+          // State-changing: keep nuclear one-liner in conversation + archive
+          this.nuclearEntries.push(entry);
+          this.recallArchive.set(entry.seq, c.turn.messages);
+        }
+      }
     }
 
     if (evictedIndices.size === 0) return;
 
-    // Rebuild messages: kept turns + compaction marker where evicted turns were
+    // Rebuild: first turn + nuclear summary block + remaining turns
     const rebuilt: ChatCompletionMessageParam[] = [];
-    let inEvictedRun = false;
+    let insertedNuclearBlock = false;
 
     for (let i = 0; i < turns.length; i++) {
       if (evictedIndices.has(i)) {
-        if (!inEvictedRun) {
-          rebuilt.push({
-            role: "user",
-            content: `[Earlier conversation turns evicted for context space — use conversation_recall to search or expand]`,
-          });
-          inEvictedRun = true;
+        if (!insertedNuclearBlock) {
+          rebuilt.push(this.buildNuclearBlock());
+          insertedNuclearBlock = true;
         }
       } else {
-        inEvictedRun = false;
         rebuilt.push(...turns[i]!.messages);
       }
+    }
+
+    // If no nuclear block was inserted but we have entries from prior compactions,
+    // update the existing nuclear block
+    if (!insertedNuclearBlock && this.nuclearEntries.length > 0) {
+      this.updateNuclearBlockInMessages(rebuilt);
     }
 
     this.messages = rebuilt;
   }
 
-  // ── Conversation recall (search / expand evicted turns) ────────
+  // ── Tier 2 → Tier 3: Flush ───────────────────────────────────
 
-  /** Search evicted turns by regex/keyword. */
-  search(query: string): string {
+  /**
+   * Flush oldest nuclear entries to the history file when the
+   * in-context nuclear block grows too large.
+   */
+  async flush(): Promise<void> {
+    const maxEntries = getSettings().nuclearMaxEntries;
+    if (this.nuclearEntries.length <= maxEntries) return;
+
+    const flushCount = this.nuclearEntries.length - maxEntries;
+    const toFlush = this.nuclearEntries.slice(0, flushCount);
+
+    // Write to history file
+    if (this.historyFile) {
+      await this.historyFile.append(toFlush);
+    }
+
+    // Remove flushed entries from memory
+    for (const entry of toFlush) {
+      this.recallArchive.delete(entry.seq);
+    }
+    this.nuclearEntries = this.nuclearEntries.slice(flushCount);
+
+    // Update the nuclear block in messages
+    this.updateNuclearBlockInMessages(this.messages);
+  }
+
+  // ── Startup: Load prior history ───────────────────────────────
+
+  /**
+   * Inject prior session history from the history file as a context note.
+   */
+  loadPriorHistory(entries: NuclearEntry[]): void {
+    if (entries.length === 0) return;
+    // Update nextSeq to avoid collisions
+    const maxSeq = Math.max(...entries.map((e) => e.seq));
+    if (maxSeq >= this.nextSeq) this.nextSeq = maxSeq + 1;
+
+    const lines = entries.map(formatNuclearLine);
+    this.messages.push({
+      role: "user",
+      content: `[Prior session history — loaded from ~/.agent-sh/history]\n${lines.join("\n")}`,
+    });
+  }
+
+  // ── Conversation recall ───────────────────────────────────────
+
+  /** Search Tier 2 archive + Tier 3 history file. */
+  async search(query: string): Promise<string> {
     if (!query.trim()) return "No query provided.";
-    if (this.evicted.length === 0) return "No evicted turns to search.";
 
-    let regex: RegExp;
-    try {
-      regex = new RegExp(query, "i");
-    } catch {
-      const words = query.split(/\s+/).filter((w) => w.length > 0);
-      const pattern = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-      regex = new RegExp(pattern, "i");
-    }
+    const parts: string[] = [];
 
-    const matches: { turn: EvictedTurn; excerpts: string[] }[] = [];
+    // Search Tier 2 (in-memory archive)
+    const archiveResults = this.searchArchive(query);
+    if (archiveResults) parts.push(archiveResults);
 
-    for (const turn of this.evicted) {
-      const text = this.turnToText(turn.messages);
-      const lines = text.split("\n");
-      const matchingLines: number[] = [];
-
-      for (let i = 0; i < lines.length; i++) {
-        if (regex.test(lines[i]!)) matchingLines.push(i);
-      }
-
-      if (matchingLines.length > 0) {
-        const excerpts: string[] = [];
-        for (const idx of matchingLines.slice(0, 5)) {
-          const start = Math.max(0, idx - 2);
-          const end = Math.min(lines.length, idx + 3);
-          excerpts.push(lines.slice(start, end).join("\n"));
+    // Search Tier 3 (history file)
+    if (this.historyFile) {
+      const fileResults = await this.historyFile.search(query);
+      if (fileResults.length > 0) {
+        parts.push(`History file matches (${fileResults.length}):`);
+        for (const r of fileResults.slice(0, 20)) {
+          parts.push(`  ${r.line}`);
         }
-        matches.push({ turn, excerpts });
       }
     }
 
-    if (matches.length === 0) return `No results found for "${query}".`;
+    if (parts.length === 0) return `No results found for "${query}".`;
+    return parts.join("\n\n");
+  }
 
-    const parts: string[] = [`Search results for "${query}" (${matches.length} turns):\n`];
-    for (const m of matches.slice(0, 20)) {
-      parts.push(`Turn #${m.turn.id}: ${m.turn.summary}`);
-      for (const excerpt of m.excerpts) {
-        parts.push("  " + excerpt.split("\n").join("\n  "));
-      }
-      parts.push("");
+  /** Expand full content of a nuclear entry by seq number. */
+  async expand(seq: number): Promise<string> {
+    // Check Tier 2 archive first
+    const archived = this.recallArchive.get(seq);
+    if (archived) {
+      const entry = this.nuclearEntries.find((e) => e.seq === seq);
+      const header = entry ? formatNuclearLine(entry) : `#${seq}`;
+      return `${header}\n\n${this.turnToText(archived)}`;
     }
+
+    return `Entry #${seq}: not found in recall archive (may have been flushed to history file).`;
+  }
+
+  /** Browse nuclear entries (Tier 2) + recent history (Tier 3). */
+  async browse(): Promise<string> {
+    const parts: string[] = [];
+
+    if (this.nuclearEntries.length > 0) {
+      parts.push("In-context nuclear entries:");
+      for (const e of this.nuclearEntries) {
+        parts.push(`  ${formatNuclearLine(e)}`);
+      }
+    }
+
+    if (this.historyFile) {
+      const recent = await this.historyFile.readRecent(25);
+      if (recent.length > 0) {
+        parts.push("\nRecent history file entries:");
+        for (const e of recent) {
+          parts.push(`  ${formatNuclearLine(e)}`);
+        }
+      }
+    }
+
+    if (parts.length === 0) return "No conversation history.";
     return parts.join("\n");
   }
 
-  /** Expand the full content of an evicted turn by ID. */
-  expand(turnId: number): string {
-    const turn = this.evicted.find((t) => t.id === turnId);
-    if (!turn) return `Turn #${turnId}: not found.`;
-    return `Turn #${turnId}: ${turn.summary}\n\n${this.turnToText(turn.messages)}`;
+  // ── Stats ─────────────────────────────────────────────────────
+
+  getNuclearEntryCount(): number {
+    return this.nuclearEntries.length;
   }
 
-  /** Browse summaries of all evicted turns. */
-  browse(): string {
-    if (this.evicted.length === 0) return "No evicted conversation turns.";
-    return this.evicted
-      .map((t) => `#${t.id}: ${t.summary}`)
-      .join("\n");
+  getRecallArchiveSize(): number {
+    return this.recallArchive.size;
   }
+
+  // ── Clear ─────────────────────────────────────────────────────
 
   clear(): void {
     this.messages = [];
-    this.evicted = [];
+    this.nuclearEntries = [];
+    this.recallArchive.clear();
   }
 
-  // ── Internal helpers ──────────────────────────────────────────
+  // ── Internal: Nuclear block management ────────────────────────
+
+  private buildNuclearBlock(): ChatCompletionMessageParam {
+    const lines = this.nuclearEntries.map(formatNuclearLine);
+    return {
+      role: "user",
+      content: `[Conversation history — use conversation_recall to expand any entry]\n${lines.join("\n")}`,
+    };
+  }
+
+  private updateNuclearBlockInMessages(messages: ChatCompletionMessageParam[]): void {
+    if (this.nuclearEntries.length === 0) return;
+    const marker = "[Conversation history — use conversation_recall";
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]!;
+      if (msg.role === "user" && typeof msg.content === "string" && msg.content.startsWith(marker)) {
+        messages[i] = this.buildNuclearBlock();
+        return;
+      }
+    }
+    // No existing block found — insert after the first turn
+    if (messages.length > 0) {
+      // Find end of first turn (next user message or end)
+      let insertIdx = 1;
+      for (let i = 1; i < messages.length; i++) {
+        if (messages[i]!.role === "user") { insertIdx = i; break; }
+        insertIdx = i + 1;
+      }
+      messages.splice(insertIdx, 0, this.buildNuclearBlock());
+    }
+  }
+
+  // ── Internal: Turn parsing and priority ───────────────────────
 
   private parseTurns(): { messages: ChatCompletionMessageParam[]; priority: Priority }[] {
     const turns: { messages: ChatCompletionMessageParam[]; priority: Priority }[] = [];
     let current: ChatCompletionMessageParam[] = [];
 
     for (const msg of this.messages) {
-      // A user message starts a new turn (unless it's the very first message)
       if (msg.role === "user" && current.length > 0) {
         turns.push({ messages: current, priority: Priority.MEDIUM });
         current = [];
@@ -298,31 +406,33 @@ export class ConversationState {
     return Priority.MEDIUM;
   }
 
-  /** Generate a one-line heuristic summary of a turn (no LLM call). */
-  private summarizeTurn(messages: ChatCompletionMessageParam[]): string {
-    const parts: string[] = [];
+  // ── Internal: Search helpers ──────────────────────────────────
 
-    for (const msg of messages) {
-      if (msg.role === "user" && typeof msg.content === "string") {
-        parts.push(`user: ${msg.content.slice(0, 80)}`);
-      }
-      if (msg.role === "assistant") {
-        if ("tool_calls" in msg && msg.tool_calls) {
-          const tools = msg.tool_calls
-            .map((tc) => "function" in tc ? tc.function.name : "unknown")
-            .filter(Boolean);
-          const unique = [...new Set(tools)];
-          parts.push(`agent called ${unique.join(", ")}`);
-        } else if (typeof msg.content === "string" && msg.content) {
-          parts.push(`agent: ${msg.content.slice(0, 60)}...`);
-        }
+  private searchArchive(query: string): string | null {
+    if (this.recallArchive.size === 0) return null;
+
+    let regex: RegExp;
+    try {
+      regex = new RegExp(query, "i");
+    } catch {
+      const words = query.split(/\s+/).filter((w) => w.length > 0);
+      const pattern = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+      regex = new RegExp(pattern, "i");
+    }
+
+    const matches: string[] = [];
+    for (const [seq, msgs] of this.recallArchive) {
+      const text = this.turnToText(msgs);
+      if (regex.test(text)) {
+        const entry = this.nuclearEntries.find((e) => e.seq === seq);
+        matches.push(entry ? formatNuclearLine(entry) : `#${seq}`);
       }
     }
 
-    return parts.join(" → ") || "(empty turn)";
+    if (matches.length === 0) return null;
+    return `Recall archive matches (${matches.length}):\n${matches.map((m) => `  ${m}`).join("\n")}`;
   }
 
-  /** Convert messages to a searchable text representation. */
   private turnToText(messages: ChatCompletionMessageParam[]): string {
     const lines: string[] = [];
     for (const msg of messages) {

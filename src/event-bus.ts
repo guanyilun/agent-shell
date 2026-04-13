@@ -176,6 +176,16 @@ export interface ShellEvents {
   // Session reset (slash command → backend: clear conversation state)
   "agent:reset-session": Record<string, never>;
 
+  // Manual compaction request (slash command → backend)
+  "agent:compact-request": Record<string, never>;
+
+  // Context stats query (sync pipe: slash command → backend)
+  "context:get-stats": {
+    activeTokens: number;
+    nuclearEntries: number;
+    recallArchiveSize: number;
+    budgetTokens: number;
+  };
 
   // Extension registers itself as agent backend (extension → core)
   "agent:register-backend": {

@@ -65,6 +65,14 @@ export interface Settings {
   /** Fraction of content budget allocated to shell context (0-1, default 0.35). */
   shellContextRatio?: number;
 
+  // ── History ──────────────────────────────────────────────
+  /** Max history file size in bytes (default: 102400 = 100KB). */
+  historyMaxBytes?: number;
+  /** Number of prior history entries to load on startup (default: 50). */
+  historyStartupEntries?: number;
+  /** Max nuclear entries kept in-context before flushing to history file (default: 200). */
+  nuclearMaxEntries?: number;
+
   // ── Display ───────────────────────────────────────────────
   /** Max command output lines shown inline in TUI. */
   maxCommandOutputLines?: number;
@@ -97,6 +105,9 @@ const DEFAULTS: Required<Settings> = {
   shellTailLines: 5,
   recallExpandMaxLines: 100,
   shellContextRatio: 0.35,
+  historyMaxBytes: 102400,
+  historyStartupEntries: 50,
+  nuclearMaxEntries: 200,
   maxCommandOutputLines: 3,
   readOutputMaxLines: 10,
   diffMaxLines: 20,

@@ -1,136 +1,94 @@
 # Context Management
 
-agent-sh manages two separate streams of text that compete for a finite LLM context window. Understanding how they work — and how they share space — is key to getting the most out of the agent, especially with models of different context window sizes.
+agent-sh manages context like shell history — it's always there, it persists across restarts, there are no explicit sessions. Content flows through three tiers at decreasing resolution, ensuring the agent always has a timeline of what happened while keeping within the model's context window.
 
 ## The Two Streams
 
-### Stream 1: Shell Context (situational awareness)
+### Shell Context (situational awareness)
 
-The **shell context** is what the user has been doing in the terminal. It's managed by `ContextManager` and injected as a `<shell_context>` block in the dynamic context on every LLM call.
+Managed by `ContextManager`, injected as `<shell_context>` on every LLM call.
 
-It contains:
-- **User shell commands** and their outputs (truncated)
-- **Agent query markers** — one-liners recording what the user asked
+Contains only user-initiated activity:
+- User shell commands and outputs (truncated)
+- Agent query markers
 
-Shell context answers the question: *"What has the user been doing?"*
+### Conversation (task continuity)
 
-### Stream 2: Conversation (task continuity)
+Managed by `ConversationState`, appended to the LLM messages array.
 
-The **conversation** is the OpenAI chat messages array — `user`, `assistant`, and `tool` messages. It's managed by `ConversationState` and appended directly to the LLM request.
+Contains agent work:
+- User messages, assistant messages, tool calls, tool results
 
-It contains:
-- User messages (queries)
-- Assistant messages (text responses + tool calls)
-- Tool results (outputs from bash, read_file, edit_file, etc.)
+No duplication — agent tool outputs live only in the conversation stream.
 
-Conversation answers the question: *"What has the agent been working on?"*
+## Token Budget
 
-### Why two streams?
-
-They serve different purposes and have different lifecycles:
-
-- Shell context is **rebuilt fresh** on every LLM call. It's a sliding window over the session.
-- Conversation is **accumulated** across turns within a query session. It's the LLM's working memory.
-
-A user might run 50 shell commands before ever asking the agent anything. That history lives in the shell context. Once the agent starts working, its tool calls and reasoning live in the conversation.
-
-### No duplication
-
-Agent tool outputs live **only** in the conversation stream. Shell context tracks **only** user-initiated activity (shell commands and query markers). This avoids wasting context on redundant content.
-
-## The Token Budget
-
-Both streams share a single budget derived from the model's actual context window.
+Both streams share a budget derived from the model's context window:
 
 ```
 Model context window (e.g. 200,000 tokens)
-  - System prompt overhead        (~800 tokens)
-  - Tool definitions              (~50 tokens per tool)
-  - Response reserve              (8,192 tokens)
-  - Dynamic context overhead      (~500 tokens for conventions, metadata)
+  - System prompt + tool defs + response reserve
   = Content budget
-    +-- Shell context slice       (35% by default)
-    +-- Conversation slice        (65% by default)
+    +-- Shell context (35% by default)
+    +-- Conversation  (65% by default)
 ```
 
-The split ratio is configurable via `shellContextRatio` in `~/.agent-sh/settings.json`:
+Configurable via `shellContextRatio` in settings. Recalculates on model switch. Falls back to 60k tokens when `contextWindow` is not set.
 
+## Three-Tier Conversation History
+
+This is the core design. Content flows downward as the context window fills:
+
+```
+Tier 1: Active Context          full content in LLM conversation
+  | compacts when budget fills
+  | read-only items dropped, state-changing -> nuclear one-liner
+  | full content -> recall archive (in-memory)
+  v
+Tier 2: Nuclear Memory          one-liners IN the conversation + recall archive
+  | flushes when nuclear entries exceed threshold
+  | entries written to disk, removed from memory
+  v
+Tier 3: History File            ~/.agent-sh/history, JSONL, append-only
+  | truncated from front at fixed file size
+```
+
+### Tier 1: Active Context
+
+Full tool outputs, file contents, diffs — everything verbatim. This is what the LLM works with directly. Budget: `conversationBudgetTokens`.
+
+### Tier 2: Nuclear Memory
+
+When Tier 1 fills, low-priority turns are **compacted** into nuclear one-liners that stay in the conversation. The LLM always sees a timeline:
+
+```
+[Conversation history — use conversation_recall to expand any entry]
+#12 14:01 user: "Set up the project with TypeScript..."
+#13 14:02 bash: npm init -y (exit 0, 8 lines)
+#15 14:03 write_file tsconfig.json (created, 15 lines)
+#16 14:03 edit_file package.json (+2/-1)
+#18 14:05 user: "Now add the test framework"
+```
+
+Key behaviors:
+- **Read-only items are dropped** — `read_file`, `grep`, `glob`, `ls` results vanish (the agent can re-read them)
+- **State-changing actions survive** — `edit_file`, `write_file`, `bash` (with exit codes), errors, user messages
+- **Full content is archived** in memory for `conversation_recall`
+
+### Tier 3: History File
+
+When nuclear entries accumulate past `nuclearMaxEntries` (default 200), oldest entries flush to `~/.agent-sh/history` — a JSONL file that persists across restarts.
+
+On startup, the last `historyStartupEntries` (default 50) entries are loaded so the agent knows what happened in prior terminal sessions.
+
+**Multi-shell**: Multiple agent-sh instances share the same history file. Each line is well under PIPE_BUF, so `O_APPEND` writes are atomic. Only file truncation (when exceeding `historyMaxBytes`) uses a lock file.
+
+**Format**: One JSON object per line, inspectable with `jq`:
 ```json
-{ "shellContextRatio": 0.35 }
+{"seq":44,"ts":1713020580000,"iid":"a3f2","kind":"tool","tool":"edit_file","sum":"edit_file src/types.ts (+3/-1)"}
 ```
 
-When the model's `contextWindow` is not configured, the budget falls back to a conservative 60,000 tokens total.
-
-### How the budget adapts
-
-The budget recalculates automatically when you switch models. A model with 200k context gets generous budgets for both streams. A model with 8k context gets much tighter limits, but the same ratio applies.
-
-| Model context | Shell budget | Conversation budget |
-|---------------|-------------|-------------------|
-| 8,000         | ~0 tokens   | ~0 tokens (minimal overhead leaves little room) |
-| 32,000        | ~6,400      | ~12,000           |
-| 128,000       | ~37,000     | ~70,000           |
-| 200,000       | ~62,000     | ~115,000          |
-
-*(Numbers are approximate — actual values depend on tool count and prompt size.)*
-
-## Shell Context Pipeline
-
-The shell context passes through three stages before being injected into the LLM prompt:
-
-### 1. Windowing
-
-Keep only the last N exchanges. Default: 20. Configurable via `contextWindowSize`.
-
-### 2. Per-exchange truncation
-
-Long shell outputs get head+tail truncation:
-
-```
-$ find . -name "*.ts"
-  ./src/index.ts
-  ./src/core.ts
-  ./src/settings.ts
-  ./src/types.ts
-  ./src/event-bus.ts
-  [... 142 lines truncated, use shell_recall tool with expand and id 7 to see full output ...]
-  ./examples/extensions/openrouter.ts
-  ./examples/extensions/bridge.ts
-  exit 0
-```
-
-Truncation thresholds are configurable:
-
-| Setting | Default | Purpose |
-|---------|---------|---------|
-| `shellTruncateThreshold` | 10 lines | Lines before truncation kicks in |
-| `shellHeadLines` | 5 | Lines kept from start |
-| `shellTailLines` | 5 | Lines kept from end |
-
-### 3. Budget enforcement
-
-If the total shell context exceeds the token budget, oldest exchange outputs are stripped entirely:
-
-```
-#3 [shell cwd:/project] $ npm test
-  [output omitted, use shell_recall tool to expand id 3]
-```
-
-The agent can always recover full content via `shell_recall`.
-
-### shell_recall
-
-Truncated content is not lost — it stays in memory. The agent can search and expand it:
-
-- `shell_recall` — browse one-line summaries of recent exchanges
-- `shell_recall --search "query"` — regex search across all session history
-- `shell_recall --expand 41` — retrieve full content of exchange #41
-
-## Conversation Compaction
-
-When the conversation exceeds its token budget, it's **compacted** — low-priority turns are evicted to make room for new work.
-
-### Priority-based eviction
+### Priority-based compaction
 
 Not all turns are equally important. Compaction evicts lowest-priority content first:
 
@@ -142,110 +100,66 @@ Not all turns are equally important. Compaction evicts lowest-priority content f
 | Low | Successful tool results with no errors | Can be reproduced |
 | Lowest | Read-only tool results (grep, ls, read_file) | Agent can re-read these |
 
-### Eviction archive
+## Shell Context Pipeline
 
-Evicted turns are not discarded — they're moved to an archive. The `[Earlier conversation turns evicted]` marker tells the agent that content was compacted, and it can recover it.
+Shell context passes through three stages:
+
+1. **Windowing** — last N exchanges (default 20, configurable via `contextWindowSize`)
+2. **Per-exchange truncation** — long outputs get head+tail (configurable thresholds)
+3. **Budget enforcement** — oldest outputs stripped if over token budget
+
+The agent can recover full content via `shell_recall`.
+
+## Recall Tools
+
+### shell_recall
+
+Recovers truncated shell context:
+- `shell_recall` — browse recent exchanges
+- `shell_recall --search "query"` — regex search
+- `shell_recall --expand 41` — full content of exchange #41
 
 ### conversation_recall
 
-Mirrors `shell_recall` for conversation content:
+Recovers compacted conversation content across all tiers:
+- `conversation_recall browse` — list nuclear entries + recent history
+- `conversation_recall --search "query"` — search archive + history file
+- `conversation_recall --expand 5` — full content from recall archive
 
-- `conversation_recall browse` — list evicted turns with one-line summaries
-- `conversation_recall --search "query"` — search evicted conversation content
-- `conversation_recall --expand 5` — retrieve full content of evicted turn #5
+## Slash Commands
 
-### Auto-compaction
+| Command | Action |
+|---------|--------|
+| `/compact` | Manually trigger compaction (Tier 1 → Tier 2) |
+| `/context` | Show context budget usage (active tokens, nuclear entries, archive size) |
 
-Compaction triggers automatically before each LLM call when the estimated token count exceeds the conversation budget. On context overflow errors from the API, a more aggressive compaction runs (60% of budget) and the request is retried.
+History is continuous — there's no `/clear`. Old content naturally rolls through the tiers. Use `/compact` if you want to free up active context space immediately.
 
-## Message Assembly
-
-Here's what the LLM actually sees on each call:
-
-```
-[0] system: Static identity + behavioral rules (cacheable)
-
-[1] user: <context>
-       # Available Tools
-       - bash: Execute shell commands...
-       - read_file: Read a file...
-       ...
-
-       # Project Conventions
-       [CLAUDE.md / AGENT.md content]
-
-       <shell_context>
-       cwd: /Users/you/project
-       session: 42 exchanges, 15m elapsed
-
-       #38 [shell cwd:/project] $ git status
-         On branch main
-         ...
-         exit 0
-
-       #39 [you] > fix the failing test
-       </shell_context>
-
-       Current date: 2025-02-17
-       Working directory: /Users/you/project
-     </context>
-
-[2] assistant: "Understood."
-
-[3..N] Conversation messages:
-       [user] fix the failing test
-       [assistant] Let me look at the test... {tool_calls: [read_file]}
-       [tool] {content: "test file contents..."}
-       [assistant] I see the issue... {tool_calls: [edit_file]}
-       [tool] {content: "File edited successfully"}
-       ...
-```
-
-## Extension Hooks
-
-Three hooks allow extensions to customize context management:
-
-| Hook | Purpose | Called when |
-|------|---------|------------|
-| `context:build-extra` | Inject additional content into `<shell_context>` | Every context build |
-| `dynamic-context:build` | Wrap or modify the entire dynamic context | Every LLM iteration |
-| `conversation:prepare` | Transform the full message array before sending | Every LLM call |
-
-Example: an extension could use `conversation:prepare` to implement LLM-based summarization of old turns, or `context:build-extra` to inject a terminal buffer snapshot.
-
-## Configuration Reference
+## Configuration
 
 All settings in `~/.agent-sh/settings.json`:
-
-```json
-{
-  "contextWindowSize": 20,
-  "contextBudget": 16384,
-  "shellTruncateThreshold": 10,
-  "shellHeadLines": 5,
-  "shellTailLines": 5,
-  "shellContextRatio": 0.35,
-  "recallExpandMaxLines": 100
-}
-```
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `contextWindowSize` | 20 | Max recent shell exchanges in context |
-| `contextBudget` | 16384 | Legacy byte budget for shell context (overridden by token budget when model contextWindow is set) |
+| `contextBudget` | 16384 | Byte budget for shell context |
 | `shellTruncateThreshold` | 10 | Shell output lines before truncation |
 | `shellHeadLines` | 5 | Lines kept from start of truncated output |
-| `shellTailLines` | 5 | Lines kept from end of truncated output |
-| `shellContextRatio` | 0.35 | Fraction of content budget for shell context (0-1) |
-| `recallExpandMaxLines` | 100 | Max lines shell_recall returns without requiring line ranges |
+| `shellTailLines` | 5 | Lines kept from end |
+| `shellContextRatio` | 0.35 | Fraction of content budget for shell context |
+| `recallExpandMaxLines` | 100 | Max lines shell_recall returns without line ranges |
+| `historyMaxBytes` | 102400 | Max history file size (100KB) |
+| `historyStartupEntries` | 50 | Prior history entries loaded on startup |
+| `nuclearMaxEntries` | 200 | Max nuclear entries in-context before flushing to disk |
 
 ## Key Files
 
 | File | Role |
 |------|------|
 | `src/context-manager.ts` | Shell exchange storage, windowing, truncation, recall API |
-| `src/agent/conversation-state.ts` | Conversation messages, priority compaction, eviction archive |
-| `src/token-budget.ts` | Unified budget calculator (splits context window between streams) |
-| `src/agent/agent-loop.ts` | Wires budget into compaction + context assembly |
-| `src/agent/system-prompt.ts` | Builds dynamic context, passes shell budget |
-| `src/extensions/shell-recall.ts` | Terminal interception for `__shell_recall` commands |
+| `src/agent/conversation-state.ts` | Three-tier conversation: active + nuclear + history |
+| `src/agent/nuclear-form.ts` | Nuclear one-liner generation, serialization, classification |
+| `src/agent/history-file.ts` | Persistent JSONL history with append, search, truncation |
+| `src/token-budget.ts` | Unified budget calculator |
+| `src/agent/agent-loop.ts` | Wires budget, history, compaction + flush |
+| `src/extensions/slash-commands.ts` | /compact, /context commands |

@@ -89,6 +89,36 @@ export default function activate({ bus, contextManager }: ExtensionContext): voi
     },
   });
 
+  register({
+    name: "/compact",
+    description: "Compact conversation (move full content to nuclear summaries)",
+    handler: () => {
+      bus.emit("agent:compact-request", {});
+    },
+  });
+
+  register({
+    name: "/context",
+    description: "Show context budget usage",
+    handler: () => {
+      const stats = bus.emitPipe("context:get-stats", {
+        activeTokens: 0,
+        nuclearEntries: 0,
+        recallArchiveSize: 0,
+        budgetTokens: 0,
+      });
+      const pct = stats.budgetTokens > 0
+        ? Math.round((stats.activeTokens / stats.budgetTokens) * 100)
+        : 0;
+      const lines = [
+        `Active context: ~${stats.activeTokens.toLocaleString()} tokens / ${stats.budgetTokens.toLocaleString()} budget (${pct}%)`,
+        `Nuclear entries: ${stats.nuclearEntries} in-context`,
+        `Recall archive: ${stats.recallArchiveSize} entries`,
+      ];
+      bus.emit("ui:info", { message: lines.join("\n") });
+    },
+  });
+
   // ── Extension registration ────────────────────────────────────
 
   bus.on("command:register", (cmd) => {
