@@ -9,6 +9,8 @@ import slashCommands from "./extensions/slash-commands.js";
 import fileAutocomplete from "./extensions/file-autocomplete.js";
 import shellRecall from "./extensions/shell-recall.js";
 import commandSuggest from "./extensions/command-suggest.js";
+import terminalBuffer from "./extensions/terminal-buffer.js";
+import overlayAgent from "./extensions/overlay-agent.js";
 import { loadExtensions } from "./extension-loader.js";
 import { getSettings } from "./settings.js";
 import { discoverSkills } from "./agent/skills.js";
@@ -250,6 +252,8 @@ async function main(): Promise<void> {
   fileAutocomplete(extCtx);
   shellRecall(extCtx);
   commandSuggest(extCtx);
+  terminalBuffer(extCtx);
+  overlayAgent(extCtx);
 
   // Load user extensions (may register alternative agent backends)
   if (process.env.DEBUG) {

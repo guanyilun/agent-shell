@@ -1,10 +1,5 @@
 /**
- * Terminal buffer extension.
- *
- * Maintains a headless xterm.js terminal fed from raw PTY data.
- * Provides an accurate, clean-text snapshot of the terminal screen
- * that the agent can use for context — handling ANSI codes, cursor
- * movement, alternate screen (vim/htop), and line wrapping correctly.
+ * Built-in terminal buffer extension.
  *
  * Registers two agent tools:
  *   - terminal_read: get the current screen contents + cursor position
@@ -14,21 +9,10 @@
  * (vim, htop, less, etc.) by reading the screen and typing keys.
  *
  * Requires: npm install @xterm/headless@5.5.0 @xterm/addon-serialize@0.13.0
- *
- * Usage:
- *   agent-sh -e ./examples/extensions/terminal-buffer.ts
- *
- *   # Or copy to ~/.agent-sh/extensions/ for permanent use:
- *   cp examples/extensions/terminal-buffer.ts ~/.agent-sh/extensions/
  */
-import type { ExtensionContext } from "agent-sh/types";
+import type { ExtensionContext } from "../types.js";
 
-/** Wait for PTY output to settle after sending keystrokes. */
-function settle(ms = 100): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Interpret C-style escape sequences in a string (e.g. \r → CR, \x1b → ESC). */
+/** Interpret C-style escape sequences (e.g. \r → CR, \x1b → ESC). */
 function interpretEscapes(str: string): string {
   return str.replace(/\\(x[0-9a-fA-F]{2}|r|n|t|\\|0)/g, (_, seq: string) => {
     if (seq === "r") return "\r";
@@ -41,17 +25,12 @@ function interpretEscapes(str: string): string {
   });
 }
 
-export default function activate({ bus, terminalBuffer: tb, registerTool }: ExtensionContext): void {
-  if (!tb) {
-    console.warn("terminal-buffer: @xterm/headless not installed — extension disabled");
-    return;
-  }
+function settle(ms = 100): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  // ── Agent tools ─────────────────────────────────────────────
-  // Context injection is intentionally NOT done here — the terminal
-  // buffer content would bloat every agent message.  The agent can
-  // call terminal_read on demand, and the overlay extension injects
-  // context only when the overlay is active.
+export default function activate({ bus, terminalBuffer: tb, registerTool }: ExtensionContext): void {
+  if (!tb) return; // @xterm/headless not installed
 
   registerTool({
     name: "terminal_read",
@@ -121,7 +100,7 @@ export default function activate({ bus, terminalBuffer: tb, registerTool }: Exte
     },
     showOutput: false,
 
-    getDisplayInfo: (args) => ({
+    getDisplayInfo: () => ({
       kind: "execute" as const,
       icon: "⌨",
       locations: [],
@@ -129,8 +108,6 @@ export default function activate({ bus, terminalBuffer: tb, registerTool }: Exte
 
     formatCall: (args) => {
       const keys = args.keys as string;
-      // Show a readable version of the keys — handle both literal
-      // escape strings (\\x1b) and actual bytes (\x1b)
       return keys
         .replace(/\\x1b|\x1b/g, "ESC")
         .replace(/\\r|\r/g, "⏎")
@@ -146,17 +123,12 @@ export default function activate({ bus, terminalBuffer: tb, registerTool }: Exte
       const keys = interpretEscapes(raw);
       const settleMs = (args.settle_ms as number) ?? 150;
 
-      // Force PTY output visible so the user sees the program's response.
-      // Stays visible for the rest of agent processing — Shell resets
-      // paused=false on processing-done anyway.
       bus.emit("shell:stdout-show", {});
       process.stdout.write("\n");
       bus.emit("shell:pty-write", { data: keys });
 
-      // Wait for the terminal to process the keystrokes and render
       await settle(settleMs);
 
-      // Return the screen state after the keystrokes
       const { text, altScreen, cursorX, cursorY } = tb.readScreen();
       const info = [
         altScreen ? "mode: alternate screen" : "mode: normal",
@@ -169,16 +141,5 @@ export default function activate({ bus, terminalBuffer: tb, registerTool }: Exte
         isError: false,
       };
     },
-  });
-
-  // ── Bus snapshot for other extensions ───────────────────────
-
-  bus.on("shell:buffer-request", () => {
-    const { text, altScreen, cursorX, cursorY } = tb.readScreen();
-    bus.emit("shell:buffer-snapshot", {
-      text,
-      altScreen,
-      cursor: { x: cursorX, y: cursorY },
-    });
   });
 }
