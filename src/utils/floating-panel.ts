@@ -373,7 +373,8 @@ export class FloatingPanel {
     this.handlers.define(`${p}:render-border-bottom`, (ctx: FrameContext): string => {
       const { geo, border: b } = ctx;
       if (ctx.footer) {
-        const footerPad = Math.max(0, geo.boxW - ctx.footer.length - 3);
+        const visLen = stripAnsi(ctx.footer).length;
+        const footerPad = Math.max(0, geo.boxW - visLen - 3);
         return `${b.bl}${b.h.repeat(footerPad)}${DIM}${ctx.footer}${RESET}${b.h}${b.br}`;
       }
       return `${b.bl}${b.h.repeat(geo.boxW - 2)}${b.br}`;
