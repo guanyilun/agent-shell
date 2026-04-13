@@ -15,7 +15,10 @@ export function createUserShellTool(opts: {
   return {
     name: "user_shell",
     description:
-      "Run a command with lasting effects in the user's live shell (cd, export, install packages, start servers, apply changes). Output is shown directly to the user but NOT returned to you by default — set return_output=true if you need to inspect the result.",
+      "Run a complete, non-interactive command in the user's live shell (cd, export, install packages, start servers, git commands). " +
+      "Use this for commands that have side effects or that the user wants to see. Output is shown directly to the user but NOT returned " +
+      "to you by default — set return_output=true if you need to inspect the result. " +
+      "Do NOT use this to interact with programs that are already running in the terminal — use terminal_keys/terminal_read instead.",
     input_schema: {
       type: "object",
       properties: {

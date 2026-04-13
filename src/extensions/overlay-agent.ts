@@ -36,6 +36,13 @@ export default function activate(ctx: ExtensionContext): void {
     return panel.active ? false : next();
   });
 
+  // Signal interactive overlay mode in dynamic context
+  advise("dynamic-context:build", (next) => {
+    const base = next() as string;
+    if (!panel.active) return base;
+    return base + "\ninteractive-session: true\n";
+  });
+
   // ── Conversation state (persists across hide/show) ─────────
   const messages: ChatMessage[] = [];
   let renderer: MarkdownRenderer | null = null;

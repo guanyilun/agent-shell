@@ -35,9 +35,10 @@ export default function activate({ bus, terminalBuffer: tb, registerTool }: Exte
   registerTool({
     name: "terminal_read",
     description:
-      "Read the current terminal screen contents. Returns clean text (ANSI stripped) " +
+      "Read what is currently visible on the user's terminal screen. Returns clean text (ANSI stripped) " +
       "with cursor position and whether an alternate-screen program (vim, htop, less) is active. " +
-      "Use this to see what the user sees before sending keystrokes with terminal_keys.",
+      "Use this to observe what the user sees — helpful for answering questions about terminal output, " +
+      "diagnosing errors on screen, or checking state before/after sending keystrokes with terminal_keys.",
     input_schema: {
       type: "object",
       properties: {},
@@ -68,8 +69,11 @@ export default function activate({ bus, terminalBuffer: tb, registerTool }: Exte
   registerTool({
     name: "terminal_keys",
     description:
-      "Send keystrokes to the user's live terminal. The keys are written directly to the PTY " +
-      "as if the user typed them. Use escape sequences for special keys:\n" +
+      "Send keystrokes directly into the user's live terminal PTY, as if the user typed them. " +
+      "Use this to interact with programs already running in the terminal (vim, htop, less, ssh, REPLs, etc.) " +
+      "or to type commands at the shell prompt. Do NOT use user_shell for this — user_shell runs a new " +
+      "command in a subshell, while terminal_keys types into whatever is currently on screen.\n\n" +
+      "Escape sequences for special keys:\n" +
       "  - Escape: \\x1b\n" +
       "  - Enter/Return: \\r\n" +
       "  - Tab: \\t\n" +
