@@ -54,6 +54,29 @@ const BORDERS: Record<BorderStyle, { tl: string; tr: string; bl: string; br: str
   heavy:   { tl: "\u250f", tr: "\u2513", bl: "\u2517", br: "\u251b", h: "\u2501", v: "\u2503" },
 };
 
+// ── Trigger sequence helpers ────────────────────────────────────
+// Programs like vim enable xterm's modifyOtherKeys or the kitty
+// keyboard protocol, which encode Ctrl+key as CSI sequences instead
+// of raw control bytes.  We pre-compute every encoding of the
+// trigger so it works regardless of what the foreground process has
+// negotiated with the terminal.
+
+function buildTriggerSequences(trigger: string): string[] {
+  const seqs = [trigger];
+  if (trigger.length === 1) {
+    const code = trigger.charCodeAt(0);
+    if (code < 32) {
+      // Ctrl+key: base codepoint is code | 0x40 (e.g. 0x1c → 0x5c = '\')
+      const base = code | 0x40;
+      // xterm modifyOtherKeys mode 2: ESC[27;5;<base>~
+      seqs.push(`\x1b[27;5;${base}~`);
+      // kitty keyboard protocol: ESC[<base>;5u
+      seqs.push(`\x1b[${base};5u`);
+    }
+  }
+  return seqs;
+}
+
 // ── Types ───────────────────────────────────────────────────────
 
 export interface FloatingPanelConfig {
@@ -208,6 +231,10 @@ export class FloatingPanel {
   private buffer: TerminalBuffer | null = null;
   private bufferInitialized = false;
 
+  // ── Trigger sequences ───────────────────────────────────────
+  /** All byte sequences that should be recognized as the trigger key. */
+  private readonly triggerSeqs: string[];
+
   // ── State ───────────────────────────────────────────────────
   private phase: Phase = "idle";
   private editor = new LineEditor();
@@ -240,6 +267,7 @@ export class FloatingPanel {
       handlerPrefix: this.prefix,
     };
     this.border = BORDERS[this.config.borderStyle];
+    this.triggerSeqs = buildTriggerSequences(config.trigger);
 
     // ── Register default handlers ─────────────────────────────
     const p = this.prefix;
@@ -375,6 +403,11 @@ export class FloatingPanel {
       }
       return payload;
     });
+  }
+
+  /** Check whether data matches any encoding of the trigger key. */
+  private isTrigger(data: string): boolean {
+    return this.triggerSeqs.includes(data);
   }
 
   // ── Lazy terminal buffer setup ──────────────────────────────
@@ -534,7 +567,7 @@ export class FloatingPanel {
         this.bus.emit("agent:cancel-request", {});
         return { ...payload, consumed: true };
       }
-      if (data === "\x1b" || data === this.config.trigger) {
+      if (data === "\x1b" || this.isTrigger(data)) {
         this.dismiss();
         return { ...payload, consumed: true };
       }
@@ -544,7 +577,7 @@ export class FloatingPanel {
       return { ...payload, consumed: true };
     }
 
-    if (payload.data === this.config.trigger) {
+    if (this.isTrigger(payload.data)) {
       this.open();
       return { ...payload, consumed: true };
     }
@@ -553,10 +586,12 @@ export class FloatingPanel {
   }
 
   private handleInputKey(data: string): void {
+    // Check full data string against trigger sequences (may be multi-byte)
+    if (this.isTrigger(data)) { this.dismiss(); return; }
+
     for (let i = 0; i < data.length; i++) {
       const ch = data[i]!;
       if (ch === "\x1b" && data[i + 1] == null) { this.dismiss(); return; }
-      if (ch === this.config.trigger) { this.dismiss(); return; }
       if (ch.charCodeAt(0) === 0x03) { this.dismiss(); return; }
     }
 
