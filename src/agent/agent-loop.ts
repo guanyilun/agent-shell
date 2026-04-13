@@ -153,6 +153,15 @@ export class AgentLoop implements AgentBackend {
       }
       this.bus.emit("config:changed", {});
     });
+    on("config:add-modes", ({ modes: extra }) => {
+      // Remove any existing modes for the same provider, then append
+      const providers = new Set(extra.map((m) => m.provider).filter(Boolean));
+      this.modes = [
+        ...this.modes.filter((m) => !m.provider || !providers.has(m.provider)),
+        ...extra,
+      ];
+      this.bus.emit("config:changed", {});
+    });
     on("agent:reset-session", () => {
       this.cancel();
       this.conversation = new ConversationState();

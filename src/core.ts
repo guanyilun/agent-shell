@@ -215,6 +215,21 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
       supportsReasoningEffort: p.supportsReasoningEffort,
       modelCapabilities: caps.size > 0 ? caps : undefined,
     });
+
+    // Push registered models into the agent loop so they appear in
+    // autocomplete and are selectable via /model.
+    const addModes: AgentMode[] = modelIds.map((m) => {
+      const mc = caps.get(m);
+      return {
+        model: m,
+        provider: p.id,
+        providerConfig: { apiKey: p.apiKey ?? "", baseURL: p.baseURL },
+        contextWindow: mc?.contextWindow,
+        reasoning: mc?.reasoning,
+        supportsReasoningEffort: p.supportsReasoningEffort,
+      };
+    });
+    bus.emit("config:add-modes", { modes: addModes });
   });
 
   bus.on("config:switch-provider", ({ provider: name }) => {

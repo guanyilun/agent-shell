@@ -211,6 +211,8 @@ export interface ShellEvents {
 
   // Set modes (core → agent loop: after provider switch)
   "config:set-modes": { modes: AgentMode[] };
+  // Append modes (core → agent loop: after provider register)
+  "config:add-modes": { modes: AgentMode[] };
 
   // Register a provider at runtime (extensions → core)
   "provider:register": {
