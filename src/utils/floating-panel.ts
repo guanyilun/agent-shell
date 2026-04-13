@@ -271,7 +271,13 @@ export class FloatingPanel {
     this.border = BORDERS[this.config.borderStyle];
     this.triggerSeqs = buildTriggerSequences(config.trigger);
 
-    // ── Register default handlers ─────────────────────────────
+    this.registerDefaultHandlers();
+    this.wireEvents();
+  }
+
+  // ── Default handler registration ───────────────────────────
+
+  private registerDefaultHandlers(): void {
     const p = this.prefix;
 
     // Default content renderer: uses built-in appendText/appendLine buffer
@@ -315,7 +321,7 @@ export class FloatingPanel {
 
     // Default border-top renderer
     this.handlers.define(`${p}:render-border-top`, (ctx: FrameContext): string => {
-      const { geo, border: b, title: _unused } = ctx;
+      const { geo, border: b } = ctx;
       const titleText = ctx.title || (ctx.phase === "input" ? "input" : ctx.phase === "done" ? "done" : "...");
       const titleStr = ` ${INVERSE} ${titleText} ${RESET} `;
       const titleVisLen = titleText.length + 4;
@@ -350,8 +356,8 @@ export class FloatingPanel {
       const visibleContent = [...(content.lines ?? [])];
       while (visibleContent.length < geo.contentH) visibleContent.push("");
 
-      const composite = (boxLine: string, bgLine: string | null): string =>
-        this.handlers.call(`${p}:composite-row`, boxLine, bgLine, geo.boxLeft, geo.boxW, geo.cols);
+      const composite = (boxLine: string, bg: string | null): string =>
+        this.handlers.call(`${p}:composite-row`, boxLine, bg, geo.boxLeft, geo.boxW, geo.cols);
 
       const buildRow = (c: string, w: number): string =>
         this.handlers.call(`${p}:build-row`, c, w);
@@ -359,6 +365,8 @@ export class FloatingPanel {
       const frame: string[] = [];
       for (let row = 0; row < geo.rows; row++) {
         const relRow = row - geo.boxTop;
+        const bg = bgLines?.[row] ?? null;
+
         if (relRow < 0 || relRow >= geo.boxH) {
           // Outside box
           if (bgLines) {
@@ -367,17 +375,13 @@ export class FloatingPanel {
             frame.push("\x1b[2K");
           }
         } else if (relRow === 0) {
-          const borderTop = this.handlers.call(`${p}:render-border-top`, ctx) as string;
-          frame.push(composite(borderTop, bgLines?.[row] ?? null));
+          frame.push(composite(this.handlers.call(`${p}:render-border-top`, ctx), bg));
         } else if (relRow === geo.boxH - 1) {
-          const borderBottom = this.handlers.call(`${p}:render-border-bottom`, ctx) as string;
-          frame.push(composite(borderBottom, bgLines?.[row] ?? null));
+          frame.push(composite(this.handlers.call(`${p}:render-border-bottom`, ctx), bg));
         } else {
-          const contentIdx = relRow - 1;
-          const raw = visibleContent[contentIdx] || "";
-          const rendered = buildRow(raw, geo.contentW);
-          const boxLine = `${b.v} ${rendered} ${b.v}`;
-          frame.push(composite(boxLine, bgLines?.[row] ?? null));
+          const raw = visibleContent[relRow - 1] || "";
+          const boxLine = `${b.v} ${buildRow(raw, geo.contentW)} ${b.v}`;
+          frame.push(composite(boxLine, bg));
         }
       }
 
@@ -390,16 +394,19 @@ export class FloatingPanel {
 
       return { rows: frame, cursorSeq };
     });
+  }
 
-    // ── Wire bus events ───────────────────────────────────────
+  // ── Bus event wiring ───────────────────────────────────────
+
+  private wireEvents(): void {
     // Buffer PTY output while overlay is open so we can replay it on dismiss.
     // Alt screen restore discards anything written while it was active.
-    bus.on("shell:pty-data", ({ raw }) => {
+    this.bus.on("shell:pty-data", ({ raw }) => {
       if (this.phase !== "idle") this.ptyBuffer += raw;
     });
 
-    bus.onPipe("input:intercept", (payload) => this.handleIntercept(payload));
-    bus.onPipe("shell:redraw-prompt", (payload) => {
+    this.bus.onPipe("input:intercept", (payload) => this.handleIntercept(payload));
+    this.bus.onPipe("shell:redraw-prompt", (payload) => {
       if (this.phase !== "idle") {
         return { ...payload, handled: true };
       }
@@ -576,38 +583,31 @@ export class FloatingPanel {
   // ── Input handling ──────────────────────────────────────────
 
   private handleIntercept(payload: { data: string; consumed: boolean }): { data: string; consumed: boolean } {
-    if (this.phase === "done") {
-      this.dismiss();
-      return { ...payload, consumed: true };
-    }
+    const consumed = { ...payload, consumed: true };
+    const { data } = payload;
 
-    if (this.phase === "input") {
-      this.handleInputKey(payload.data);
-      return { ...payload, consumed: true };
-    }
-
-    if (this.phase === "active") {
-      const data = payload.data;
-      if (data === "\x03") {
-        this.bus.emit("agent:cancel-request", {});
-        return { ...payload, consumed: true };
-      }
-      if (data === "\x1b" || this.isTrigger(data)) {
+    switch (this.phase) {
+      case "done":
         this.dismiss();
-        return { ...payload, consumed: true };
-      }
-      if (this.handlers.call(`${this.prefix}:input`, data)) {
-        return { ...payload, consumed: true };
-      }
-      return { ...payload, consumed: true };
-    }
+        return consumed;
 
-    if (this.isTrigger(payload.data)) {
-      this.open();
-      return { ...payload, consumed: true };
-    }
+      case "input":
+        this.handleInputKey(data);
+        return consumed;
 
-    return payload;
+      case "active":
+        if (data === "\x03") this.bus.emit("agent:cancel-request", {});
+        else if (data === "\x1b" || this.isTrigger(data)) this.dismiss();
+        else this.handlers.call(`${this.prefix}:input`, data);
+        return consumed;
+
+      default: // idle
+        if (this.isTrigger(data)) {
+          this.open();
+          return consumed;
+        }
+        return payload;
+    }
   }
 
   private handleInputKey(data: string): void {
