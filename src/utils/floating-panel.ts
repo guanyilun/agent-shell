@@ -239,7 +239,8 @@ export class FloatingPanel {
 
   // ── State ───────────────────────────────────────────────────
   private phase: Phase = "idle";
-  private _visible = false;  // whether the panel is currently shown on screen
+  private _visible = false;  // whether the panel box is shown on screen
+  private _passthrough = false;  // hidden but still rendering TerminalBuffer
   private editor = new LineEditor();
   private contentLines: string[] = [];
   private currentPartialLine = "";
@@ -256,6 +257,8 @@ export class FloatingPanel {
   private usedAltScreen = false;  // whether we entered our own alt screen
   private wrapCache = new Map<string, string[]>();  // line → wrapped lines (invalidated on width change)
   private wrapCacheWidth = 0;
+  private passthroughTimer: ReturnType<typeof setInterval> | null = null;
+  private prevSerialized = "";
 
   constructor(bus: EventBus, config: FloatingPanelConfig, handlers?: HandlerRegistry) {
     this.bus = bus;
@@ -452,7 +455,7 @@ export class FloatingPanel {
 
     this.bus.onPipe("input:intercept", (payload) => this.handleIntercept(payload));
     this.bus.onPipe("shell:redraw-prompt", (payload) => {
-      if (this._visible) {
+      if (this._visible || this._passthrough) {
         return { ...payload, handled: true };
       }
       // After dismiss, suppress one redraw — restoreScreen already
@@ -525,23 +528,21 @@ export class FloatingPanel {
   hide(): void {
     if (!this._visible) return;
     if (this.renderTimer) { clearTimeout(this.renderTimer); this.renderTimer = null; }
-    if (this.resizeHandler) { process.stdout.off("resize", this.resizeHandler); this.resizeHandler = null; }
-
     this._visible = false;
-    this.suppressNextRedraw = true;
     this.prevFrame = [];
 
-    this.restoreScreen();
-
-    // Replay buffered PTY output when no TerminalBuffer is available
-    // (SIGWINCH handles redraw for interactive programs).
-    if (!this.buffer && this.ptyBuffer) {
-      process.stdout.write(this.ptyBuffer);
+    if (this.phase !== "idle" && this.buffer) {
+      // Session still active — enter passthrough mode.
+      // Keep alt screen + stdout held. Render TerminalBuffer directly
+      // so the background program's screen stays correct without
+      // handing rendering control back to ncurses.
+      this._passthrough = true;
+      this.ptyBuffer = "";
+      this.startPassthrough();
+    } else {
+      // No active session or no buffer — full teardown.
+      this.teardownScreen();
     }
-    this.ptyBuffer = "";
-
-    this.bus.emit("shell:stdout-hide", {});
-    this.bus.emit("shell:stdout-release", {});
 
     this.handlers.call(`${this.prefix}:dismiss`);
   }
@@ -549,8 +550,19 @@ export class FloatingPanel {
   /** Show the panel again after hide(), preserving conversation. */
   show(): void {
     if (this._visible || this.phase === "idle") return;
-    this.prevFrame = [];
-    this.enterScreen();
+
+    if (this._passthrough) {
+      // Resume from passthrough — alt screen + stdout hold already active.
+      this.stopPassthrough();
+      this._passthrough = false;
+      this._visible = true;
+      this.prevFrame = [];
+      this.render();
+    } else {
+      // Cold show — need full screen setup.
+      this.prevFrame = [];
+      this.enterScreen();
+    }
     this.handlers.call(`${this.prefix}:show`);
   }
 
@@ -558,7 +570,17 @@ export class FloatingPanel {
   dismiss(): void {
     if (this.phase === "idle") return;
     if (this.autoDismissTimer) { clearTimeout(this.autoDismissTimer); this.autoDismissTimer = null; }
-    if (this._visible) this.hide();
+
+    if (this._passthrough) {
+      this.stopPassthrough();
+      this._passthrough = false;
+      this.teardownScreen();
+    } else if (this._visible) {
+      this._visible = false;
+      if (this.renderTimer) { clearTimeout(this.renderTimer); this.renderTimer = null; }
+      this.prevFrame = [];
+      this.teardownScreen();
+    }
 
     this.phase = "idle";
     this.editor.clear();
@@ -887,25 +909,60 @@ export class FloatingPanel {
 
   // ── Screen helpers ────────────────────────────────────────
 
-  private restoreScreen(): void {
+  /** Full screen teardown: exit alt screen, release stdout, force redraw. */
+  private teardownScreen(): void {
+    if (this.resizeHandler) {
+      process.stdout.off("resize", this.resizeHandler);
+      this.resizeHandler = null;
+    }
+    this.suppressNextRedraw = true;
+
     if (this.usedAltScreen) {
       process.stdout.write("\x1b[?1049l");
     }
-    // The overlay drew composite rows on the terminal. Repaint from
-    // the TerminalBuffer which has the true screen state.
-    if (this.buffer) {
-      this.buffer.flush();
-      const serialized = this.buffer.serialize();
-      if (serialized) {
-        // Clear screen then write the full terminal state.
-        // Sync markers prevent tearing during the repaint.
-        process.stdout.write(`${SYNC_START}\x1b[H\x1b[2J${serialized}${SYNC_END}`);
-        return;
-      }
+    // ncurses's curscr is stale — only a real dimension change triggers
+    // clearok + full repaint (same-size SIGWINCH is a no-op).
+    const cols = process.stdout.columns || 80;
+    const rows = process.stdout.rows || 24;
+    this.bus.emit("shell:pty-resize", { cols, rows: rows - 1 });
+    setTimeout(() => {
+      this.bus.emit("shell:pty-resize", { cols, rows });
+    }, 50);
+
+    if (!this.buffer && this.ptyBuffer) {
+      process.stdout.write(this.ptyBuffer);
     }
-    // No buffer — just clear and let SIGWINCH handle it
-    process.stdout.write("\x1b[2J\x1b[H");
-    process.stdout.emit("resize");
+    this.ptyBuffer = "";
+    this.bus.emit("shell:stdout-hide", {});
+    this.bus.emit("shell:stdout-release", {});
+  }
+
+  // ── Passthrough rendering ─────────────────────────────────
+
+  /** Start rendering TerminalBuffer directly (no overlay box). */
+  private startPassthrough(): void {
+    this.prevSerialized = "";
+    this.renderPassthrough();
+    this.passthroughTimer = setInterval(() => this.renderPassthrough(), 50);
+  }
+
+  private stopPassthrough(): void {
+    if (this.passthroughTimer) {
+      clearInterval(this.passthroughTimer);
+      this.passthroughTimer = null;
+    }
+    this.prevSerialized = "";
+  }
+
+  /** Render the TerminalBuffer's screen content directly (no overlay). */
+  private renderPassthrough(): void {
+    if (!this.buffer) return;
+    this.buffer.flush();
+    const serialized = this.buffer.serialize();
+    if (serialized && serialized !== this.prevSerialized) {
+      this.prevSerialized = serialized;
+      process.stdout.write(`${SYNC_START}\x1b[H${serialized}${SYNC_END}`);
+    }
   }
 
   private resolveSize(spec: number | string, available: number): number {
