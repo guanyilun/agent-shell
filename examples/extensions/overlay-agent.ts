@@ -14,6 +14,7 @@
  *   cp examples/extensions/overlay-agent.ts ~/.agent-sh/extensions/
  */
 import type { ExtensionContext } from "agent-sh/types";
+import { formatScreenContext } from "agent-sh/utils/terminal-buffer.js";
 
 const BOLD = "\x1b[1m";
 const CYAN = "\x1b[36m";
@@ -28,17 +29,9 @@ export default function activate({ bus, advise, createFloatingPanel, terminalBuf
 
   // ── Inject terminal buffer into agent context ──────────────
   if (terminalBuffer) {
-    advise("context:build-extra", (next: () => string) => {
-      const base = next();
-      const screen = terminalBuffer.readScreen();
-      const clean = screen.text.trim();
-      if (!clean) return base;
-      const lines = clean.split("\n");
-      const capped = lines.length > 80 ? lines.slice(-80).join("\n") : clean;
-      const header = screen.altScreen ? "<terminal_buffer mode=\"alternate\">" : "<terminal_buffer>";
-      const section = `${header}\n${capped}\n</terminal_buffer>`;
-      return base ? base + "\n" + section : section;
-    });
+    advise("context:build-extra", (next: () => string) =>
+      formatScreenContext(terminalBuffer.readScreen(), 80, next()),
+    );
   }
 
   // ── Panel lifecycle ────────────────────────────────────────

@@ -248,6 +248,8 @@ export class FloatingPanel {
   private resizeHandler: (() => void) | null = null;
   private prevFrame: string[] = [];
   private suppressNextRedraw = false;
+  private ptyBuffer = "";  // PTY output accumulated while overlay is open
+  private usedAltScreen = false;  // whether we entered our own alt screen
 
   constructor(bus: EventBus, config: FloatingPanelConfig, handlers?: HandlerRegistry) {
     this.bus = bus;
@@ -390,6 +392,12 @@ export class FloatingPanel {
     });
 
     // ── Wire bus events ───────────────────────────────────────
+    // Buffer PTY output while overlay is open so we can replay it on dismiss.
+    // Alt screen restore discards anything written while it was active.
+    bus.on("shell:pty-data", ({ raw }) => {
+      if (this.phase !== "idle") this.ptyBuffer += raw;
+    });
+
     bus.onPipe("input:intercept", (payload) => this.handleIntercept(payload));
     bus.onPipe("shell:redraw-prompt", (payload) => {
       if (this.phase !== "idle") {
@@ -450,8 +458,17 @@ export class FloatingPanel {
     this.footer = "";
     this.prevFrame = [];
 
+    this.ptyBuffer = "";
     this.bus.emit("shell:stdout-hold", {});
-    process.stdout.write("\x1b[?1049h");
+
+    // If a foreground program (vim, htop) is already on alt screen,
+    // don't enter a second alt screen — it doesn't nest.  Instead,
+    // render directly on the current screen and restore from the
+    // xterm buffer on dismiss.
+    this.usedAltScreen = !(this.buffer?.altScreen);
+    if (this.usedAltScreen) {
+      process.stdout.write("\x1b[?1049h");
+    }
 
     this.resizeHandler = () => { this.prevFrame = []; this.render(); };
     process.stdout.on("resize", this.resizeHandler);
@@ -471,6 +488,14 @@ export class FloatingPanel {
     this.prevFrame = [];
 
     this.restoreScreen();
+
+    // Replay any PTY output that arrived while the overlay was open.
+    // Alt screen restore discarded it, but it represents real work
+    // the agent did (commands run, output produced).
+    if (this.ptyBuffer) {
+      process.stdout.write(this.ptyBuffer);
+      this.ptyBuffer = "";
+    }
 
     // Reset any accumulated stdout-show refs, then release hold.
     this.bus.emit("shell:stdout-hide", {});
@@ -716,11 +741,25 @@ export class FloatingPanel {
   // ── Screen helpers ────────────────────────────────────────
 
   private restoreScreen(): void {
-    // Leave alt screen — the terminal restores the saved main buffer.
-    // We intentionally do NOT rewrite from the xterm buffer here:
-    // the xterm only sees PTY data, not direct stdout writes (banner,
-    // TUI output, etc.), so its content doesn't match the real screen.
-    process.stdout.write("\x1b[?1049l");
+    if (this.usedAltScreen) {
+      // Leave alt screen — the terminal restores the saved main buffer.
+      process.stdout.write("\x1b[?1049l");
+    } else {
+      // We were already on alt screen (vim, htop, etc.) so we didn't
+      // enter our own.  Restore by rewriting the screen content from
+      // the xterm buffer, which mirrors what the foreground program
+      // had rendered.
+      const raw = this.buffer?.serialize() ?? "";
+      const rows = process.stdout.rows || 24;
+      const lines = raw.split("\n");
+      const out: string[] = [SYNC_START];
+      for (let i = 0; i < rows; i++) {
+        out.push(`\x1b[${i + 1};1H\x1b[2K`);
+        if (i < lines.length) out.push(lines[i]!);
+      }
+      out.push(SYNC_END);
+      process.stdout.write(out.join(""));
+    }
   }
 
   private resolveSize(spec: number | string, available: number): number {

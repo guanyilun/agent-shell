@@ -6,6 +6,7 @@ import type { EventBus } from "./event-bus.js";
 import { InputHandler, type InputContext } from "./input-handler.js";
 import { OutputParser } from "./output-parser.js";
 import { getSettings } from "./settings.js";
+import { RefCounter } from "./utils/output-writer.js";
 
 export class Shell implements InputContext {
   private ptyProcess: pty.IPty;
@@ -13,8 +14,8 @@ export class Shell implements InputContext {
   private inputHandler: InputHandler;
   private outputParser: OutputParser;
   private paused = false;
-  private stdoutHoldCount = 0;
-  private stdoutShowCount = 0;
+  private stdoutHold = new RefCounter();
+  private stdoutShow = new RefCounter();
   private echoSkip = false;
   private agentActive = false;
   private isZsh = false;
@@ -209,16 +210,12 @@ export class Shell implements InputContext {
     });
 
     // Ref-counted stdout hold — overlay extensions suppress PTY output
-    this.bus.on("shell:stdout-hold", () => { this.stdoutHoldCount++; });
-    this.bus.on("shell:stdout-release", () => {
-      this.stdoutHoldCount = Math.max(0, this.stdoutHoldCount - 1);
-    });
+    this.bus.on("shell:stdout-hold", () => { this.stdoutHold.increment(); });
+    this.bus.on("shell:stdout-release", () => { this.stdoutHold.decrement(); });
 
     // Ref-counted stdout show — tools temporarily force output visible during agent processing
-    this.bus.on("shell:stdout-show", () => { this.stdoutShowCount++; });
-    this.bus.on("shell:stdout-hide", () => {
-      this.stdoutShowCount = Math.max(0, this.stdoutShowCount - 1);
-    });
+    this.bus.on("shell:stdout-show", () => { this.stdoutShow.increment(); });
+    this.bus.on("shell:stdout-hide", () => { this.stdoutShow.decrement(); });
   }
 
   // ── InputContext implementation (delegates to OutputParser) ──
@@ -291,8 +288,8 @@ export class Shell implements InputContext {
       this.bus.emit("shell:pty-data", { raw: data });
       this.outputParser.processData(data);
 
-      if (this.stdoutHoldCount > 0) return;
-      if (this.paused && this.stdoutShowCount === 0) return;
+      if (this.stdoutHold.active) return;
+      if (this.paused && !this.stdoutShow.active) return;
 
       // During user_shell exec, skip the command echo (first line)
       if (this.echoSkip) {

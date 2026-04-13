@@ -68,6 +68,32 @@ export interface ScreenSnapshot {
   cursorY: number;
 }
 
+/**
+ * Format a screen snapshot as an XML context block for agent injection.
+ * Trims, caps to `maxLines` (from the bottom), and wraps in `<terminal_buffer>`.
+ * Returns the combined context string (baseContext + section), or just
+ * baseContext if the screen is empty.
+ */
+export function formatScreenContext(
+  screen: ScreenSnapshot,
+  maxLines = 80,
+  baseContext?: string,
+): string {
+  const trimmed = screen.text.trim();
+  if (!trimmed) return baseContext ?? "";
+
+  const lines = trimmed.split("\n");
+  const capped = lines.length > maxLines
+    ? lines.slice(-maxLines).join("\n")
+    : trimmed;
+
+  const header = screen.altScreen
+    ? "<terminal_buffer mode=\"alternate\">"
+    : "<terminal_buffer>";
+  const section = `${header}\n${capped}\n</terminal_buffer>`;
+  return baseContext ? baseContext + "\n" + section : section;
+}
+
 // ── TerminalBuffer ──────────────────────────────────────────────
 
 export class TerminalBuffer {
@@ -127,25 +153,37 @@ export class TerminalBuffer {
 
   /** Read clean screen text with metadata. */
   readScreen(): ScreenSnapshot {
-    const raw = this.serializeAddon.serialize();
+    const buf = this.term.buffer.active;
+    const lines = this.readViewportLines(buf);
     return {
-      text: stripAnsi(raw),
-      altScreen: this.term.buffer.active.type === "alternate",
-      cursorX: this.term.buffer.active.cursorX,
-      cursorY: this.term.buffer.active.cursorY,
+      text: lines.join("\n"),
+      altScreen: buf.type === "alternate",
+      cursorX: buf.cursorX,
+      cursorY: buf.cursorY,
     };
   }
 
   /**
    * Get terminal screen as lines, padded/trimmed to exactly `rows` lines.
-   * Clean text only (ANSI stripped).
+   * Clean text only (ANSI stripped).  Reads from the active buffer's
+   * viewport (not scrollback), so it works correctly on both the normal
+   * and alternate screen buffers.
    */
   getScreenLines(rows?: number): string[] {
     const targetRows = rows ?? (process.stdout.rows || 24);
-    const raw = this.serializeAddon.serialize();
-    const lines = stripAnsi(raw).split("\n");
-    while (lines.length < targetRows) lines.push("");
-    return lines.slice(0, targetRows);
+    return this.readViewportLines(this.term.buffer.active, targetRows);
+  }
+
+  /** Read visible viewport lines from a buffer. */
+  private readViewportLines(buf: any, rows?: number): string[] {
+    const targetRows = rows ?? buf.length;
+    const base = buf.baseY ?? 0;
+    const lines: string[] = [];
+    for (let y = 0; y < targetRows; y++) {
+      const line = buf.getLine(base + y);
+      lines.push(line ? line.translateToString(true) : "");
+    }
+    return lines;
   }
 
   /** Get cursor position. */

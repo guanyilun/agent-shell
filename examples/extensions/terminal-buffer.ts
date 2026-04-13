@@ -21,27 +21,8 @@
  *   # Or copy to ~/.agent-sh/extensions/ for permanent use:
  *   cp examples/extensions/terminal-buffer.ts ~/.agent-sh/extensions/
  */
-import { createRequire } from "module";
 import type { ExtensionContext } from "agent-sh/types";
-
-// xterm packages are CJS-only; use createRequire in ESM context
-const require = createRequire(import.meta.url);
-const { Terminal } = require("@xterm/headless") as typeof import("@xterm/headless");
-const { SerializeAddon } = require("@xterm/addon-serialize") as typeof import("@xterm/addon-serialize");
-
-const DEFAULT_COLS = 220;
-const DEFAULT_ROWS = 50;
-const MAX_CONTEXT_LINES = 80;
-
-/** Strip all ANSI escape sequences and carriage returns. */
-function stripAnsi(str: string): string {
-  return str
-    .replace(/\x1b\][^\x07]*\x07/g, "")        // OSC sequences
-    .replace(/\x1b\[[^m]*m/g, "")                // SGR (color) sequences
-    .replace(/\x1b\[\?[^a-zA-Z]*[a-zA-Z]/g, "") // private mode sequences
-    .replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, "")   // CSI sequences
-    .replace(/\r/g, "");                          // carriage returns
-}
+import { TerminalBuffer, formatScreenContext } from "agent-sh/utils/terminal-buffer.js";
 
 /** Wait for PTY output to settle after sending keystrokes. */
 function settle(ms = 100): Promise<void> {
@@ -62,53 +43,17 @@ function interpretEscapes(str: string): string {
 }
 
 export default function activate({ bus, advise, registerTool }: ExtensionContext): void {
-  const term = new Terminal({
-    cols: DEFAULT_COLS,
-    rows: DEFAULT_ROWS,
-    allowProposedApi: true,
-    scrollback: 200,
-  });
-  const serialize = new SerializeAddon();
-  term.loadAddon(serialize);
-
-  // Buffer PTY data and drip-feed to xterm in the background.
-  // Synchronous term.write() in the pty-data handler introduces enough
-  // latency to change PTY read coalescing, causing visual artifacts.
-  let pending = "";
-  bus.on("shell:pty-data", ({ raw }) => { pending += raw; });
-  setInterval(() => {
-    if (pending) { const d = pending; pending = ""; term.write(d); }
-  }, 50);
-
-  // ── Helper: read clean screen text ──────────────────────────
-
-  function readScreen(): { text: string; altScreen: boolean; cursorX: number; cursorY: number } {
-    const raw = serialize.serialize();
-    return {
-      text: stripAnsi(raw),
-      altScreen: term.buffer.active.type === "alternate",
-      cursorX: term.buffer.active.cursorX,
-      cursorY: term.buffer.active.cursorY,
-    };
+  const tb = TerminalBuffer.createWired(bus);
+  if (!tb) {
+    console.warn("terminal-buffer: @xterm/headless not installed — extension disabled");
+    return;
   }
 
   // ── Context injection ───────────────────────────────────────
 
-  advise("context:build-extra", (next: () => string) => {
-    const base = next();
-    const { text, altScreen } = readScreen();
-    const trimmed = text.trim();
-    if (!trimmed) return base;
-
-    const lines = trimmed.split("\n");
-    const capped = lines.length > MAX_CONTEXT_LINES
-      ? lines.slice(-MAX_CONTEXT_LINES).join("\n")
-      : trimmed;
-
-    const header = altScreen ? "<terminal_buffer mode=\"alternate\">" : "<terminal_buffer>";
-    const section = `${header}\n${capped}\n</terminal_buffer>`;
-    return base ? base + "\n" + section : section;
-  });
+  advise("context:build-extra", (next: () => string) =>
+    formatScreenContext(tb.readScreen(), 80, next()),
+  );
 
   // ── Agent tools ─────────────────────────────────────────────
 
@@ -131,7 +76,7 @@ export default function activate({ bus, advise, registerTool }: ExtensionContext
     }),
 
     async execute() {
-      const { text, altScreen, cursorX, cursorY } = readScreen();
+      const { text, altScreen, cursorX, cursorY } = tb.readScreen();
       const info = [
         altScreen ? "mode: alternate screen" : "mode: normal",
         `cursor: row=${cursorY} col=${cursorX}`,
@@ -213,7 +158,7 @@ export default function activate({ bus, advise, registerTool }: ExtensionContext
       await settle(settleMs);
 
       // Return the screen state after the keystrokes
-      const { text, altScreen, cursorX, cursorY } = readScreen();
+      const { text, altScreen, cursorX, cursorY } = tb.readScreen();
       const info = [
         altScreen ? "mode: alternate screen" : "mode: normal",
         `cursor: row=${cursorY} col=${cursorX}`,
@@ -230,7 +175,7 @@ export default function activate({ bus, advise, registerTool }: ExtensionContext
   // ── Bus snapshot for other extensions ───────────────────────
 
   bus.on("shell:buffer-request", () => {
-    const { text, altScreen, cursorX, cursorY } = readScreen();
+    const { text, altScreen, cursorX, cursorY } = tb.readScreen();
     bus.emit("shell:buffer-snapshot", {
       text,
       altScreen,
