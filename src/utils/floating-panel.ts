@@ -892,21 +892,16 @@ export class FloatingPanel {
     if (this.usedAltScreen) {
       process.stdout.write("\x1b[?1049l");
     }
-    // Rewrite screen from terminal buffer to ensure it reflects
-    // the latest state (background programs may have drawn while
-    // the overlay was up — the alt screen snapshot would be stale).
+    // Rewrite screen from terminal buffer — it has the latest state
+    // including draws from background programs while the overlay was up.
+    // Write the serialized output as a continuous stream (don't split —
+    // it contains cursor positioning and SGR sequences).
     if (this.buffer) {
       this.buffer.flush();
-      const raw = this.buffer.serialize() ?? "";
-      const rows = process.stdout.rows || 24;
-      const lines = raw.split("\n");
-      const out: string[] = [SYNC_START];
-      for (let i = 0; i < rows; i++) {
-        out.push(`\x1b[${i + 1};1H\x1b[2K`);
-        if (i < lines.length) out.push(lines[i]!);
+      const serialized = this.buffer.serialize();
+      if (serialized) {
+        process.stdout.write(`${SYNC_START}\x1b[H\x1b[2J${serialized}${SYNC_END}`);
       }
-      out.push(SYNC_END);
-      process.stdout.write(out.join(""));
     }
   }
 
