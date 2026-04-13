@@ -244,6 +244,7 @@ export class FloatingPanel {
   private contentLines: string[] = [];
   private currentPartialLine = "";
   private scrollOffset = 0;
+  private userScrolled = false;  // true when user manually scrolled away from bottom
   private title = "";
   private footer = "";
   private renderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -311,12 +312,15 @@ export class FloatingPanel {
         all.push(promptLine);
       }
 
-      // Auto-scroll to bottom
+      // Scroll: auto-scroll to bottom unless user manually scrolled
       let offset = ctx.scrollOffset;
-      if (all.length > ctx.height) {
-        offset = all.length - ctx.height;
+      const maxOffset = Math.max(0, all.length - ctx.height);
+      if (this.userScrolled) {
+        offset = Math.min(offset, maxOffset);
+        // Resume auto-scroll if user scrolled back to bottom
+        if (offset >= maxOffset) this.userScrolled = false;
       } else {
-        offset = 0;
+        offset = maxOffset;
       }
       this.scrollOffset = offset;
 
@@ -509,6 +513,7 @@ export class FloatingPanel {
     this.contentLines = [];
     this.currentPartialLine = "";
     this.scrollOffset = 0;
+    this.userScrolled = false;
     this.title = "";
     this.footer = "";
     this.prevFrame = [];
@@ -647,6 +652,18 @@ export class FloatingPanel {
     }
   }
 
+  scrollUp(lines = 3): void {
+    this.scrollOffset = Math.max(0, this.scrollOffset - lines);
+    this.userScrolled = true;
+    this.render();
+  }
+
+  scrollDown(lines = 3): void {
+    this.scrollOffset += lines;
+    this.userScrolled = true;
+    this.render();
+  }
+
   getInput(): string {
     return this.editor.buffer;
   }
@@ -686,6 +703,8 @@ export class FloatingPanel {
           this.bus.emit("agent:cancel-request", {});
         } else if (data === "\x1b" || this.isTrigger(data)) {
           this.hide();
+        } else if (this.handleScroll(data)) {
+          // scroll handled
         } else {
           this.handlers.call(`${this.prefix}:input`, data);
         }
@@ -700,6 +719,31 @@ export class FloatingPanel {
     }
   }
 
+  /** Handle scroll input. Returns true if consumed. */
+  private handleScroll(data: string): boolean {
+    // Arrow up / mouse wheel up
+    if (data === "\x1b[A" || data === "\x1bOA") { this.scrollUp(1); return true; }
+    // Arrow down / mouse wheel down
+    if (data === "\x1b[B" || data === "\x1bOB") { this.scrollDown(1); return true; }
+    // Page up (CSI 5~)
+    if (data === "\x1b[5~") { this.scrollUp(this.computeGeometry().contentH - 1); return true; }
+    // Page down (CSI 6~)
+    if (data === "\x1b[6~") { this.scrollDown(this.computeGeometry().contentH - 1); return true; }
+    // Mouse wheel: CSI M followed by button byte (64 = wheel up, 65 = wheel down)
+    if (data.length >= 6 && data.startsWith("\x1b[M")) {
+      const button = data.charCodeAt(3);
+      if (button === 96) { this.scrollUp(3); return true; }   // wheel up
+      if (button === 97) { this.scrollDown(3); return true; }  // wheel down
+    }
+    // SGR mouse: CSI < 64;x;yM (wheel up) / CSI < 65;x;yM (wheel down)
+    const sgr = data.match(/^\x1b\[<(64|65);\d+;\d+M$/);
+    if (sgr) {
+      if (sgr[1] === "64") { this.scrollUp(3); return true; }
+      if (sgr[1] === "65") { this.scrollDown(3); return true; }
+    }
+    return false;
+  }
+
   private handleInputKey(data: string): void {
     // Check full data string against trigger sequences (may be multi-byte)
     if (this.isTrigger(data)) { this.hide(); return; }
@@ -709,6 +753,9 @@ export class FloatingPanel {
       if (ch === "\x1b" && data[i + 1] == null) { this.hide(); return; }
       if (ch.charCodeAt(0) === 0x03) { this.hide(); return; }
     }
+
+    // Page Up/Down and mouse wheel scroll even in input phase
+    if (this.handleScroll(data)) return;
 
     const actions = this.editor.feed(data);
     for (const action of actions) {
