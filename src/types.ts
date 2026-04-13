@@ -69,14 +69,22 @@ export interface ExtensionContext {
   // ── Tool registration (agent-sh backend only) ─────────────
   /** Register a tool for the built-in agent. No-op when using bridge backends. */
   registerTool: (tool: ToolDefinition) => void;
+  /** Unregister a tool by name. */
+  unregisterTool: (name: string) => void;
   /** Get all registered tools (for subagent tool subsets). Returns [] when using bridge backends. */
   getTools: () => ToolDefinition[];
+
+  // ── System prompt instructions ────────────────────────────
+  /** Register a named instruction block for the agent's system prompt. */
+  registerInstruction: (name: string, text: string) => void;
+  /** Remove a named instruction block from the system prompt. */
+  removeInstruction: (name: string) => void;
 
   // ── Named handler registry (Emacs-style advice) ───────────
   /** Register a named handler. */
   define: (name: string, fn: (...args: any[]) => any) => void;
-  /** Wrap a named handler. Receives `next` (original) + args. */
-  advise: (name: string, wrapper: (next: (...args: any[]) => any, ...args: any[]) => any) => void;
+  /** Wrap a named handler. Receives `next` (original) + args. Returns an unadvise function. */
+  advise: (name: string, wrapper: (next: (...args: any[]) => any, ...args: any[]) => any) => () => void;
   /** Call a named handler. */
   call: (name: string, ...args: any[]) => any;
 

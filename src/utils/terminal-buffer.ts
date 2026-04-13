@@ -163,9 +163,11 @@ export class TerminalBuffer {
   }
 
   /** Read clean screen text with metadata. */
-  readScreen(): ScreenSnapshot {
+  readScreen(opts?: { includeScrollback?: boolean }): ScreenSnapshot {
     const buf = this.term.buffer.active;
-    const lines = this.readViewportLines(buf);
+    const lines = opts?.includeScrollback
+      ? this.readAllLines(buf)
+      : this.readViewportLines(buf);
     return {
       text: lines.join("\n"),
       altScreen: buf.type === "alternate",
@@ -193,6 +195,21 @@ export class TerminalBuffer {
     for (let y = 0; y < targetRows; y++) {
       const line = buf.getLine(base + y);
       lines.push(line ? line.translateToString(true) : "");
+    }
+    return lines;
+  }
+
+  /** Read all lines including scrollback from a buffer. */
+  private readAllLines(buf: any): string[] {
+    const total = (buf.baseY ?? 0) + buf.length;
+    const lines: string[] = [];
+    for (let y = 0; y < total; y++) {
+      const line = buf.getLine(y);
+      lines.push(line ? line.translateToString(true) : "");
+    }
+    // Trim trailing empty lines
+    while (lines.length > 0 && lines[lines.length - 1] === "") {
+      lines.pop();
     }
     return lines;
   }

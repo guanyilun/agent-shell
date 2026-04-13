@@ -30,7 +30,7 @@ export default function activate({ bus, advise, createFloatingPanel, terminalBuf
   // ── Inject terminal buffer into agent context ──────────────
   if (terminalBuffer) {
     advise("context:build-extra", (next: () => string) =>
-      formatScreenContext(terminalBuffer.readScreen(), 80, next()),
+      formatScreenContext(terminalBuffer.readScreen({ includeScrollback: true }), 80, next()),
     );
   }
 

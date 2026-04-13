@@ -13,6 +13,7 @@
 import { palette as p } from "../utils/palette.js";
 import type { ExtensionContext } from "../types.js";
 import { discoverSkills, loadSkillContent, type Skill } from "../agent/skills.js";
+import { reloadExtensions } from "../extension-loader.js";
 
 interface SlashCommand {
   name: string;
@@ -20,7 +21,8 @@ interface SlashCommand {
   handler: (args: string) => Promise<void> | void;
 }
 
-export default function activate({ bus, contextManager }: ExtensionContext): void {
+export default function activate(ctx: ExtensionContext): void {
+  const { bus, contextManager } = ctx;
   const commands = new Map<string, SlashCommand>();
 
   const register = (cmd: SlashCommand) => {
@@ -116,6 +118,19 @@ export default function activate({ bus, contextManager }: ExtensionContext): voi
         `Recall archive: ${stats.recallArchiveSize} entries`,
       ];
       bus.emit("ui:info", { message: lines.join("\n") });
+    },
+  });
+
+  register({
+    name: "/reload",
+    description: "Reload user extensions from ~/.agent-sh/extensions/",
+    handler: async () => {
+      const names = await reloadExtensions(ctx);
+      if (names.length > 0) {
+        bus.emit("ui:info", { message: `Reloaded: ${names.join(", ")}` });
+      } else {
+        bus.emit("ui:info", { message: "No extensions to reload." });
+      }
     },
   });
 

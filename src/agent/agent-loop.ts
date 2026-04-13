@@ -240,9 +240,37 @@ export class AgentLoop implements AgentBackend {
     this.toolRegistry.register(tool);
   }
 
+  /** Unregister a tool by name. */
+  unregisterTool(name: string): void {
+    this.toolRegistry.unregister(name);
+  }
+
   /** Get all registered tools. */
   getTools(): ToolDefinition[] {
     return this.toolRegistry.all();
+  }
+
+  // ── Extension instructions & tool tracking ──────────────────────
+
+  private instructions = new Map<string, string>();
+
+  /** Register a named instruction block for the system prompt. */
+  registerInstruction(name: string, text: string): void {
+    this.instructions.set(name, text);
+  }
+
+  /** Remove a named instruction block. */
+  removeInstruction(name: string): void {
+    this.instructions.delete(name);
+  }
+
+  /** Get instruction blocks registered by extensions. */
+  getInstructionSections(): string[] {
+    const sections: string[] = [];
+    for (const [name, text] of this.instructions) {
+      sections.push(`## ${name}\n${text}`);
+    }
+    return sections;
   }
 
   kill(): void {
@@ -451,10 +479,18 @@ export class AgentLoop implements AgentBackend {
   private registerHandlers(): void {
     const h = this.handlers;
 
+    // System prompt: static identity + behavioral instructions.
+    // Extensions can use registerInstruction() for a managed section,
+    // or advise this handler directly for full control.
+    h.define("system-prompt:build", () => {
+      const instructions = this.getInstructionSections();
+      if (instructions.length === 0) return STATIC_SYSTEM_PROMPT;
+      return STATIC_SYSTEM_PROMPT + "\n\n# Extension Instructions\n\n" + instructions.join("\n\n");
+    });
+
     // Extensions compose additional context (git info, project rules, etc.)
     h.define("dynamic-context:build", () =>
       buildDynamicContext(
-        this.toolRegistry.all(),
         this.contextManager,
         this.tokenBudget.shellBudgetTokens,
       ),
@@ -640,9 +676,9 @@ export class AgentLoop implements AgentBackend {
         }
       }
 
-      // System prompt is static (cacheable); dynamic context uses handler
-      // so extensions can compose additional context via advise()
-      const systemPrompt = STATIC_SYSTEM_PROMPT;
+      // System prompt uses handler so extensions can append instructions (cacheable);
+      // dynamic context uses handler for per-query state via advise()
+      const systemPrompt = this.handlers.call("system-prompt:build") as string;
       const dynamicContext = this.handlers.call("dynamic-context:build");
 
       // Stream LLM response with retry

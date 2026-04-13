@@ -24,7 +24,7 @@ interface ChatMessage {
 }
 
 export default function activate(ctx: ExtensionContext): void {
-  const { bus, advise, call, createFloatingPanel } = ctx;
+  const { bus, advise, call, createFloatingPanel, registerInstruction } = ctx;
 
   const panel = createFloatingPanel({
     trigger: "\x1c", // Ctrl+\
@@ -35,6 +35,17 @@ export default function activate(ctx: ExtensionContext): void {
   advise("tui:should-render-agent", (next) => {
     return panel.active ? false : next();
   });
+
+  registerInstruction("Interactive Overlay Sessions", [
+    "When the dynamic context includes `interactive-session: true`, the user has summoned you",
+    "via a hotkey overlay from inside their live terminal. They may be in the middle of using",
+    "a program (vim, ssh, a REPL, etc.) or at a shell prompt. In this mode:",
+    "- Start with terminal_read if you need to understand what's on screen.",
+    "- Prefer terminal_keys to interact with whatever is currently running.",
+    "- Use user_shell only for running new, standalone commands — not for interacting with",
+    "  what's already on screen.",
+    "- Keep responses concise — the user is in the middle of a workflow.",
+  ].join("\n"));
 
   // Signal interactive overlay mode in dynamic context
   advise("dynamic-context:build", (next) => {

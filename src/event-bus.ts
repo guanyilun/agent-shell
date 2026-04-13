@@ -328,6 +328,17 @@ export class EventBus {
     listeners.push(fn);
   }
 
+  /** Remove a transform listener from a pipeline event. */
+  offPipe<K extends keyof ShellEvents>(
+    event: K,
+    fn: PipeListener<ShellEvents[K]>,
+  ): void {
+    const listeners = this.pipeListeners.get(event);
+    if (!listeners) return;
+    const idx = listeners.indexOf(fn);
+    if (idx !== -1) listeners.splice(idx, 1);
+  }
+
   /**
    * Emit a pipeline event — each registered pipe listener receives the
    * output of the previous one. Returns the final transformed payload.

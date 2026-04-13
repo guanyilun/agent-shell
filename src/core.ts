@@ -360,7 +360,10 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
         registerCommand: (name, description, handler) =>
           bus.emit("command:register", { name, description, handler }),
         registerTool: (tool) => agentLoop?.registerTool(tool),
+        unregisterTool: (name) => agentLoop?.unregisterTool(name),
         getTools: () => agentLoop?.getTools() ?? [],
+        registerInstruction: (name, text) => agentLoop?.registerInstruction(name, text),
+        removeInstruction: (name) => agentLoop?.removeInstruction(name),
         define: (name, fn) => handlers.define(name, fn),
         advise: (name, wrapper) => handlers.advise(name, wrapper),
         call: (name, ...args) => handlers.call(name, ...args),
