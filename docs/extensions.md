@@ -629,7 +629,33 @@ panel.handlers.advise("panel:submit", (_next, query: string) => {
 
 **Config options**: `trigger`, `width`, `height`, `maxWidth`, `minHeight`, `borderStyle` (`rounded`/`square`/`double`/`heavy`), `dimBackground`, `autoDismissMs`, `promptIcon`, `handlerPrefix`.
 
-**Lifecycle**: `open()` → input phase → `setActive()` → active phase → `setDone()` → done phase → `dismiss()`.
+**Lifecycle** — the panel has four phases and three rendering states:
+
+```
+open() → [input] → submit → [active] → setDone() → [input] (follow-up)
+                                │                         │
+                              hide()                    hide()
+                                │                         │
+                          [passthrough]                dismiss()
+                       (agent still working,        (session over,
+                        TerminalBuffer renders       teardown + SIGWINCH)
+                        screen at 50ms interval)
+                                │
+                          setDone() while
+                          passthrough
+                                │
+                           auto-dismiss()
+                        (hand back control)
+```
+
+| Phase | Description |
+|-------|-------------|
+| **input** | Waiting for user query (or follow-up after agent finishes) |
+| **active** | Agent is processing — hide enters passthrough mode |
+| **done** | Legacy: used with `autoDismissMs > 0` only |
+| **idle** | Panel fully dismissed, no state retained |
+
+**Passthrough mode**: When the user hides the panel while the agent is still working (`active` phase), the panel enters passthrough mode instead of handing rendering back to the foreground program. It stays on alt screen with stdout held, and renders the TerminalBuffer content directly at 50ms intervals. This avoids ncurses curscr desync — the program's screen stays correct because we do full repaints, not differential updates. When the agent finishes (`setDone()`), passthrough auto-dismisses and hands back control via a SIGWINCH double-resize that forces ncurses to do a clean full repaint.
 
 **Content API**: `appendText(text)`, `appendLine(line)`, `updateLastLine(fn)`, `clearContent()`, `setTitle(title)`, `setFooter(footer)`.
 
@@ -647,7 +673,9 @@ panel.handlers.advise("panel:submit", (_next, query: string) => {
 | `dismiss() → void` | Handle panel dismissal |
 | `input(data) → boolean` | Custom input handling |
 
-**Alt screen nesting**: FloatingPanel detects when a foreground program (vim, htop) is already on alt screen and avoids entering a second alt screen (which doesn't nest in most terminals). Instead, it renders directly and restores from the xterm buffer on dismiss.
+**Alt screen nesting**: FloatingPanel detects when a foreground program (vim, htop) is already on alt screen and avoids entering a second alt screen (which doesn't nest in most terminals). Instead, it renders directly on top of the program's alt screen.
+
+**Screen restore**: On dismiss, the panel uses a SIGWINCH double-resize (resize to `rows-1`, then back to `rows`) to force the foreground program to fully repaint. This is necessary because ncurses ignores same-size SIGWINCH (`resizeterm` returns early when dimensions haven't changed), and ncurses's `curscr` is stale after the overlay drew on the terminal — a simple exit from alt screen would leave overlay artifacts in cells that ncurses considers unchanged.
 
 **Keyboard protocol support**: The trigger key is recognized in all encodings — raw control byte, xterm modifyOtherKeys (`\e[27;5;code~`), and kitty keyboard protocol (`\e[code;5u`). This ensures the trigger works inside vim and other programs that enable extended keyboard protocols.
 
