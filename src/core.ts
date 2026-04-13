@@ -26,6 +26,8 @@ import * as streamTransform from "./utils/stream-transform.js";
 import * as settingsMod from "./settings.js";
 import { resolveProvider, getProviderNames, type ResolvedProvider } from "./settings.js";
 import { HandlerRegistry } from "./utils/handler-registry.js";
+import { TerminalBuffer } from "./utils/terminal-buffer.js";
+import { FloatingPanel, type FloatingPanelConfig } from "./utils/floating-panel.js";
 
 // Re-export types that library consumers need
 export { EventBus } from "./event-bus.js";
@@ -57,7 +59,7 @@ export interface AgentShellCore {
 export function createCore(config: AgentShellConfig): AgentShellCore {
   const bus = new EventBus();
   const handlers = new HandlerRegistry();
-  const contextManager = new ContextManager(bus);
+  const contextManager = new ContextManager(bus, handlers);
 
   // ── Resolve provider ─────────────────────────────────────────
   const settings = settingsMod.getSettings();
@@ -261,6 +263,14 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
     bus.emit("config:changed", {});
   });
 
+  // ── Lazy singleton terminal buffer ──────────────────────────
+  let terminalBufferSingleton: TerminalBuffer | null | undefined; // undefined = not yet created
+  const getTerminalBuffer = (): TerminalBuffer | null => {
+    if (terminalBufferSingleton !== undefined) return terminalBufferSingleton;
+    terminalBufferSingleton = TerminalBuffer.createWired(bus);
+    return terminalBufferSingleton;
+  };
+
   return {
     bus,
     contextManager,
@@ -339,6 +349,11 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
         define: (name, fn) => handlers.define(name, fn),
         advise: (name, wrapper) => handlers.advise(name, wrapper),
         call: (name, ...args) => handlers.call(name, ...args),
+        get terminalBuffer() { return getTerminalBuffer(); },
+        createFloatingPanel: (config: FloatingPanelConfig) => {
+          const tb = config.dimBackground !== false ? getTerminalBuffer() : null;
+          return new FloatingPanel(bus, { ...config, terminalBuffer: tb ?? undefined });
+        },
       };
     },
 

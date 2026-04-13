@@ -19,6 +19,22 @@ export interface ShellEvents {
   "shell:agent-exec-start": Record<string, never>;
   "shell:agent-exec-done": Record<string, never>;
 
+  // Raw PTY output stream (every byte from the shell process).
+  // Extensions can use this to feed a virtual terminal, log, or replay.
+  "shell:pty-data": { raw: string };
+
+  // Write raw bytes to the PTY (keystroke injection).
+  // Extensions use this to send keystrokes into the user's live shell.
+  "shell:pty-write": { data: string };
+
+  // Terminal buffer snapshot (request/response pattern via bus)
+  "shell:buffer-request": Record<string, never>;
+  "shell:buffer-snapshot": {
+    text: string;
+    altScreen: boolean;
+    cursor: { x: number; y: number };
+  };
+
   // Agent input (frontend → core: user submitted a query or wants to cancel)
   "agent:submit": { query: string };
   "agent:cancel-request": { silent?: boolean };
@@ -110,6 +126,22 @@ export interface ShellEvents {
 
   // Generic keypress forwarding (control chars not handled by input-handler)
   "input:keypress": { key: string };
+
+  // Raw input intercept (sync pipe: fired before any input processing).
+  // Extensions set `consumed: true` to swallow input before it reaches the
+  // PTY or mode handler — enables overlay UIs during foreground programs.
+  "input:intercept": { data: string; consumed: boolean };
+
+  // Stdout hold/release (ref-counted). While held, PTY output is not written
+  // to stdout — enables overlay extensions to render without interference.
+  "shell:stdout-hold": Record<string, never>;
+  "shell:stdout-release": Record<string, never>;
+
+  // Temporarily force PTY output visible even while agent is processing
+  // (ref-counted). Used by tools like terminal_keys that need the user
+  // to see the foreground program's response to injected keystrokes.
+  "shell:stdout-show": Record<string, never>;
+  "shell:stdout-hide": Record<string, never>;
 
   // Terminal interception (sync pipe: extensions can intercept before execution)
   "agent:terminal-intercept": {

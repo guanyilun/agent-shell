@@ -138,6 +138,10 @@ export default function activate(ctx: ExtensionContext): void {
   const writer = new StdoutWriter();
   const s = createRenderState();
 
+  // Suppress all TUI output while stdout is held (overlay extensions)
+  bus.on("shell:stdout-hold", () => { writer.hold(); });
+  bus.on("shell:stdout-release", () => { writer.release(); });
+
   // Track backend/model info for display on response border
   let backendInfo: { name: string; model?: string; provider?: string; contextWindow?: number } | null = null;
   bus.on("agent:info", (info) => { backendInfo = info; });

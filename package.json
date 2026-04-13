@@ -29,6 +29,10 @@
     "./utils/stream-transform": {
       "types": "./dist/utils/stream-transform.d.ts",
       "default": "./dist/utils/stream-transform.js"
+    },
+    "./utils/terminal-buffer": {
+      "types": "./dist/utils/terminal-buffer.d.ts",
+      "default": "./dist/utils/terminal-buffer.js"
     }
   },
   "files": [
