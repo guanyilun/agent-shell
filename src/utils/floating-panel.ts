@@ -6,18 +6,22 @@
  * stdout hold/release, input routing, compositing, scroll, and
  * screen restore.
  *
- * Rendering is customizable via the handler/advise pattern:
+ * Rendering is fully customizable via the handler/advise pattern:
  *
- *   // Define a custom content renderer
- *   ctx.define("panel:render-content", (renderCtx) => {
- *     return [`Hello from custom renderer (${renderCtx.width} cols)`];
+ *   // Replace the entire frame renderer
+ *   panel.handlers.define("panel:render-frame", (ctx) => {
+ *     // ctx has geo, content, bgLines, phase, title, footer, border
+ *     return { rows: myCustomRows, cursorSeq: "" };
  *   });
  *
- *   // Or wrap the default renderer
- *   ctx.advise("panel:render-content", (next, renderCtx) => {
- *     const lines = next(renderCtx);
- *     lines.push("── custom footer ──");
- *     return lines;
+ *   // Or advise individual pieces
+ *   panel.handlers.advise("panel:render-border-top", (next, ctx) => {
+ *     return `┏━ ${ctx.title} ${"━".repeat(ctx.geo.boxW - ctx.title.length - 5)}┓`;
+ *   });
+ *
+ *   panel.handlers.advise("panel:composite-row", (next, boxLine, bgLine, ...) => {
+ *     // custom compositing (e.g. no dimming, blur effect, etc.)
+ *     return next(boxLine, bgLine, ...);
  *   });
  *
  * When @xterm/headless is needed (for dimmed background compositing):
@@ -119,6 +123,58 @@ export interface RenderResult {
   cursor?: { row: number; col: number };
 }
 
+/**
+ * Box geometry computed from config + terminal size.
+ */
+export interface BoxGeometry {
+  /** Terminal columns. */
+  cols: number;
+  /** Terminal rows. */
+  rows: number;
+  /** Box width in columns (including borders). */
+  boxW: number;
+  /** Box height in rows (including borders). */
+  boxH: number;
+  /** Box top offset (0-indexed row). */
+  boxTop: number;
+  /** Box left offset (0-indexed column). */
+  boxLeft: number;
+  /** Usable content width inside box. */
+  contentW: number;
+  /** Usable content height inside box. */
+  contentH: number;
+}
+
+/**
+ * Context passed to the render-frame handler.
+ */
+export interface FrameContext {
+  /** Box geometry. */
+  geo: BoxGeometry;
+  /** Content render result (from render-content handler). */
+  content: RenderResult;
+  /** Background lines from the terminal buffer (null if no dimming). */
+  bgLines: string[] | null;
+  /** Current panel phase. */
+  phase: Phase;
+  /** Current title text. */
+  title: string;
+  /** Current footer text. */
+  footer: string;
+  /** Border characters for the configured border style. */
+  border: { tl: string; tr: string; bl: string; br: string; h: string; v: string };
+}
+
+/**
+ * Result from render-frame handler.
+ */
+export interface FrameResult {
+  /** One string per terminal row. */
+  rows: string[];
+  /** ANSI sequence to position the cursor (empty string if no cursor). */
+  cursorSeq: string;
+}
+
 export type Phase = "idle" | "input" | "active" | "done";
 
 // ── FloatingPanel ───────────────────────────────────────────────
@@ -137,6 +193,10 @@ export class FloatingPanel {
    *
    * Registered handlers:
    *   - `{prefix}:render-content(ctx: RenderContext) -> RenderResult`
+   *   - `{prefix}:render-frame(ctx: FrameContext) -> FrameResult`
+   *   - `{prefix}:render-border-top(ctx: FrameContext) -> string`
+   *   - `{prefix}:render-border-bottom(ctx: FrameContext) -> string`
+   *   - `{prefix}:composite-row(content: string, bgLine: string|null, boxLeft: number, boxW: number, cols: number) -> string`
    *   - `{prefix}:submit(query: string) -> void`
    *   - `{prefix}:dismiss() -> void`
    *   - `{prefix}:input(data: string) -> boolean`
@@ -160,7 +220,7 @@ export class FloatingPanel {
   private autoDismissTimer: ReturnType<typeof setTimeout> | null = null;
   private resizeHandler: (() => void) | null = null;
   private prevFrame: string[] = [];
-  private dismissing = false;
+  private suppressNextRedraw = false;
 
   constructor(bus: EventBus, config: FloatingPanelConfig, handlers?: HandlerRegistry) {
     this.bus = bus;
@@ -223,10 +283,94 @@ export class FloatingPanel {
       return display + " ".repeat(pad);
     });
 
+    // Default border-top renderer
+    this.handlers.define(`${p}:render-border-top`, (ctx: FrameContext): string => {
+      const { geo, border: b, title: _unused } = ctx;
+      const titleText = ctx.title || (ctx.phase === "input" ? "input" : ctx.phase === "done" ? "done" : "...");
+      const titleStr = ` ${INVERSE} ${titleText} ${RESET} `;
+      const titleVisLen = titleText.length + 4;
+      const dashCount = Math.max(0, geo.boxW - titleVisLen - 3);
+      return `${b.tl}${b.h}${titleStr}${b.h.repeat(dashCount)}${b.tr}`;
+    });
+
+    // Default border-bottom renderer
+    this.handlers.define(`${p}:render-border-bottom`, (ctx: FrameContext): string => {
+      const { geo, border: b } = ctx;
+      if (ctx.footer) {
+        const footerPad = Math.max(0, geo.boxW - ctx.footer.length - 3);
+        return `${b.bl}${b.h.repeat(footerPad)}${DIM}${ctx.footer}${RESET}${b.h}${b.br}`;
+      }
+      return `${b.bl}${b.h.repeat(geo.boxW - 2)}${b.br}`;
+    });
+
+    // Default composite-row: merge content on top of dimmed background
+    this.handlers.define(`${p}:composite-row`, (
+      boxLine: string, bgLine: string | null, boxLeft: number, boxW: number, cols: number,
+    ): string => {
+      if (bgLine !== null) {
+        const bg = bgLine.padEnd(cols);
+        return `${DIM}${bg.slice(0, boxLeft)}${RESET}${boxLine}${DIM}${bg.slice(boxLeft + boxW)}${RESET}`;
+      }
+      return boxLine;
+    });
+
+    // Default frame renderer: assembles borders, content rows, and background
+    this.handlers.define(`${p}:render-frame`, (ctx: FrameContext): FrameResult => {
+      const { geo, content, bgLines, border: b } = ctx;
+      const visibleContent = [...(content.lines ?? [])];
+      while (visibleContent.length < geo.contentH) visibleContent.push("");
+
+      const composite = (boxLine: string, bgLine: string | null): string =>
+        this.handlers.call(`${p}:composite-row`, boxLine, bgLine, geo.boxLeft, geo.boxW, geo.cols);
+
+      const buildRow = (c: string, w: number): string =>
+        this.handlers.call(`${p}:build-row`, c, w);
+
+      const frame: string[] = [];
+      for (let row = 0; row < geo.rows; row++) {
+        const relRow = row - geo.boxTop;
+        if (relRow < 0 || relRow >= geo.boxH) {
+          // Outside box
+          if (bgLines) {
+            frame.push(`${DIM}${(bgLines[row] || "").padEnd(geo.cols).slice(0, geo.cols)}${RESET}\x1b[K`);
+          } else {
+            frame.push("\x1b[2K");
+          }
+        } else if (relRow === 0) {
+          const borderTop = this.handlers.call(`${p}:render-border-top`, ctx) as string;
+          frame.push(composite(borderTop, bgLines?.[row] ?? null));
+        } else if (relRow === geo.boxH - 1) {
+          const borderBottom = this.handlers.call(`${p}:render-border-bottom`, ctx) as string;
+          frame.push(composite(borderBottom, bgLines?.[row] ?? null));
+        } else {
+          const contentIdx = relRow - 1;
+          const raw = visibleContent[contentIdx] || "";
+          const rendered = buildRow(raw, geo.contentW);
+          const boxLine = `${b.v} ${rendered} ${b.v}`;
+          frame.push(composite(boxLine, bgLines?.[row] ?? null));
+        }
+      }
+
+      let cursorSeq = "";
+      if (content.cursor) {
+        const cursorRow = geo.boxTop + 1 + content.cursor.row;
+        const cursorCol = geo.boxLeft + 2 + content.cursor.col;
+        cursorSeq = `\x1b[${cursorRow + 1};${cursorCol + 1}H`;
+      }
+
+      return { rows: frame, cursorSeq };
+    });
+
     // ── Wire bus events ───────────────────────────────────────
     bus.onPipe("input:intercept", (payload) => this.handleIntercept(payload));
     bus.onPipe("shell:redraw-prompt", (payload) => {
-      if (this.phase !== "idle" || this.dismissing) {
+      if (this.phase !== "idle") {
+        return { ...payload, handled: true };
+      }
+      // After dismiss, suppress one redraw — restoreScreen already
+      // restored the terminal content, so freshPrompt's \n is unwanted.
+      if (this.suppressNextRedraw) {
+        this.suppressNextRedraw = false;
         return { ...payload, handled: true };
       }
       return payload;
@@ -288,24 +432,18 @@ export class FloatingPanel {
     if (this.autoDismissTimer) { clearTimeout(this.autoDismissTimer); this.autoDismissTimer = null; }
     if (this.resizeHandler) { process.stdout.off("resize", this.resizeHandler); this.resizeHandler = null; }
 
-    // Set dismissing flag BEFORE going idle — suppresses shell:redraw-prompt
-    // events that fire synchronously during stdout-release (freshPrompt \n).
-    this.dismissing = true;
+    this.suppressNextRedraw = true;
     this.phase = "idle";
     this.editor.clear();
     this.prevFrame = [];
 
     this.restoreScreen();
 
+    // Reset any accumulated stdout-show refs, then release hold.
     this.bus.emit("shell:stdout-hide", {});
     this.bus.emit("shell:stdout-release", {});
 
     this.handlers.call(`${this.prefix}:dismiss`);
-
-    // Clear flag after all synchronous handlers have run.
-    // Use queueMicrotask so it clears before the next event loop tick
-    // but after the current synchronous cascade.
-    queueMicrotask(() => { this.dismissing = false; });
   }
 
   // ── Public content API ──────────────────────────────────────
@@ -448,13 +586,12 @@ export class FloatingPanel {
     }
   }
 
-  // ── Frame building ────────────────────────────────────────
+  // ── Geometry ───────────────────────────────────────────────
 
-  private buildFrame(): { rows: string[]; cursorSeq: string } {
+  /** Compute box geometry from config + current terminal size. */
+  computeGeometry(): BoxGeometry {
     const cols = process.stdout.columns || 80;
     const rows = process.stdout.rows || 24;
-
-    // Compute box geometry
     const boxW = Math.min(this.resolveSize(this.config.width, cols - 4), this.config.maxWidth);
     const boxH = Math.min(
       this.resolveSize(this.config.height, rows - 4),
@@ -462,13 +599,18 @@ export class FloatingPanel {
     );
     const boxTop = Math.floor((rows - boxH) / 2);
     const boxLeft = Math.floor((cols - boxW) / 2);
-    const contentH = boxH - 2;
-    const contentW = boxW - 4;
+    return { cols, rows, boxW, boxH, boxTop, boxLeft, contentW: boxW - 4, contentH: boxH - 2 };
+  }
 
-    // ── Call render-content handler ────────────────────────
-    const ctx: RenderContext = {
-      width: contentW,
-      height: contentH,
+  // ── Frame building ────────────────────────────────────────
+
+  private buildFrame(): FrameResult {
+    const geo = this.computeGeometry();
+
+    // Call render-content handler
+    const renderCtx: RenderContext = {
+      width: geo.contentW,
+      height: geo.contentH,
       phase: this.phase,
       inputBuffer: this.editor.buffer,
       inputCursor: this.editor.cursor,
@@ -476,100 +618,23 @@ export class FloatingPanel {
       contentLines: this.contentLines,
       partialLine: this.currentPartialLine,
     };
-    const result: RenderResult = this.handlers.call(`${this.prefix}:render-content`, ctx);
-    const visibleContent = result?.lines ?? [];
-    const cursor = result?.cursor;
+    const content: RenderResult = this.handlers.call(`${this.prefix}:render-content`, renderCtx);
 
-    // Pad content to fill height
-    while (visibleContent.length < contentH) visibleContent.push("");
+    // Get background
+    const bgLines = this.buffer?.getScreenLines(geo.rows) ?? null;
 
-    // ── Get background ────────────────────────────────────
-    const bgLines = this.buffer?.getScreenLines(rows) ?? null;
+    // Build frame context and delegate to render-frame handler
+    const frameCtx: FrameContext = {
+      geo,
+      content,
+      bgLines,
+      phase: this.phase,
+      title: this.title,
+      footer: this.footer,
+      border: this.border,
+    };
 
-    // ── Compose each row ──────────────────────────────────
-    const frame: string[] = [];
-    const b = this.border;
-    const dim = bgLines ? DIM : "";
-    const buildRow = (content: string, w: number): string =>
-      this.handlers.call(`${this.prefix}:build-row`, content, w);
-
-    for (let row = 0; row < rows; row++) {
-      const relRow = row - boxTop;
-      let line: string;
-
-      if (relRow < 0 || relRow >= boxH) {
-        if (bgLines) {
-          const bgLine = (bgLines[row] || "").padEnd(cols).slice(0, cols);
-          line = `${dim}${bgLine}${RESET}\x1b[K`;
-        } else {
-          line = "\x1b[2K";
-        }
-      } else if (relRow === 0) {
-        line = this.buildBorderTop(boxW, boxLeft, bgLines?.[row] ?? null, cols, b, dim);
-      } else if (relRow === boxH - 1) {
-        line = this.buildBorderBottom(boxW, boxLeft, bgLines?.[row] ?? null, cols, b, dim);
-      } else {
-        const contentIdx = relRow - 1;
-        const raw = visibleContent[contentIdx] || "";
-        const rendered = buildRow(raw, contentW);
-        const boxLine = `${b.v} ${rendered} ${b.v}`;
-
-        if (bgLines) {
-          const bg = (bgLines[row] || "").padEnd(cols);
-          line = `${dim}${bg.slice(0, boxLeft)}${RESET}${boxLine}${dim}${bg.slice(boxLeft + boxW)}${RESET}`;
-        } else {
-          line = boxLine;
-        }
-      }
-
-      frame.push(line);
-    }
-
-    let cursorSeq = "";
-    if (cursor) {
-      const cursorRow = boxTop + 1 + cursor.row;
-      const cursorCol = boxLeft + 2 + cursor.col;
-      cursorSeq = `\x1b[${cursorRow + 1};${cursorCol + 1}H`;
-    }
-
-    return { rows: frame, cursorSeq };
-  }
-
-  private buildBorderTop(
-    boxW: number, boxLeft: number, bgRow: string | null,
-    cols: number, b: typeof this.border, dim: string,
-  ): string {
-    const titleText = this.title || (this.phase === "input" ? "input" : this.phase === "done" ? "done" : "...");
-    const titleStr = ` ${INVERSE} ${titleText} ${RESET} `;
-    const titleVisLen = titleText.length + 4; // text + 4 spaces (2 inside inverse, 2 outside)
-    const dashCount = Math.max(0, boxW - titleVisLen - 3); // 3 = tl + h-before-title + tr
-    const borderLine = `${b.tl}${b.h}${titleStr}${b.h.repeat(dashCount)}${b.tr}`;
-
-    if (bgRow !== null) {
-      const bg = bgRow.padEnd(cols);
-      return `${dim}${bg.slice(0, boxLeft)}${RESET}${borderLine}${dim}${bg.slice(boxLeft + boxW)}${RESET}`;
-    }
-    return borderLine;
-  }
-
-  private buildBorderBottom(
-    boxW: number, boxLeft: number, bgRow: string | null,
-    cols: number, b: typeof this.border, dim: string,
-  ): string {
-    const footerText = this.footer || "";
-    let borderLine: string;
-    if (footerText) {
-      const footerPad = Math.max(0, boxW - footerText.length - 3);
-      borderLine = `${b.bl}${b.h.repeat(footerPad)}${DIM}${footerText}${RESET}${b.h}${b.br}`;
-    } else {
-      borderLine = `${b.bl}${b.h.repeat(boxW - 2)}${b.br}`;
-    }
-
-    if (bgRow !== null) {
-      const bg = bgRow.padEnd(cols);
-      return `${dim}${bg.slice(0, boxLeft)}${RESET}${borderLine}${dim}${bg.slice(boxLeft + boxW)}${RESET}`;
-    }
-    return borderLine;
+    return this.handlers.call(`${this.prefix}:render-frame`, frameCtx);
   }
 
   // ── Rendering ─────────────────────────────────────────────
@@ -616,15 +681,11 @@ export class FloatingPanel {
   // ── Screen helpers ────────────────────────────────────────
 
   private restoreScreen(): void {
+    // Leave alt screen — the terminal restores the saved main buffer.
+    // We intentionally do NOT rewrite from the xterm buffer here:
+    // the xterm only sees PTY data, not direct stdout writes (banner,
+    // TUI output, etc.), so its content doesn't match the real screen.
     process.stdout.write("\x1b[?1049l");
-    if (this.buffer) {
-      const content = this.buffer.serialize();
-      const cursor = this.buffer.getCursor();
-      process.stdout.write(
-        "\x1b[H\x1b[2J" + content +
-        `\x1b[${cursor.y + 1};${cursor.x + 1}H`,
-      );
-    }
   }
 
   private resolveSize(spec: number | string, available: number): number {

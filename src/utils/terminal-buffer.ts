@@ -101,7 +101,17 @@ export class TerminalBuffer {
   static createWired(bus: EventBus, config?: TerminalBufferConfig): TerminalBuffer | null {
     const tb = TerminalBuffer.create(config);
     if (!tb) return null;
-    bus.on("shell:pty-data", ({ raw }) => { tb.write(raw); });
+    // Buffer PTY data and drip-feed to xterm in the background.
+    // Synchronous term.write() in the pty-data handler introduces enough
+    // latency to change PTY read coalescing, causing visual artifacts.
+    let pending = "";
+    bus.on("shell:pty-data", ({ raw }) => { pending += raw; });
+    setInterval(() => {
+      if (pending) { const d = pending; pending = ""; tb.write(d); }
+    }, 50);
+    process.stdout.on("resize", () => {
+      tb.resize(process.stdout.columns || 80, process.stdout.rows || 24);
+    });
     return tb;
   }
 
@@ -144,6 +154,11 @@ export class TerminalBuffer {
       x: this.term.buffer.active.cursorX,
       y: this.term.buffer.active.cursorY,
     };
+  }
+
+  /** Resize the virtual terminal. */
+  resize(cols: number, rows: number): void {
+    this.term.resize(cols, rows);
   }
 
   /** Whether the alternate screen buffer is active. */

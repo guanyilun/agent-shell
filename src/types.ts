@@ -4,6 +4,8 @@ import type { LlmClient } from "./utils/llm-client.js";
 import type { ColorPalette } from "./utils/palette.js";
 import type { BlockTransformOptions, FencedBlockTransformOptions } from "./utils/stream-transform.js";
 import type { ToolDefinition } from "./agent/types.js";
+import type { TerminalBuffer } from "./utils/terminal-buffer.js";
+import type { FloatingPanel, FloatingPanelConfig } from "./utils/floating-panel.js";
 
 export type { ContentBlock } from "./event-bus.js";
 export type { BlockTransformOptions, FencedBlockTransformOptions } from "./utils/stream-transform.js";
@@ -77,6 +79,19 @@ export interface ExtensionContext {
   advise: (name: string, wrapper: (next: (...args: any[]) => any, ...args: any[]) => any) => void;
   /** Call a named handler. */
   call: (name: string, ...args: any[]) => any;
+
+  // ── Terminal utilities ────────────────────────────────────────
+  /**
+   * Shared headless terminal buffer mirroring PTY output.
+   * Lazily created on first access. Returns null if @xterm/headless is not installed.
+   */
+  terminalBuffer: TerminalBuffer | null;
+  /**
+   * Create a floating panel overlay. The panel composites a bordered box
+   * over the terminal with input routing, dimmed background, and
+   * handler-based customization.
+   */
+  createFloatingPanel: (config: FloatingPanelConfig) => FloatingPanel;
 }
 
 /**

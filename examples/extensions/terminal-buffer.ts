@@ -71,10 +71,14 @@ export default function activate({ bus, advise, registerTool }: ExtensionContext
   const serialize = new SerializeAddon();
   term.loadAddon(serialize);
 
-  // Feed raw PTY output into the virtual terminal
-  bus.on("shell:pty-data", ({ raw }) => {
-    term.write(raw);
-  });
+  // Buffer PTY data and drip-feed to xterm in the background.
+  // Synchronous term.write() in the pty-data handler introduces enough
+  // latency to change PTY read coalescing, causing visual artifacts.
+  let pending = "";
+  bus.on("shell:pty-data", ({ raw }) => { pending += raw; });
+  setInterval(() => {
+    if (pending) { const d = pending; pending = ""; term.write(d); }
+  }, 50);
 
   // ── Helper: read clean screen text ──────────────────────────
 
