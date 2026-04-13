@@ -128,6 +128,7 @@ export default function activate({ bus, terminalBuffer: tb, registerTool }: Exte
       bus.emit("shell:pty-write", { data: keys });
 
       await settle(settleMs);
+      bus.emit("shell:stdout-hide", {});
 
       const { text, altScreen, cursorX, cursorY } = tb.readScreen();
       const info = [

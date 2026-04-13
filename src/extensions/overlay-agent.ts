@@ -15,10 +15,7 @@ import { MarkdownRenderer } from "../utils/markdown.js";
 import { palette as p } from "../utils/palette.js";
 import {
   renderToolCall,
-  createSpinner,
   formatElapsed,
-  SPINNER_FRAMES,
-  type SpinnerState,
 } from "../utils/tool-display.js";
 
 interface ChatMessage {
@@ -43,10 +40,6 @@ export default function activate(ctx: ExtensionContext): void {
   const messages: ChatMessage[] = [];
   let renderer: MarkdownRenderer | null = null;
   let currentAssistantMsg: ChatMessage | null = null;
-
-  // ── Spinner state ──────────────────────────────────────────
-  let spinner: SpinnerState | null = null;
-  let spinnerInterval: ReturnType<typeof setInterval> | null = null;
 
   // ── Tool state ─────────────────────────────────────────────
   let toolStartTime = 0;
@@ -98,30 +91,6 @@ export default function activate(ctx: ExtensionContext): void {
     currentAssistantMsg = null;
   }
 
-  // ── Spinner — reuses tui:render-spinner handler ────────────
-
-  function startSpinner(label: string): void {
-    stopSpinner();
-    spinner = createSpinner();
-    spinnerInterval = setInterval(() => {
-      if (!spinner || !panel.visible) return;
-      const frame = SPINNER_FRAMES[spinner.frame % SPINNER_FRAMES.length]!;
-      spinner.frame++;
-      const elapsed = formatElapsed(Date.now() - spinner.startTime);
-      const line: string = call("tui:render-spinner", label, frame, elapsed, undefined);
-      panel.setFooter(line);
-    }, 80);
-  }
-
-  function stopSpinner(): void {
-    if (spinnerInterval) {
-      clearInterval(spinnerInterval);
-      spinnerInterval = null;
-    }
-    spinner = null;
-    panel.setFooter("");
-  }
-
   // ── Panel lifecycle ────────────────────────────────────────
 
   panel.handlers.advise("panel:submit", (_next, query: string) => {
@@ -133,12 +102,7 @@ export default function activate(ctx: ExtensionContext): void {
     panel.setActive();
     rebuildContent();
     startAssistantMessage();
-    startSpinner("Thinking");
     bus.emit("agent:submit", { query });
-  });
-
-  panel.handlers.advise("panel:dismiss", (_next) => {
-    stopSpinner();
   });
 
   panel.handlers.advise("panel:show", (_next) => {
@@ -191,22 +155,18 @@ export default function activate(ctx: ExtensionContext): void {
     }, getContentWidth());
 
     for (const line of lines) appendLine(line);
-    startSpinner(e.title);
   });
 
   bus.on("agent:tool-completed", (e) => {
     if (!panel.active) return;
-    stopSpinner();
 
     const elapsed = toolStartTime ? formatElapsed(Date.now() - toolStartTime) : "";
     const mark: string = call("tui:render-tool-complete", e.exitCode, elapsed, undefined);
     appendLine(`  ${mark}`);
-    startSpinner("Thinking");
   });
 
   bus.on("agent:processing-done", () => {
     if (!panel.active) return;
-    stopSpinner();
     finalizeAssistantMessage();
     panel.setDone();
   });
