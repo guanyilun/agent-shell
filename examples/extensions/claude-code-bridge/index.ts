@@ -23,6 +23,23 @@ import { z } from "zod";
 import type { ExtensionContext } from "../../src/types.js";
 import type { EventBus } from "../../src/event-bus.js";
 
+// ── Helpers ──────────────────────────────────────────────────────
+function interpretEscapes(str: string): string {
+  return str.replace(/\\(x[0-9a-fA-F]{2}|r|n|t|\\|0)/g, (_, seq: string) => {
+    if (seq === "r") return "\r";
+    if (seq === "n") return "\n";
+    if (seq === "t") return "\t";
+    if (seq === "\\") return "\\";
+    if (seq === "0") return "\0";
+    if (seq.startsWith("x")) return String.fromCharCode(parseInt(seq.slice(1), 16));
+    return seq;
+  });
+}
+
+function settle(ms = 100): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ── user_shell MCP tool ───────────────────────────────────────────
 function createUserShellTool(bus: EventBus) {
   let liveCwd = process.cwd();
@@ -56,15 +73,72 @@ function createUserShellTool(bus: EventBus) {
   );
 }
 
+// ── terminal_read MCP tool ────────────────────────────────────────
+function createTerminalReadTool(ctx: ExtensionContext) {
+  return tool(
+    "terminal_read",
+    "Read the current terminal screen contents. Returns clean text (ANSI stripped) " +
+    "with cursor position and whether an alternate-screen program (vim, htop, less) is active. " +
+    "Use this to see what the user sees before sending keystrokes with terminal_keys.",
+    {},
+    async () => {
+      const tb = ctx.terminalBuffer;
+      if (!tb) return { content: [{ type: "text" as const, text: "terminal buffer not available" }] };
+      const { text, altScreen, cursorX, cursorY } = tb.readScreen();
+      const info = [
+        altScreen ? "mode: alternate screen" : "mode: normal",
+        `cursor: row=${cursorY} col=${cursorX}`,
+      ].join(", ");
+      return { content: [{ type: "text" as const, text: `[${info}]\n\n${text}` }] };
+    },
+  );
+}
+
+// ── terminal_keys MCP tool ───────────────────────────────────────
+function createTerminalKeysTool(bus: EventBus, ctx: ExtensionContext) {
+  return tool(
+    "terminal_keys",
+    "Send keystrokes to the user's live terminal. The keys are written directly to the PTY " +
+    "as if the user typed them. Use escape sequences for special keys:\n" +
+    "  - Escape: \\x1b  - Enter: \\r  - Tab: \\t\n" +
+    "  - Ctrl+C: \\x03  - Arrow keys: \\x1b[A/B/C/D  - Backspace: \\x7f\n" +
+    "Example: to quit vim without saving, send keys=\"\\x1b:q!\\r\".\n" +
+    "Always call terminal_read after sending keys to verify the result.",
+    {
+      keys: z.string().describe("Keystrokes to send (use \\x1b for Escape, \\r for Enter, etc.)"),
+      settle_ms: z.number().optional().describe("Wait time in ms after sending keys (default: 150)"),
+    },
+    async (args) => {
+      const keys = interpretEscapes(args.keys);
+      const settleMs = args.settle_ms ?? 150;
+      bus.emit("shell:stdout-show", {});
+      process.stdout.write("\n");
+      bus.emit("shell:pty-write", { data: keys });
+      await settle(settleMs);
+
+      const tb = ctx.terminalBuffer;
+      if (!tb) return { content: [{ type: "text" as const, text: "Keys sent." }] };
+      const { text, altScreen, cursorX, cursorY } = tb.readScreen();
+      const info = [
+        altScreen ? "mode: alternate screen" : "mode: normal",
+        `cursor: row=${cursorY} col=${cursorX}`,
+      ].join(", ");
+      return { content: [{ type: "text" as const, text: `Keys sent. Screen after:\n[${info}]\n\n${text}` }] };
+    },
+  );
+}
+
 // ── Extension entry point ─────────────────────────────────────────
 export default function activate(ctx: ExtensionContext): void {
   const { bus } = ctx;
 
   const shellTool = createUserShellTool(bus);
+  const termReadTool = createTerminalReadTool(ctx);
+  const termKeysTool = createTerminalKeysTool(bus, ctx);
   const shellServer = createSdkMcpServer({
     name: "agent-sh",
     version: "1.0.0",
-    tools: [shellTool],
+    tools: [shellTool, termReadTool, termKeysTool],
   });
 
   let activeQuery: Query | null = null;
@@ -95,6 +169,8 @@ export default function activate(ctx: ExtensionContext): void {
             mcpServers: { "agent-sh": shellServer },
             allowedTools: [
               "mcp__agent-sh__user_shell",
+              "mcp__agent-sh__terminal_read",
+              "mcp__agent-sh__terminal_keys",
               "Read", "Edit", "Write", "Bash", "Glob", "Grep",
             ],
             permissionMode: "acceptEdits",

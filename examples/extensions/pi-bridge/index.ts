@@ -26,7 +26,22 @@ import { Type } from "@sinclair/typebox";
 import type { ExtensionContext } from "../../src/types.js";
 import type { EventBus } from "../../src/event-bus.js";
 
-// ── agent-sh context injected via tool promptGuidelines + promptSnippet ──
+// ── Helpers ──────────────────────────────────────────────────────
+function interpretEscapes(str: string): string {
+  return str.replace(/\\(x[0-9a-fA-F]{2}|r|n|t|\\|0)/g, (_, seq: string) => {
+    if (seq === "r") return "\r";
+    if (seq === "n") return "\n";
+    if (seq === "t") return "\t";
+    if (seq === "\\") return "\\";
+    if (seq === "0") return "\0";
+    if (seq.startsWith("x")) return String.fromCharCode(parseInt(seq.slice(1), 16));
+    return seq;
+  });
+}
+
+function settle(ms = 100): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 // ── user_shell as a pi ToolDefinition ─────────────────────────────
 function createUserShellToolDef(bus: EventBus) {
@@ -81,12 +96,82 @@ function createUserShellToolDef(bus: EventBus) {
   };
 }
 
+// ── terminal_read as a pi ToolDefinition ─────────────────────────
+function createTerminalReadToolDef(ctx: ExtensionContext) {
+  return {
+    name: "terminal_read",
+    label: "terminal_read",
+    description:
+      "Read the current terminal screen contents. Returns clean text (ANSI stripped) " +
+      "with cursor position and whether an alternate-screen program (vim, htop, less) is active.",
+    promptSnippet: "Read the terminal screen to see what the user sees.",
+    promptGuidelines: [
+      "Use terminal_read to see the current terminal screen before sending keystrokes.",
+      "Check altScreen to know if a full-screen program (vim, htop) is running.",
+    ],
+    parameters: Type.Object({}),
+    async execute() {
+      const tb = ctx.terminalBuffer;
+      if (!tb) return { content: [{ type: "text", text: "terminal buffer not available" }], details: undefined };
+      const { text, altScreen, cursorX, cursorY } = tb.readScreen();
+      const info = [
+        altScreen ? "mode: alternate screen" : "mode: normal",
+        `cursor: row=${cursorY} col=${cursorX}`,
+      ].join(", ");
+      return { content: [{ type: "text", text: `[${info}]\n\n${text}` }], details: undefined };
+    },
+  };
+}
+
+// ── terminal_keys as a pi ToolDefinition ─────────────────────────
+function createTerminalKeysToolDef(bus: EventBus, ctx: ExtensionContext) {
+  return {
+    name: "terminal_keys",
+    label: "terminal_keys",
+    description:
+      "Send keystrokes to the user's live terminal as if the user typed them. " +
+      "Use escape sequences: \\x1b for Escape, \\r for Enter, \\t for Tab, " +
+      "\\x03 for Ctrl+C, \\x1b[A/B/C/D for arrow keys, \\x7f for Backspace. " +
+      "Example: \\x1b:q!\\r to quit vim. Always call terminal_read after.",
+    promptSnippet: "Send keystrokes to interactive programs in the terminal.",
+    promptGuidelines: [
+      "Use terminal_keys to type into interactive programs (vim, htop, less).",
+      "Always call terminal_read after sending keys to verify the result.",
+    ],
+    parameters: Type.Object({
+      keys: Type.String({ description: "Keystrokes to send (use \\x1b for Escape, \\r for Enter, etc.)" }),
+      settle_ms: Type.Optional(
+        Type.Number({ description: "Wait time in ms after sending keys (default: 150)" }),
+      ),
+    }),
+    async execute(_toolCallId: string, params: any) {
+      const keys = interpretEscapes(params.keys);
+      const settleMs = params.settle_ms ?? 150;
+      bus.emit("shell:stdout-show", {});
+      process.stdout.write("\n");
+      bus.emit("shell:pty-write", { data: keys });
+      await settle(settleMs);
+
+      const tb = ctx.terminalBuffer;
+      if (!tb) return { content: [{ type: "text", text: "Keys sent." }], details: undefined };
+      const { text, altScreen, cursorX, cursorY } = tb.readScreen();
+      const info = [
+        altScreen ? "mode: alternate screen" : "mode: normal",
+        `cursor: row=${cursorY} col=${cursorX}`,
+      ].join(", ");
+      return { content: [{ type: "text", text: `Keys sent. Screen after:\n[${info}]\n\n${text}` }], details: undefined };
+    },
+  };
+}
+
 // ── Extension entry point ─────────────────────────────────────────
 export default function activate(ctx: ExtensionContext): void {
   const { bus } = ctx;
   const cwd = process.cwd();
 
   const userShellTool = createUserShellToolDef(bus);
+  const termReadTool = createTerminalReadToolDef(ctx);
+  const termKeysTool = createTerminalKeysToolDef(bus, ctx);
 
   // ── Boot pi session (async — register backend synchronously first) ──
   let session: any = null;
@@ -105,7 +190,7 @@ export default function activate(ctx: ExtensionContext): void {
         const result = await createAgentSessionFromServices({
           services,
           sessionManager: opts.sessionManager ?? sessionManager,
-          customTools: [userShellTool],
+          customTools: [userShellTool, termReadTool, termKeysTool],
         });
         return { ...result, services };
       };
