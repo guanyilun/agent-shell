@@ -9,6 +9,7 @@
  */
 import type { ExtensionContext } from "../types.js";
 import { MarkdownRenderer } from "../utils/markdown.js";
+import { palette as p } from "../utils/palette.js";
 import {
   renderToolCall,
   createSpinner,
@@ -16,13 +17,6 @@ import {
   formatElapsed,
   type SpinnerState,
 } from "../utils/tool-display.js";
-
-const BOLD = "\x1b[1m";
-const CYAN = "\x1b[36m";
-const DIM = "\x1b[2m";
-const RESET = "\x1b[0m";
-const GREEN = "\x1b[32m";
-const RED = "\x1b[31m";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -125,15 +119,13 @@ export default function activate({ bus, createFloatingPanel }: ExtensionContext)
 
   // ── Panel lifecycle ────────────────────────────────────────
   panel.handlers.advise("panel:submit", (_next, query: string) => {
-    // Record user message
     const userMsg: ChatMessage = {
       role: "user",
-      lines: [`${CYAN}${BOLD}❯${RESET} ${query}`],
+      lines: [`${p.accent}${p.bold}❯${p.reset} ${query}`],
     };
     messages.push(userMsg);
 
     panel.setActive();
-    // Rebuild content from history so it's clean
     rebuildContent();
 
     startAssistantMessage();
@@ -143,17 +135,13 @@ export default function activate({ bus, createFloatingPanel }: ExtensionContext)
   });
 
   panel.handlers.advise("panel:dismiss", (_next) => {
-    // On hide: stop spinner rendering but keep conversation
     stopSpinner();
   });
 
   panel.handlers.advise("panel:show", (_next) => {
-    // On re-show: rebuild content and restart spinner if agent is active
+    // Rebuild from message history to restore content that arrived while hidden
     rebuildContent();
-    // Re-render any partial content from current assistant message
-    if (renderer) {
-      drainRenderer();
-    }
+    if (renderer) drainRenderer();
   });
 
   // ── Stream agent response into panel ───────────────────────
@@ -168,12 +156,12 @@ export default function activate({ bus, createFloatingPanel }: ExtensionContext)
       } else if (block.type === "code-block") {
         flushRenderer();
         // Render code block with language label
-        const label = block.language ? `${DIM}${block.language}${RESET}` : "";
+        const label = block.language ? `${p.dim}${block.language}${p.reset}` : "";
         if (label) {
           appendLine(label);
         }
         for (const codeLine of block.code.split("\n")) {
-          appendLine(`  ${DIM}${codeLine}${RESET}`);
+          appendLine(`  ${p.dim}${codeLine}${p.reset}`);
         }
       }
     }
@@ -206,10 +194,10 @@ export default function activate({ bus, createFloatingPanel }: ExtensionContext)
     stopSpinner();
 
     const elapsed = toolStartTime ? formatElapsed(Date.now() - toolStartTime) : "";
-    const timer = elapsed ? ` ${DIM}${elapsed}${RESET}` : "";
+    const timer = elapsed ? ` ${p.dim}${elapsed}${p.reset}` : "";
     const mark = e.exitCode === 0
-      ? `${GREEN}✓${RESET}${timer}`
-      : `${RED}✗ exit ${e.exitCode}${RESET}${timer}`;
+      ? `${p.success}✓${p.reset}${timer}`
+      : `${p.error}✗ exit ${e.exitCode}${p.reset}${timer}`;
 
     appendLine(`  ${mark}`);
 

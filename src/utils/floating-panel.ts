@@ -98,7 +98,7 @@ export interface FloatingPanelConfig {
    * Requires @xterm/headless — falls back to blank background if unavailable.
    */
   dimBackground?: boolean;
-  /** Auto-dismiss delay in ms when done (0 = disabled). Default: 0. */
+  /** Auto-dismiss delay in ms when done (0 = auto-prompt for follow-up). Default: 0. */
   autoDismissMs?: number;
   /** Icon shown before the input cursor. Default: "\u276f". */
   promptIcon?: string;
@@ -247,12 +247,15 @@ export class FloatingPanel {
   private title = "";
   private footer = "";
   private renderTimer: ReturnType<typeof setTimeout> | null = null;
-  private autoDismissTimer: ReturnType<typeof setTimeout> | null = null;
   private resizeHandler: (() => void) | null = null;
   private prevFrame: string[] = [];
   private suppressNextRedraw = false;
+  private autoDismissTimer: ReturnType<typeof setTimeout> | null = null;
   private ptyBuffer = "";  // PTY output accumulated while overlay is open
   private usedAltScreen = false;  // whether we entered our own alt screen
+  private holdKept = false;  // stdout hold maintained while hidden (agent still active)
+  private wrapCache = new Map<string, string[]>();  // line → wrapped lines (invalidated on width change)
+  private wrapCacheWidth = 0;
 
   constructor(bus: EventBus, config: FloatingPanelConfig, handlers?: HandlerRegistry) {
     this.bus = bus;
@@ -286,10 +289,20 @@ export class FloatingPanel {
     // Default content renderer: uses built-in appendText/appendLine buffer
     this.handlers.define(`${p}:render-content`, (ctx: RenderContext): RenderResult => {
       const raw = [...ctx.contentLines, ...(ctx.partialLine ? [ctx.partialLine] : [])];
-      // Wrap long lines to fit within the content width
+
+      // Invalidate wrap cache if width changed
+      if (ctx.width !== this.wrapCacheWidth) {
+        this.wrapCache.clear();
+        this.wrapCacheWidth = ctx.width;
+      }
+
       const all: string[] = [];
       for (const line of raw) {
-        const wrapped = wrapLine(line, ctx.width);
+        let wrapped = this.wrapCache.get(line);
+        if (!wrapped) {
+          wrapped = wrapLine(line, ctx.width);
+          this.wrapCache.set(line, wrapped);
+        }
         all.push(...wrapped);
       }
 
@@ -427,8 +440,8 @@ export class FloatingPanel {
   // ── Bus event wiring ───────────────────────────────────────
 
   private wireEvents(): void {
-    // Buffer PTY output while overlay is visible so we can replay it on hide.
-    // Alt screen restore discards anything written while it was active.
+    // Buffer PTY output while overlay is visible (alt screen discards it).
+    // Don't buffer when hidden — PTY flows to terminal directly via stdout-show.
     this.bus.on("shell:pty-data", ({ raw }) => {
       if (this._visible) this.ptyBuffer += raw;
     });
@@ -521,8 +534,16 @@ export class FloatingPanel {
       this.ptyBuffer = "";
     }
 
-    this.bus.emit("shell:stdout-hide", {});
-    this.bus.emit("shell:stdout-release", {});
+    if (this.phase === "active") {
+      // Agent still running — keep stdout hold so TUI renderer stays
+      // suppressed, but use stdout-show to let PTY output through.
+      this.bus.emit("shell:stdout-show", {});
+      this.holdKept = true;
+    } else {
+      this.bus.emit("shell:stdout-hide", {});
+      this.bus.emit("shell:stdout-release", {});
+      this.holdKept = false;
+    }
 
     this.handlers.call(`${this.prefix}:dismiss`);
   }
@@ -531,7 +552,25 @@ export class FloatingPanel {
   show(): void {
     if (this._visible || this.phase === "idle") return;
     this.prevFrame = [];
-    this.enterScreen();
+
+    if (this.holdKept) {
+      // Hold was maintained — undo the stdout-show and re-enter screen
+      // without a second hold (already held).
+      this.bus.emit("shell:stdout-hide", {});
+      this.holdKept = false;
+
+      this._visible = true;
+      this.ptyBuffer = "";
+      this.usedAltScreen = !(this.buffer?.altScreen);
+      if (this.usedAltScreen) process.stdout.write("\x1b[?1049h");
+      this.resizeHandler = () => { this.prevFrame = []; this.render(); };
+      process.stdout.on("resize", this.resizeHandler);
+      this.render();
+    } else {
+      // Hold was released — fresh enter with new hold.
+      this.enterScreen();
+    }
+
     this.handlers.call(`${this.prefix}:show`);
   }
 
@@ -540,7 +579,13 @@ export class FloatingPanel {
     if (this.phase === "idle") return;
     if (this.autoDismissTimer) { clearTimeout(this.autoDismissTimer); this.autoDismissTimer = null; }
 
-    // Hide first if visible
+    // If hold was kept from a previous hide, release it before cleanup
+    if (this.holdKept) {
+      this.bus.emit("shell:stdout-hide", {});
+      this.bus.emit("shell:stdout-release", {});
+      this.holdKept = false;
+    }
+
     if (this._visible) this.hide();
 
     this.phase = "idle";
@@ -621,10 +666,26 @@ export class FloatingPanel {
   }
 
   setDone(): void {
-    // Auto-prompt: transition to input for follow-up conversation
-    this.phase = "input";
-    this.editor.clear();
-    this.render();
+    // If hidden with hold kept, release now — agent work is done.
+    if (this.holdKept) {
+      this.bus.emit("shell:stdout-hide", {});
+      this.bus.emit("shell:stdout-release", {});
+      this.holdKept = false;
+    }
+
+    if (this.config.autoDismissMs > 0) {
+      // Legacy behavior: enter done state, auto-dismiss after delay
+      this.phase = "done";
+      this.render();
+      this.autoDismissTimer = setTimeout(() => {
+        if (this.phase === "done") this.dismiss();
+      }, this.config.autoDismissMs);
+    } else {
+      // Auto-prompt: transition to input for follow-up conversation
+      this.phase = "input";
+      this.editor.clear();
+      this.render();
+    }
   }
 
   getInput(): string {
@@ -653,6 +714,10 @@ export class FloatingPanel {
     }
 
     switch (this.phase) {
+      case "done":
+        this.dismiss();
+        return consumed;
+
       case "input":
         this.handleInputKey(data);
         return consumed;
