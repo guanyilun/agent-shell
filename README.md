@@ -21,7 +21,7 @@ agent-sh flips this. It's your shell first — full PTY, your rc config, your al
 
 **Real terminal, zero compromise.** Full PTY with your shell config, aliases, and environment. Shell starts instantly — the agent connects asynchronously in the background.
 
-**Context-aware agent.** Every query includes your cwd, recent commands, and their output. Run a failing test, type `> fix this`, and the agent knows exactly what happened. It has built-in tools for file read/write/edit, bash, grep, glob — no external setup needed.
+**Context-aware agent.** Every query includes your cwd, recent commands, and their output. Run a failing test, type `> fix this`, and the agent knows exactly what happened. It has built-in tools for file read/write/edit, bash, grep, glob — no external setup needed. Context management works like shell history — continuous, persistent across restarts, no sessions to manage. See [Context Management](docs/context-management.md).
 
 **Agent decides how to help.** One entry point (`>`), three tool categories. The agent uses scratchpad tools to investigate, `display` to show you output, and `user_shell` for commands with lasting effects. No need to pick a mode — the agent reasons about which tools to use based on your intent.
 
@@ -59,6 +59,9 @@ Everything else works as a normal shell — commands go straight to the PTY. Inp
 | `/help` | Show available commands |
 | `/model [name]` | Cycle to the next model, or switch to a specific one |
 | `/backend [name]` | List backends, or switch to a named backend |
+| `/compact` | Compact conversation (free up context space) |
+| `/context` | Show context budget usage |
+| `/thinking [level]` | Set reasoning effort (off, low, medium, high) |
 
 ## Configuration
 
@@ -68,6 +71,7 @@ Configure via `~/.agent-sh/settings.json`. See the [Usage Guide](docs/usage.md#c
 
 - [Usage Guide](docs/usage.md) — providers, models, configuration, provider profiles
 - [Internal Agent](docs/agent.md) — how the agent loop works: tools, context, streaming
+- [Context Management](docs/context-management.md) — three-tier history, token budget, design philosophy
 - [Architecture](docs/architecture.md) — design philosophy, component overview, project structure
 - [Extensions](docs/extensions.md) — event bus, content transforms, custom backends, theming
 - [Library Usage](docs/library.md) — embedding agent-sh in your own apps
