@@ -122,7 +122,7 @@ export class AgentLoop implements AgentBackend {
       }
       this.tokenBudget.update(m.contextWindow, this.toolRegistry.all().length);
       const label = m.provider ? `${m.provider}: ${m.model}` : m.model;
-      this.bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: m.model, provider: m.provider, contextWindow: m.contextWindow });
+      this.bus.emit("agent:info", { name: "ash", version: "0.4", model: m.model, provider: m.provider, contextWindow: m.contextWindow });
       this.bus.emit("ui:info", { message: `Model: ${label}` });
       this.bus.emit("config:changed", {});
     });
@@ -313,7 +313,7 @@ export class AgentLoop implements AgentBackend {
     const label = newMode.provider
       ? `${newMode.provider}: ${newMode.model}`
       : newMode.model;
-    this.bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: newMode.model, provider: newMode.provider, contextWindow: newMode.contextWindow });
+    this.bus.emit("agent:info", { name: "ash", version: "0.4", model: newMode.model, provider: newMode.provider, contextWindow: newMode.contextWindow });
     this.bus.emit("ui:info", { message: `Model: ${label}` });
     this.bus.emit("config:changed", {});
   }

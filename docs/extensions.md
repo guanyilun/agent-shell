@@ -248,14 +248,14 @@ Multiple backends can be registered at the same time. Use the `/backend` command
 ```
 /backend              # list all registered backends (active one marked)
 /backend claude-code  # switch to the claude-code backend
-/backend agent-sh     # switch back to the built-in backend
+/backend ash          # switch back to the built-in backend
 ```
 
-Switching deactivates the current backend (`kill()`) and activates the new one (`start()`). The built-in backend is always available as `"agent-sh"`.
+Switching deactivates the current backend (`kill()`) and activates the new one (`start()`). The built-in backend is always available as `"ash"`.
 
 ### Default backend
 
-By default, the built-in AgentLoop (`"agent-sh"`) activates. To make an extension backend the default, set `defaultBackend` in `~/.agent-sh/settings.json`:
+By default, the built-in AgentLoop (`"ash"`) activates. To make an extension backend the default, set `defaultBackend` in `~/.agent-sh/settings.json`:
 
 ```json
 {

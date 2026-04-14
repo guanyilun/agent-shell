@@ -137,28 +137,28 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
   let activeBackendName: string | null = null;
 
   const activateByName = async (name: string, silent = false) => {
-    const backend = name === "agent-sh" ? null : backends.get(name);
-    if (name !== "agent-sh" && !backend) {
+    const backend = name === "ash" ? null : backends.get(name);
+    if (name !== "ash" && !backend) {
       bus.emit("ui:error", { message: `Unknown backend: ${name}` });
       return;
     }
 
     // Deactivate current backend
-    if (activeBackendName === "agent-sh") {
+    if (activeBackendName === "ash") {
       agentLoop?.unwire();
     } else if (activeBackendName) {
       backends.get(activeBackendName)?.kill();
     }
 
     // Activate new backend
-    if (name === "agent-sh") {
+    if (name === "ash") {
       if (!agentLoop) {
         bus.emit("ui:error", { message: "No LLM provider configured for built-in backend" });
         return;
       }
       agentLoop.wire();
-      activeBackendName = "agent-sh";
-      bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: llmClient?.model, provider: activeProvider?.id, contextWindow: activeProvider?.contextWindow });
+      activeBackendName = "ash";
+      bus.emit("agent:info", { name: "ash", version: "0.4", model: llmClient?.model, provider: activeProvider?.id, contextWindow: activeProvider?.contextWindow });
     } else {
       await backend!.start?.();
       activeBackendName = name;
@@ -180,7 +180,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
 
   bus.on("config:list-backends", () => {
     const names: string[] = [];
-    if (agentLoop) names.push("agent-sh");
+    if (agentLoop) names.push("ash");
     for (const name of backends.keys()) names.push(name);
     const list = names
       .map((n) => n === activeBackendName ? `${n} (active)` : n)
@@ -190,7 +190,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
 
   bus.onPipe("config:get-backends", (payload) => {
     const names: string[] = [];
-    if (agentLoop) names.push("agent-sh");
+    if (agentLoop) names.push("ash");
     for (const name of backends.keys()) names.push(name);
     return { names, active: activeBackendName };
   });
@@ -276,7 +276,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
     bus.emit("config:set-modes", { modes: newModes });
 
     activeProvider = p;
-    bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: switchModel, provider: name, contextWindow: p.contextWindow });
+    bus.emit("agent:info", { name: "ash", version: "0.4", model: switchModel, provider: name, contextWindow: p.contextWindow });
     bus.emit("ui:info", { message: `Switched to ${name} (${switchModel})` });
     bus.emit("config:changed", {});
   });
@@ -312,8 +312,8 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
         activateByName(backends.keys().next().value!, true);
       } else if (agentLoop) {
         agentLoop.wire();
-        activeBackendName = "agent-sh";
-        bus.emit("agent:info", { name: "agent-sh", version: "0.4", model: llmClient?.model, provider: activeProvider?.id, contextWindow: activeProvider?.contextWindow });
+        activeBackendName = "ash";
+        bus.emit("agent:info", { name: "ash", version: "0.4", model: llmClient?.model, provider: activeProvider?.id, contextWindow: activeProvider?.contextWindow });
       } else if (backends.size > 0) {
         activateByName(backends.keys().next().value!, true);
       }
@@ -431,7 +431,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
     },
 
     kill() {
-      if (activeBackendName === "agent-sh") {
+      if (activeBackendName === "ash") {
         agentLoop?.kill();
       } else if (activeBackendName) {
         backends.get(activeBackendName)?.kill();

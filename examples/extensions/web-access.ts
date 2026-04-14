@@ -153,7 +153,7 @@ async function zaiRead(apiKey: string, url: string, timeout: number): Promise<st
       jsonrpc: "2.0", id: ++zaiRpcId, method: "initialize",
       params: {
         protocolVersion: "2024-11-05", capabilities: {},
-        clientInfo: { name: "agent-sh-web-access", version: "1.0.0" },
+        clientInfo: { name: "ash-web-access", version: "1.0.0" },
       },
     }, timeout);
     await zaiMcpPost(apiKey, {

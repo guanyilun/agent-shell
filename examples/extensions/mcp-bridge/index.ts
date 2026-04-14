@@ -86,7 +86,7 @@ async function connectServer(
     env: { ...process.env, ...config.env } as Record<string, string>,
   });
 
-  const client = new Client({ name: `agent-sh-${name}`, version: "0.1.0" });
+  const client = new Client({ name: `ash-${name}`, version: "0.1.0" });
   await client.connect(transport);
 
   // Discover and register tools

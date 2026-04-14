@@ -298,7 +298,7 @@ async function main(): Promise<void> {
     const productName = `${p.accent}${p.bold}agent-sh${p.reset}`;
 
     const info = agentInfo as { name: string; version: string; model?: string; provider?: string } | null;
-    const backendName = info?.name ?? "agent-sh";
+    const backendName = info?.name ?? "ash";
     const model = info?.model ?? core.llmClient?.model;
     const provider = info?.provider;
     const modelValue = model
