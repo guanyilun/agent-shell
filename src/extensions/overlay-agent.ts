@@ -5,13 +5,12 @@
  * inside vim, htop, or ssh. Composites a floating response box on top
  * of the current terminal content.
  *
- * Uses the compositor to redirect agent output into the floating panel.
- * The full tui-renderer pipeline (markdown, tool grouping, spinner, diffs)
- * applies — the overlay just changes *where* the output goes.
+ * Uses createRemoteSession() to route the full tui-renderer pipeline
+ * (markdown, tool grouping, spinner, diffs) into the floating panel.
  *
  * Requires: npm install @xterm/headless@5.5.0 @xterm/addon-serialize@0.13.0
  */
-import type { ExtensionContext } from "../types.js";
+import type { ExtensionContext, RemoteSession } from "../types.js";
 import type { RenderSurface } from "../utils/compositor.js";
 import type { FloatingPanel } from "../utils/floating-panel.js";
 
@@ -43,7 +42,7 @@ function createPanelSurface(panel: FloatingPanel): RenderSurface {
 }
 
 export default function activate(ctx: ExtensionContext): void {
-  const { bus, compositor, advise, registerInstruction, createFloatingPanel } = ctx;
+  const { bus, registerInstruction, createFloatingPanel, createRemoteSession } = ctx;
 
   const panel = createFloatingPanel({
     trigger: "\x1c", // Ctrl+\
@@ -51,40 +50,7 @@ export default function activate(ctx: ExtensionContext): void {
   });
 
   const panelSurface = createPanelSurface(panel);
-
-  // ── Compositor routing ────────────────────────────────────────
-  // When the panel is active, redirect all render streams to it.
-  let restoreAgent: (() => void) | null = null;
-  let restoreQuery: (() => void) | null = null;
-  let restoreStatus: (() => void) | null = null;
-
-  function redirectToPanel(): void {
-    if (restoreAgent) return; // already redirected
-    restoreAgent = compositor.redirect("agent", panelSurface);
-    restoreQuery = compositor.redirect("query", panelSurface);
-    restoreStatus = compositor.redirect("status", panelSurface);
-  }
-
-  function restoreRouting(): void {
-    restoreAgent?.();
-    restoreQuery?.();
-    restoreStatus?.();
-    restoreAgent = restoreQuery = restoreStatus = null;
-  }
-
-  // Suppress query box and response borders in overlay — the panel has its own frame.
-  advise("tui:render-user-query", (next, query: string, width: number, modelLabel: string | undefined) => {
-    if (panel.active) return [];
-    return next(query, width, modelLabel);
-  });
-  advise("tui:response-border", (next, position: string, width: number) => {
-    if (panel.active) return null;
-    return next(position, width);
-  });
-  advise("tui:render-usage", (next, prompt: number, completion: number, max: number) => {
-    if (panel.active) return "";
-    return next(prompt, completion, max);
-  });
+  let session: RemoteSession | null = null;
 
   registerInstruction("Interactive Overlay Sessions", [
     "When the dynamic context includes `interactive-session: true`, the user has summoned you",
@@ -97,36 +63,46 @@ export default function activate(ctx: ExtensionContext): void {
     "- Keep responses concise — the user is in the middle of a workflow.",
   ].join("\n"));
 
-  // Signal interactive overlay mode in dynamic context
-  advise("dynamic-context:build", (next) => {
-    const base = next() as string;
-    if (!panel.active) return base;
-    return base + "\ninteractive-session: true\n";
-  });
-
   // ── Panel lifecycle ────────────────────────────────────────────
 
   panel.handlers.advise("panel:submit", (_next, query: string) => {
-    redirectToPanel();
+    if (!session) {
+      session = createRemoteSession({
+        surface: panelSurface,
+        suppressQueryBox: true,
+        interactive: true,
+      });
+    }
     panel.setActive();
-    bus.emit("agent:submit", { query });
+    session.submit(query);
   });
 
   panel.handlers.advise("panel:show", (_next) => {
-    if (panel.active) redirectToPanel();
+    // Re-establish session if panel is shown while agent is still working
+    if (panel.active && !session) {
+      session = createRemoteSession({
+        surface: panelSurface,
+        suppressQueryBox: true,
+        interactive: true,
+      });
+    }
   });
 
   // Restore routing on hide (panel:dismiss is the hide handler)
   panel.handlers.advise("panel:dismiss", (next) => {
     next();
-    restoreRouting();
+    session?.close();
+    session = null;
   });
 
   bus.on("agent:processing-done", () => {
     if (!panel.active) return;
     panel.setDone();
     // setDone() may trigger dismiss() which resets phase to idle.
-    // If that happened, restore routing now (dismiss() doesn't call panel:dismiss).
-    if (!panel.active) restoreRouting();
+    // If that happened, close the session now.
+    if (!panel.active) {
+      session?.close();
+      session = null;
+    }
   });
 }
