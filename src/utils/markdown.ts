@@ -1,7 +1,7 @@
 import { visibleLen, truncateToWidth, padEndToWidth } from "./ansi.js";
 import { palette as p } from "./palette.js";
 
-const MAX_CONTENT_WIDTH = 90;
+export const MAX_CONTENT_WIDTH = 90;
 
 /**
  * Word-wrap a string (which may contain ANSI codes) to a maximum visible width.
