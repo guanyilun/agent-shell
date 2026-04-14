@@ -116,23 +116,26 @@ export class InputHandler {
     const promptPrefix = infoPrefix + p.warning + p.bold + icon + " " + p.reset;
     const promptVisLen = visibleLen(infoPrefix) + visibleLen(icon) + 1; // icon + space
 
-    if (!showBuffer || !this.editor.buffer.includes("\n")) {
+    const display = showBuffer ? this.editor.displayText : "";
+    const dCursor = showBuffer ? this.editor.displayCursor : 0;
+
+    if (!showBuffer || !display.includes("\n")) {
       // Single-line: simple rendering
-      const bufferText = showBuffer ? p.accent + this.editor.buffer + p.reset : "";
+      const bufferText = showBuffer ? p.accent + display + p.reset : "";
       process.stdout.write(promptPrefix + bufferText);
 
-      const bufferVisLen = showBuffer ? this.editor.buffer.length : 0;
+      const bufferVisLen = display.length;
       const totalVisLen = promptVisLen + bufferVisLen;
       this.promptWrappedLines = totalVisLen > 0 ? Math.floor((totalVisLen - 1) / termW) : 0;
 
       // Position cursor within the buffer
-      if (showBuffer && this.editor.cursor < this.editor.buffer.length) {
-        const charsAfterCursor = this.editor.buffer.length - this.editor.cursor;
+      if (showBuffer && dCursor < display.length) {
+        const charsAfterCursor = display.length - dCursor;
         process.stdout.write(`\x1b[${charsAfterCursor}D`);
       }
     } else {
       // Multi-line: render each line with continuation indent
-      const lines = this.editor.buffer.split("\n");
+      const lines = display.split("\n");
       const indent = " ".repeat(promptVisLen);
       let totalTermLines = 0;
 
@@ -149,8 +152,8 @@ export class InputHandler {
       }
       this.promptWrappedLines = totalTermLines - 1;
 
-      // Position cursor: find which logical line and column the cursor is on
-      let charsRemaining = this.editor.cursor;
+      // Position cursor: find which display line and column the cursor is on
+      let charsRemaining = dCursor;
       let cursorLine = 0;
       for (let li = 0; li < lines.length; li++) {
         if (charsRemaining <= lines[li]!.length) {
@@ -341,7 +344,7 @@ export class InputHandler {
   }
 
   private updateAutocomplete(): void {
-    const buf = this.editor.buffer;
+    const buf = this.editor.text;
     let command: string | null = null;
     let commandArgs: string | null = null;
     if (buf.startsWith("/")) {
@@ -401,7 +404,7 @@ export class InputHandler {
       : `${indicator} `;
     const icon = this.activeMode?.promptIcon ?? "❯";
     const promptVisLen = visibleLen(infoPrefix) + visibleLen(icon) + 1;
-    const col = promptVisLen + this.editor.cursor;
+    const col = promptVisLen + this.editor.displayCursor;
     process.stdout.write(`\r\x1b[${col}C`);
   }
 
@@ -410,19 +413,18 @@ export class InputHandler {
     const selected = this.autocompleteItems[this.autocompleteIndex];
     if (!selected) return;
 
-    const atPos = this.editor.buffer.lastIndexOf("@");
+    const atPos = this.editor.text.lastIndexOf("@");
     const isFileAc =
       atPos >= 0 &&
-      (atPos === 0 || this.editor.buffer[atPos - 1] === " ") &&
-      !this.editor.buffer.slice(atPos + 1).includes(" ");
+      (atPos === 0 || this.editor.text[atPos - 1] === " ") &&
+      !this.editor.text.slice(atPos + 1).includes(" ");
 
     if (isFileAc) {
-      this.editor.buffer =
-        this.editor.buffer.slice(0, atPos) + "@" + selected.name;
+      this.editor.setText(
+        this.editor.text.slice(0, atPos) + "@" + selected.name);
     } else {
-      this.editor.buffer = selected.name;
+      this.editor.setText(selected.name);
     }
-    this.editor.cursor = this.editor.buffer.length;
 
     this.clearAutocompleteLines();
     this.autocompleteActive = false;
@@ -479,8 +481,8 @@ export class InputHandler {
       switch (act.action) {
         case "changed": {
           // If the buffer is exactly a trigger char for a different mode, switch to it
-          const switchMode = this.modes.get(this.editor.buffer);
-          if (this.editor.buffer.length === 1 && switchMode && switchMode !== this.activeMode) {
+          const switchMode = this.modes.get(this.editor.text);
+          if (this.editor.text.length === 1 && switchMode && switchMode !== this.activeMode) {
             this.dismissAutocomplete();
             this.clearPromptArea();
             this.activeMode = switchMode;
@@ -498,10 +500,10 @@ export class InputHandler {
           if (this.autocompleteActive) {
             this.applyAutocomplete();
           }
-          // Use editor.buffer (not act.buffer) so autocomplete selections
+          // Use editor.text (not act.buffer) so autocomplete selections
           // take effect — act.buffer is a stale snapshot from before
-          // applyAutocomplete() updated the buffer.
-          const query = this.editor.buffer.trim();
+          // applyAutocomplete() updated the editor.
+          const query = this.editor.text.trim();
           if (query) {
             // Add to history (avoid consecutive duplicates)
             if (this.history.length === 0 || this.history[this.history.length - 1] !== query) {
@@ -568,13 +570,12 @@ export class InputHandler {
             this.renderAutocomplete();
           } else if (this.history.length > 0) {
             if (this.historyIndex === -1) {
-              this.savedBuffer = this.editor.buffer;
+              this.savedBuffer = this.editor.text;
               this.historyIndex = this.history.length - 1;
             } else if (this.historyIndex > 0) {
               this.historyIndex--;
             }
-            this.editor.buffer = this.history[this.historyIndex]!;
-            this.editor.cursor = this.editor.buffer.length;
+            this.editor.setText(this.history[this.historyIndex]!);
             this.clearAutocompleteLines();
             this.writeModePromptLine();
           }
@@ -592,12 +593,11 @@ export class InputHandler {
           } else if (this.historyIndex !== -1) {
             if (this.historyIndex < this.history.length - 1) {
               this.historyIndex++;
-              this.editor.buffer = this.history[this.historyIndex]!;
+              this.editor.setText(this.history[this.historyIndex]!);
             } else {
               this.historyIndex = -1;
-              this.editor.buffer = this.savedBuffer;
+              this.editor.setText(this.savedBuffer);
             }
-            this.editor.cursor = this.editor.buffer.length;
             this.clearAutocompleteLines();
             this.writeModePromptLine();
           }

@@ -693,7 +693,7 @@ export class FloatingPanel {
   }
 
   getInput(): string {
-    return this.editor.buffer;
+    return this.editor.text;
   }
 
   requestRender(): void {
@@ -789,7 +789,7 @@ export class FloatingPanel {
     for (const action of actions) {
       switch (action.action) {
         case "submit": {
-          const query = this.editor.buffer.trim();
+          const query = this.editor.text.trim();
           if (!query) { this.hide(); return; }
           this.editor.pushHistory(query);
           this.phase = "active";
@@ -846,8 +846,8 @@ export class FloatingPanel {
       width: geo.contentW,
       height: geo.contentH,
       phase: this.phase,
-      inputBuffer: this.editor.buffer,
-      inputCursor: this.editor.cursor,
+      inputBuffer: this.editor.displayText,
+      inputCursor: this.editor.displayCursor,
       scrollOffset: this.scrollOffset,
       contentLines: this.contentLines,
       partialLine: this.currentPartialLine,

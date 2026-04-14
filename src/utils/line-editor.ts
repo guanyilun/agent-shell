@@ -2,8 +2,14 @@
  * Minimal line editor with readline-style keybindings.
  *
  * Pure logic — no I/O, no rendering, no event bus. Consumers feed raw
- * terminal input bytes and receive high-level actions back. Buffer and
- * cursor state are public for rendering.
+ * terminal input bytes and receive high-level actions back.
+ *
+ * The internal buffer may contain PUA placeholder characters for pasted
+ * multi-line content. Consumers should use the typed accessors:
+ *   - `text`          — resolved content (pastes expanded), for submit/history/logic
+ *   - `displayText`   — display content (pastes collapsed to labels), for rendering
+ *   - `displayCursor` — cursor column in display coordinates
+ *   - `setText()`     — replace buffer content (clears paste attachments)
  */
 
 // ── Kitty protocol keycode → readable name ──────────────────────
@@ -11,6 +17,16 @@
 const KITTY_KEY_NAMES: Record<number, string> = {
   9: "tab", 13: "enter", 27: "escape", 127: "backspace",
 };
+
+// ── Paste placeholder ───────────────────────────────────────────
+
+/** First Unicode Private Use Area codepoint, used as paste placeholder. */
+const PUA_BASE = 0xE000;
+
+function isPUA(ch: string): boolean {
+  const code = ch.charCodeAt(0);
+  return code >= PUA_BASE && code <= 0xF8FF;
+}
 
 // ── Action types returned by feed() ─────────────────────────────
 
@@ -27,15 +43,78 @@ export type LineEditAction =
 // ── Line editor ─────────────────────────────────────────────────
 
 export class LineEditor {
-  buffer = "";
+  private _buf = "";
   cursor = 0;
   private pendingSeq = ""; // buffered incomplete escape sequence
-  private inPaste = false; // bracket paste mode (ESC[200~ … ESC[201~)
+
+  // ── Bracket paste state ─────────────────────────────────────
+  private inPaste = false;
+  private pasteAccum = "";                      // accumulates during bracket paste
+  private pastes = new Map<number, string>();   // id → pasted content
+  private pasteCounter = 0;
 
   // ── History ──────────────────────────────────────────────────
   private history: string[] = [];
   private historyIndex = -1;  // -1 = current input, 0..N = history entries (newest first)
   private savedBuffer = "";   // saves current input when browsing history
+
+  // ── Public accessors ────────────────────────────────────────
+
+  /** Resolved text — paste placeholders expanded. For submit, history, logic. */
+  get text(): string {
+    let result = "";
+    for (const ch of this._buf) {
+      const paste = this.pastes.get(ch.charCodeAt(0) - PUA_BASE);
+      result += paste ?? ch;
+    }
+    return result;
+  }
+
+  /** Display text — paste placeholders replaced with labels. For rendering. */
+  get displayText(): string {
+    let result = "";
+    for (const ch of this._buf) {
+      const paste = this.pastes.get(ch.charCodeAt(0) - PUA_BASE);
+      if (paste) {
+        const n = paste.split("\n").length;
+        result += `[paste +${n} lines]`;
+      } else {
+        result += ch;
+      }
+    }
+    return result;
+  }
+
+  /** Cursor position mapped to display-text coordinates. */
+  get displayCursor(): number {
+    let pos = 0;
+    for (let i = 0; i < this._buf.length && i < this.cursor; i++) {
+      const ch = this._buf[i]!;
+      const paste = this.pastes.get(ch.charCodeAt(0) - PUA_BASE);
+      if (paste) {
+        const n = paste.split("\n").length;
+        pos += `[paste +${n} lines]`.length;
+      } else {
+        pos++;
+      }
+    }
+    return pos;
+  }
+
+  /** Number of logical positions in the buffer. */
+  get length(): number {
+    return this._buf.length;
+  }
+
+  /** Replace buffer content. Clears paste attachments. */
+  setText(value: string): void {
+    this._buf = value;
+    this.pastes.clear();
+    this.pasteCounter = 0;
+    this.cursor = value.length;
+  }
+
+  // ── Input processing ────────────────────────────────────────
 
   /** Process raw terminal input, return actions for the consumer. */
   feed(data: string): LineEditAction[] {
@@ -88,7 +167,7 @@ export class LineEditor {
             case "A": actions.push({ action: "arrow-up" }); break;
             case "B": actions.push({ action: "arrow-down" }); break;
             case "C":
-              if (this.cursor < this.buffer.length) { this.cursor++; actions.push({ action: "changed" }); }
+              if (this.cursor < this._buf.length) { this.cursor++; actions.push({ action: "changed" }); }
               break;
             case "D":
               if (this.cursor > 0) { this.cursor--; actions.push({ action: "changed" }); }
@@ -97,7 +176,7 @@ export class LineEditor {
               if (this.cursor > 0) { this.cursor = 0; actions.push({ action: "changed" }); }
               break;
             case "F": // End
-              if (this.cursor < this.buffer.length) { this.cursor = this.buffer.length; actions.push({ action: "changed" }); }
+              if (this.cursor < this._buf.length) { this.cursor = this._buf.length; actions.push({ action: "changed" }); }
               break;
           }
           continue;
@@ -122,12 +201,10 @@ export class LineEditor {
         continue;
       }
 
-      // ── Bracket paste: insert literally (newlines become multi-line input) ──
+      // ── Bracket paste: accumulate into side buffer ─────
       if (this.inPaste) {
         if (ch === "\r") { i++; continue; } // skip CR (CR+LF → just LF)
-        this.buffer = this.buffer.slice(0, this.cursor) + ch + this.buffer.slice(this.cursor);
-        this.cursor++;
-        actions.push({ action: "changed" });
+        this.pasteAccum += ch;
         i++;
         continue;
       }
@@ -141,7 +218,7 @@ export class LineEditor {
       }
 
       // ── Printable character ─────────────────────────────
-      this.buffer = this.buffer.slice(0, this.cursor) + ch + this.buffer.slice(this.cursor);
+      this._buf = this._buf.slice(0, this.cursor) + ch + this._buf.slice(this.cursor);
       this.cursor++;
       actions.push({ action: "changed" });
       i++;
@@ -164,10 +241,13 @@ export class LineEditor {
   }
 
   clear(): void {
-    this.buffer = "";
+    this._buf = "";
     this.cursor = 0;
     this.pendingSeq = "";
     this.inPaste = false;
+    this.pasteAccum = "";
+    this.pastes.clear();
+    this.pasteCounter = 0;
     this.historyIndex = -1;
     this.savedBuffer = "";
   }
@@ -186,11 +266,10 @@ export class LineEditor {
   historyBack(): LineEditAction | null {
     if (this.historyIndex + 1 >= this.history.length) return null;
     if (this.historyIndex === -1) {
-      this.savedBuffer = this.buffer; // save current input
+      this.savedBuffer = this.text; // save resolved current input
     }
     this.historyIndex++;
-    this.buffer = this.history[this.historyIndex]!;
-    this.cursor = this.buffer.length;
+    this.setText(this.history[this.historyIndex]!);
     return { action: "changed" };
   }
 
@@ -199,11 +278,10 @@ export class LineEditor {
     if (this.historyIndex <= -1) return null;
     this.historyIndex--;
     if (this.historyIndex === -1) {
-      this.buffer = this.savedBuffer;
+      this.setText(this.savedBuffer);
     } else {
-      this.buffer = this.history[this.historyIndex]!;
+      this.setText(this.history[this.historyIndex]!);
     }
-    this.cursor = this.buffer.length;
     return { action: "changed" };
   }
 
@@ -214,17 +292,17 @@ export class LineEditor {
   // and look it up here. To add a binding, add one entry.
 
   private readonly bindings: Record<string, () => LineEditAction | null> = {
-    "enter":         () => ({ action: "submit", buffer: this.buffer }),
+    "enter":         () => ({ action: "submit", buffer: this.text }),
     "ctrl+c":        () => ({ action: "cancel" }),
     "tab":           () => ({ action: "tab" }),
     "backspace":     () => this.deleteBackward(),
-    "ctrl+d":        () => this.buffer.length === 0 ? { action: "delete-empty" } : this.deleteForward(),
+    "ctrl+d":        () => this._buf.length === 0 ? { action: "delete-empty" } : this.deleteForward(),
     "ctrl+a":        () => this.moveTo(0),
-    "ctrl+e":        () => this.moveTo(this.buffer.length),
+    "ctrl+e":        () => this.moveTo(this._buf.length),
     "ctrl+b":        () => this.moveTo(this.cursor - 1),
     "ctrl+f":        () => this.moveTo(this.cursor + 1),
     "ctrl+u":        () => this.deleteRange(0, this.cursor),
-    "ctrl+k":        () => this.deleteRange(this.cursor, this.buffer.length),
+    "ctrl+k":        () => this.deleteRange(this.cursor, this._buf.length),
     "ctrl+w":        () => this.deleteWordBackward() ? { action: "changed" } : null,
     "alt+f":         () => this.wordForward() ? { action: "changed" } : null,
     "alt+b":         () => this.wordBackward() ? { action: "changed" } : null,
@@ -283,35 +361,49 @@ export class LineEditor {
   // ── Editing primitives ─────────────────────────────────────
 
   private insertAt(ch: string): LineEditAction {
-    this.buffer = this.buffer.slice(0, this.cursor) + ch + this.buffer.slice(this.cursor);
+    this._buf = this._buf.slice(0, this.cursor) + ch + this._buf.slice(this.cursor);
     this.cursor++;
     return { action: "changed" };
   }
 
   private moveTo(pos: number): LineEditAction | null {
-    const clamped = Math.max(0, Math.min(pos, this.buffer.length));
+    const clamped = Math.max(0, Math.min(pos, this._buf.length));
     if (clamped === this.cursor) return null;
     this.cursor = clamped;
     return { action: "changed" };
   }
 
   private deleteBackward(): LineEditAction | null {
-    if (this.buffer.length === 0) return { action: "delete-empty" };
+    if (this._buf.length === 0) return { action: "delete-empty" };
     if (this.cursor <= 0) return null;
-    this.buffer = this.buffer.slice(0, this.cursor - 1) + this.buffer.slice(this.cursor);
+    // If deleting a paste placeholder, also remove the paste entry
+    const deleted = this._buf[this.cursor - 1]!;
+    if (isPUA(deleted)) {
+      this.pastes.delete(deleted.charCodeAt(0) - PUA_BASE);
+    }
+    this._buf = this._buf.slice(0, this.cursor - 1) + this._buf.slice(this.cursor);
     this.cursor--;
     return { action: "changed" };
   }
 
   private deleteForward(): LineEditAction | null {
-    if (this.cursor >= this.buffer.length) return null;
-    this.buffer = this.buffer.slice(0, this.cursor) + this.buffer.slice(this.cursor + 1);
+    if (this.cursor >= this._buf.length) return null;
+    const deleted = this._buf[this.cursor]!;
+    if (isPUA(deleted)) {
+      this.pastes.delete(deleted.charCodeAt(0) - PUA_BASE);
+    }
+    this._buf = this._buf.slice(0, this.cursor) + this._buf.slice(this.cursor + 1);
     return { action: "changed" };
   }
 
   private deleteRange(start: number, end: number): LineEditAction | null {
     if (start >= end) return null;
-    this.buffer = this.buffer.slice(0, start) + this.buffer.slice(end);
+    // Clean up any paste entries in the deleted range
+    for (let k = start; k < end; k++) {
+      const ch = this._buf[k]!;
+      if (isPUA(ch)) this.pastes.delete(ch.charCodeAt(0) - PUA_BASE);
+    }
+    this._buf = this._buf.slice(0, start) + this._buf.slice(end);
     this.cursor = start;
     return { action: "changed" };
   }
@@ -354,7 +446,7 @@ export class LineEditor {
         if (params.includes(";")) {
           if (this.wordForward()) actions.push({ action: "changed" });
         } else {
-          if (this.cursor < this.buffer.length) { this.cursor++; actions.push({ action: "changed" }); }
+          if (this.cursor < this._buf.length) { this.cursor++; actions.push({ action: "changed" }); }
         }
         break;
       case "D": // Left (or modified left: 1;3D, 1;5D = word left)
@@ -368,7 +460,7 @@ export class LineEditor {
         if (this.cursor > 0) { this.cursor = 0; actions.push({ action: "changed" }); }
         break;
       case "F": // End
-        if (this.cursor < this.buffer.length) { this.cursor = this.buffer.length; actions.push({ action: "changed" }); }
+        if (this.cursor < this._buf.length) { this.cursor = this._buf.length; actions.push({ action: "changed" }); }
         break;
       case "Z": // Shift+Tab (legacy CSI sequence)
         actions.push({ action: "shift+tab" });
@@ -381,14 +473,34 @@ export class LineEditor {
       case "~": // Extended keys: Delete (3~), bracket paste (200~/201~), etc.
         if (params === "3") {
           // Delete key: delete char under cursor
-          if (this.cursor < this.buffer.length) {
-            this.buffer = this.buffer.slice(0, this.cursor) + this.buffer.slice(this.cursor + 1);
+          if (this.cursor < this._buf.length) {
+            const deleted = this._buf[this.cursor]!;
+            if (isPUA(deleted)) this.pastes.delete(deleted.charCodeAt(0) - PUA_BASE);
+            this._buf = this._buf.slice(0, this.cursor) + this._buf.slice(this.cursor + 1);
             actions.push({ action: "changed" });
           }
         } else if (params === "200") {
           this.inPaste = true;
+          this.pasteAccum = "";
         } else if (params === "201") {
           this.inPaste = false;
+          if (this.pasteAccum) {
+            const lines = this.pasteAccum.split("\n");
+            if (lines.length <= 1) {
+              // Single-line paste — inline directly
+              this._buf = this._buf.slice(0, this.cursor) + this.pasteAccum + this._buf.slice(this.cursor);
+              this.cursor += this.pasteAccum.length;
+            } else {
+              // Multi-line paste — store and insert placeholder
+              const id = this.pasteCounter++;
+              this.pastes.set(id, this.pasteAccum);
+              const placeholder = String.fromCharCode(PUA_BASE + id);
+              this._buf = this._buf.slice(0, this.cursor) + placeholder + this._buf.slice(this.cursor);
+              this.cursor++;
+            }
+            this.pasteAccum = "";
+            actions.push({ action: "changed" });
+          }
         }
         break;
       // All other CSI sequences — silently ignored
@@ -402,22 +514,22 @@ export class LineEditor {
   private wordBackward(): boolean {
     if (this.cursor === 0) return false;
     let pos = this.cursor;
-    // Skip spaces
-    while (pos > 0 && this.buffer[pos - 1] === " ") pos--;
+    // Skip PUA placeholders and spaces
+    while (pos > 0 && (this._buf[pos - 1] === " " || isPUA(this._buf[pos - 1]!))) pos--;
     // Skip word chars
-    while (pos > 0 && this.buffer[pos - 1] !== " ") pos--;
+    while (pos > 0 && this._buf[pos - 1] !== " " && !isPUA(this._buf[pos - 1]!)) pos--;
     if (pos === this.cursor) return false;
     this.cursor = pos;
     return true;
   }
 
   private wordForward(): boolean {
-    if (this.cursor >= this.buffer.length) return false;
+    if (this.cursor >= this._buf.length) return false;
     let pos = this.cursor;
-    // Skip word chars
-    while (pos < this.buffer.length && this.buffer[pos] !== " ") pos++;
-    // Skip spaces
-    while (pos < this.buffer.length && this.buffer[pos] === " ") pos++;
+    // Skip word chars and PUA placeholders
+    while (pos < this._buf.length && this._buf[pos] !== " " && !isPUA(this._buf[pos]!)) pos++;
+    // Skip spaces and PUA
+    while (pos < this._buf.length && (this._buf[pos] === " " || isPUA(this._buf[pos]!))) pos++;
     if (pos === this.cursor) return false;
     this.cursor = pos;
     return true;
@@ -427,15 +539,25 @@ export class LineEditor {
     if (this.cursor === 0) return false;
     const start = this.cursor;
     this.wordBackward();
-    this.buffer = this.buffer.slice(0, this.cursor) + this.buffer.slice(start);
+    // Clean up paste entries
+    for (let k = this.cursor; k < start; k++) {
+      const ch = this._buf[k]!;
+      if (isPUA(ch)) this.pastes.delete(ch.charCodeAt(0) - PUA_BASE);
+    }
+    this._buf = this._buf.slice(0, this.cursor) + this._buf.slice(start);
     return true;
   }
 
   private deleteWordForward(): boolean {
-    if (this.cursor >= this.buffer.length) return false;
+    if (this.cursor >= this._buf.length) return false;
     const start = this.cursor;
     this.wordForward();
-    this.buffer = this.buffer.slice(0, start) + this.buffer.slice(this.cursor);
+    // Clean up paste entries
+    for (let k = start; k < this.cursor; k++) {
+      const ch = this._buf[k]!;
+      if (isPUA(ch)) this.pastes.delete(ch.charCodeAt(0) - PUA_BASE);
+    }
+    this._buf = this._buf.slice(0, start) + this._buf.slice(this.cursor);
     this.cursor = start;
     return true;
   }
