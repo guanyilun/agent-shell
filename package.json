@@ -30,6 +30,10 @@
       "types": "./dist/extension-loader.d.ts",
       "default": "./dist/extension-loader.js"
     },
+    "./extensions": {
+      "types": "./dist/extensions/index.d.ts",
+      "default": "./dist/extensions/index.js"
+    },
     "./utils/stream-transform": {
       "types": "./dist/utils/stream-transform.d.ts",
       "default": "./dist/utils/stream-transform.js"

@@ -13,6 +13,8 @@
  */
 import { createCore, type AgentShellCore } from "agent-sh";
 import { loadExtensions } from "agent-sh/extension-loader";
+import { loadBuiltinExtensions } from "agent-sh/extensions";
+import { getSettings } from "agent-sh/settings";
 import type { ContentBlock } from "agent-sh/types";
 
 // ── JSON-RPC types ──────────────────────────────────────────────────
@@ -269,6 +271,9 @@ let activePromptRequestId: number | string | null = null;
 // Track always-allowed permission kinds
 const alwaysAllowed = new Set<string>();
 
+// Track in-flight async operations so stdin end can wait
+let pendingOp: Promise<void> = Promise.resolve();
+
 // ── Wire agent-sh events → ACP notifications ───────────────────────
 
 function wireEvents(core: AgentShellCore): void {
@@ -398,9 +403,30 @@ async function handleSessionNew(id: number | string, params: Record<string, unkn
     });
     wireEvents(core);
 
-    // Load extensions (ads, openrouter, etc.) before activating backend
     const extCtx = core.extensionContext({ quit: () => process.exit(0) });
-    await loadExtensions(extCtx);
+    const settings = getSettings();
+
+    // Load built-in extensions first (agent-backend, slash-commands, etc.)
+    // Skip TUI-only extensions that don't apply in headless mode
+    const headlessDisabled = [
+      "tui-renderer",
+      "file-autocomplete",
+      "terminal-buffer",
+      "overlay-agent",
+      ...(settings.disabledBuiltins ?? []),
+    ];
+    await loadBuiltinExtensions(extCtx, headlessDisabled);
+
+    // Load user extensions with a timeout (some may hang in headless mode)
+    const TIMEOUT_MS = 10000;
+    await Promise.race([
+      loadExtensions(extCtx),
+      new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error(`Extension loading timeout after ${TIMEOUT_MS}ms`)), TIMEOUT_MS),
+      ),
+    ]).catch((err) => {
+      process.stderr.write(`Warning: ${err instanceof Error ? err.message : err}\n`);
+    });
 
     core.activateBackend();
   }
@@ -477,7 +503,9 @@ function dispatch(msg: JsonRpcRequest): void {
       handleInitialize(id!);
       break;
     case "session/new":
-      handleSessionNew(id!, params ?? {});
+      pendingOp = handleSessionNew(id!, params ?? {}).catch((err) => {
+        sendError(id!, -32603, err instanceof Error ? err.message : String(err));
+      });
       break;
     case "session/prompt":
       handleSessionPrompt(id!, params ?? {});
@@ -527,13 +555,17 @@ process.stdin.on("data", (chunk: string) => {
   }
 });
 
-process.stdin.on("end", () => {
+process.stdin.on("end", async () => {
+  // Wait for any in-flight async operations (e.g. session/new) to settle
+  await pendingOp;
   core?.kill();
   process.exit(0);
 });
 
-// Suppress unhandled rejections from surfacing as noise on stderr
-process.on("unhandledRejection", () => {});
+// Log unhandled rejections to stderr (don't crash, but don't swallow silently)
+process.on("unhandledRejection", (err) => {
+  process.stderr.write(`[ash-acp-bridge] unhandled rejection: ${err instanceof Error ? err.message : err}\n`);
+});
 
 // Redirect stderr from agent-sh internals so it doesn't pollute the protocol
 // (agent-shell reads stdout only; stderr goes to its log)
