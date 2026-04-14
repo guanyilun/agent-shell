@@ -1,6 +1,6 @@
 # ash-acp-bridge
 
-ACP (Agent Client Protocol) server that wraps agent-sh's headless core, allowing [agent-shell](https://github.com/xenodium/agent-shell) (Emacs) to use ash as a backend.
+ACP (Agent Client Protocol) server that wraps agent-sh's headless core, allowing any ACP-compatible client to use ash as a backend.
 
 ## Setup
 
@@ -12,22 +12,6 @@ npm run build    # or use `npx tsx src/index.ts` for dev
 
 ## Usage
 
-### Emacs (agent-shell)
-
-Add to your config:
-
-```elisp
-(require 'agent-shell-agentsh)
-
-;; If not on PATH, set the command explicitly:
-;; (setq agent-shell-agentsh-acp-command '("/path/to/ash-acp-bridge"))
-
-;; Launch it:
-M-x agent-shell-agentsh-start-agent
-```
-
-### CLI flags
-
 ```bash
 ash-acp-bridge                          # use ~/.agent-sh/settings.json defaults
 ash-acp-bridge --model gpt-4o           # override model
@@ -37,7 +21,7 @@ ash-acp-bridge --provider anthropic     # override provider
 ## How it works
 
 ```
-agent-shell (Emacs)
+ACP client
     ↕ JSON-RPC over stdin/stdout (ACP)
 ash-acp-bridge
     ↕ EventBus

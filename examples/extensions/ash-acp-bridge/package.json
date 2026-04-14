@@ -1,7 +1,7 @@
 {
   "name": "ash-acp-bridge",
   "version": "0.1.0",
-  "description": "ACP server that wraps agent-sh's headless core for use with agent-shell (Emacs)",
+  "description": "ACP server that wraps agent-sh's headless core for any ACP-compatible client",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
