@@ -5,6 +5,9 @@
  * inside vim, htop, or ssh. Composites a floating response box on top
  * of the current terminal content.
  *
+ * Uses createRemoteSession to route all agent output (rendered markdown,
+ * tool calls, etc.) into the floating panel via the compositor.
+ *
  * Requires: npm install @xterm/headless@5.5.0 @xterm/addon-serialize@0.13.0
  *
  * Usage:
@@ -14,13 +17,10 @@
  *   cp examples/extensions/overlay-agent.ts ~/.agent-sh/extensions/
  */
 import type { ExtensionContext } from "agent-sh/types";
+import type { RenderSurface } from "agent-sh/utils/compositor.js";
 import { formatScreenContext } from "agent-sh/utils/terminal-buffer.js";
 
-const BOLD = "\x1b[1m";
-const CYAN = "\x1b[36m";
-const RESET = "\x1b[0m";
-
-export default function activate({ bus, advise, createFloatingPanel, terminalBuffer }: ExtensionContext): void {
+export default function activate({ bus, advise, createFloatingPanel, createRemoteSession, terminalBuffer }: ExtensionContext): void {
   const panel = createFloatingPanel({
     trigger: "\x1c", // Ctrl+\
     dimBackground: true,
@@ -34,37 +34,37 @@ export default function activate({ bus, advise, createFloatingPanel, terminalBuf
     );
   }
 
+  // ── Surface backed by the floating panel ───────────────────
+  const surface: RenderSurface = {
+    write(text: string) { panel.appendText(text); },
+    writeLine(line: string) { panel.appendLine(line); },
+    get columns() { return panel.computeGeometry().contentW; },
+  };
+
   // ── Panel lifecycle ────────────────────────────────────────
+  type Session = ReturnType<typeof createRemoteSession>;
+  let session: Session | null = null;
+
   panel.handlers.advise("panel:submit", (_next, query: string) => {
+    if (session) session.close();
+    session = createRemoteSession({
+      surface,
+      suppressQueryBox: true,
+      interactive: true,
+    });
     panel.setActive();
-    panel.appendLine(`${CYAN}${BOLD}❯${RESET} ${query}`);
+    panel.appendLine(`\x1b[36m\x1b[1m❯\x1b[0m ${query}`);
     panel.appendLine("");
-    bus.emit("agent:submit", { query });
-  });
-
-  // ── Stream agent response into panel ───────────────────────
-  bus.on("agent:response-chunk", (e) => {
-    if (!panel.active) return;
-    for (const block of e.blocks) {
-      if (block.type === "text" && block.text) {
-        panel.appendText(block.text);
-      }
-    }
-  });
-
-  bus.on("agent:tool-started", (e) => {
-    if (!panel.active) return;
-    panel.appendLine(`▶ ${e.title}${e.displayDetail ? " " + e.displayDetail : ""}`);
-  });
-
-  bus.on("agent:tool-completed", (e) => {
-    if (!panel.active) return;
-    const mark = e.exitCode === 0 ? " ✓" : ` ✗ exit ${e.exitCode}`;
-    panel.updateLastLine((line) => line + mark);
+    session.submit(query);
   });
 
   bus.on("agent:processing-done", () => {
-    if (!panel.active) return;
+    if (!session) return;
     panel.setDone();
+  });
+
+  panel.handlers.advise("panel:dismiss", (next) => {
+    if (session) { session.close(); session = null; }
+    return next();
   });
 }
