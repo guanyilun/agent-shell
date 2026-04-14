@@ -2,26 +2,30 @@
 
 agent-sh is a shell with a pluggable AI backend. The shell is the product — the agent is a bus-driven component that self-wires to events.
 
-## Design Philosophy: Headless Core + Pluggable Backends
+## Design Philosophy: Pure Kernel + Everything Is an Extension
 
-The core (`createCore()`) is a frontend-agnostic kernel — it wires up the EventBus, ContextManager, and an AgentBackend with zero knowledge of terminals, PTYs, or rendering. The interactive terminal is one frontend built on top.
+The core (`createCore()`) is a frontend-agnostic kernel — it wires up the EventBus, ContextManager, HandlerRegistry, and Compositor with zero knowledge of terminals, PTYs, LLMs, or rendering. **The core has no agent and no LLM client.** The built-in agent backend, provider management, TUI rendering, and all other features are loaded as extensions.
 
 ```
-createCore({ apiKey, baseURL, model }) — frontend-agnostic kernel:
+createCore() — pure kernel:
   │     EventBus          — typed pub/sub + transform pipelines
   │     ContextManager    — exchange recording, context assembly
-  │     AgentBackend      — bus-driven, self-wiring (AgentLoop or extension-provided)
-  │     LlmClient         — shared OpenAI-compat SDK wrapper
+  │     HandlerRegistry   — named function registry (define/advise/call)
+  │     Compositor        — routes named render streams to surfaces
+  │     Multi-backend     — coordinates which agent backend is active
   │
 index.ts — interactive terminal frontend:
   │     Shell             — PTY lifecycle (delegates to InputHandler + OutputParser)
   │
-  ├── Built-in extensions:
-  │     tuiRenderer       — markdown rendering, inline diffs, thinking display, spinner
-  │     slashCommands     — /help, /model, /thinking, /compact, /context
-  │     fileAutocomplete  — @ file path completion
-  │     shellRecall       — shell_recall terminal interception
-  │     commandSuggest    — fix suggestions on failed commands (fast-path LLM)
+  ├── Built-in extensions (loaded via declarative manifest, individually disableable):
+  │     agent-backend     — LLM provider resolution, LlmClient, AgentLoop ("ash" backend)
+  │     tui-renderer      — markdown rendering, inline diffs, thinking display, spinner
+  │     slash-commands    — /help, /model, /thinking, /compact, /context
+  │     file-autocomplete — @ file path completion
+  │     shell-recall      — shell_recall terminal interception
+  │     command-suggest   — fix suggestions on failed commands (fast-path LLM)
+  │     terminal-buffer   — terminal_read + terminal_keys tools
+  │     overlay-agent     — Ctrl+\ floating overlay agent
   │
   ├── Shared utilities:
   │     palette           — semantic color system (accent, success, warning, error, muted)
@@ -32,18 +36,21 @@ index.ts — interactive terminal frontend:
   │     stream-transform  — content block transforms for response pipeline
   │
   └── User extensions (opt-in, loaded from -e flag / settings.json / extensions dir):
-        e.g. interactive-prompts, solarized-theme, latex-images
+        e.g. interactive-prompts, solarized-theme, latex-images, peer-mesh
 ```
 
 All components communicate exclusively through typed bus events. The backend has no reference to Shell — it emits lifecycle events and the TUI subscribes. Input flows the same way: any frontend emits `agent:submit` and the backend handles it.
+
+Built-in extensions are loaded from a declarative manifest and can be individually disabled via the `disabledBuiltins` setting in `~/.agent-sh/settings.json`. This means even the built-in agent can be disabled (e.g., for users who only use extension backends like Claude Code).
 
 **The core works without any frontend.** See [Library](library.md) for embedding agent-sh in your own apps.
 
 ## How It Works
 
 1. agent-sh spawns a real PTY running your shell (zsh or bash, with your full rc config) and sets up raw stdin passthrough
-2. It creates the agent backend (AgentLoop or extension-provided) which self-wires to bus events
-3. All keyboard input goes directly to the PTY — zero latency, full terminal compatibility
+2. Built-in extensions load (including the agent backend, which registers via `agent:register-backend`), then user extensions
+3. `activateBackend()` wires the chosen backend to bus events
+4. All keyboard input goes directly to the PTY — zero latency, full terminal compatibility
 4. When you type `>` at the start of a line, agent-sh intercepts and enters agent input mode
 5. On Enter, the query is emitted as `agent:submit` and the agent decides which tools to use
 6. The backend handles the query — streaming LLM responses, executing tools, emitting events. Read-only tools run in parallel; permission-requiring tools run sequentially.
@@ -78,15 +85,17 @@ With the internal agent, both are built-in tools. Extension backends can impleme
 
 ## Agent Backend
 
-The agent backend is a bus-driven component. Core creates it and holds a reference for lifecycle only — all communication flows through events.
+The agent backend is a bus-driven component that registers via `agent:register-backend`. The core's multi-backend coordinator manages which backend is active — it has no knowledge of any specific backend's internals.
 
 ### Internal Agent (AgentLoop)
 
-The default backend. Uses the `openai` SDK to call any OpenAI-compatible API directly. See [Internal Agent](agent.md) for the full guide — the query flow, tool loop, context assembly, streaming, and built-in tools.
+The default backend, loaded as a built-in extension (`src/extensions/agent-backend.ts`). It resolves LLM providers from settings, creates an `LlmClient`, builds the mode list for model cycling, and creates an `AgentLoop` that uses the `openai` SDK to call any OpenAI-compatible API. See [Internal Agent](agent.md) for the full guide.
+
+The agent-backend extension also exposes the `LlmClient` via the handler registry (`llm:get-client`) so other extensions (like `command-suggest`) can make fast-path LLM calls.
 
 ### Extension Backends
 
-Extensions can replace the built-in backend entirely by emitting `agent:register-backend` during activation. This is how you integrate external agents, custom protocols, or alternative LLM providers that don't follow the OpenAI API. See [Extensions: Custom Agent Backends](extensions.md#custom-agent-backends) for the full protocol and a working example.
+Extensions can register alternative backends by emitting `agent:register-backend` during activation — this is the same mechanism the built-in agent uses. See [Extensions: Custom Agent Backends](extensions.md#custom-agent-backends) for the full protocol and a working example.
 
 All backends emit the same bus events. The TUI, extensions, and library consumers don't know which backend is active.
 
@@ -107,50 +116,58 @@ The extension system provides several composable primitives for customizing agen
 ```
 agent-sh/
 ├── src/
-│   ├── index.ts            # Interactive terminal entry point (CLI args, Shell, extensions)
-│   ├── core.ts             # createCore() — frontend-agnostic kernel, library entry point
-│   ├── event-bus.ts        # Typed EventBus: emit/on, emitPipe, emitPipeAsync, emitTransform
-│   ├── shell.ts            # PTY lifecycle + wiring (InputHandler + OutputParser)
-│   ├── input-handler.ts    # Keyboard input, agent mode, bus-driven autocomplete
-│   ├── output-parser.ts    # OSC parsing, command boundary detection
-│   ├── context-manager.ts  # Shell exchange log, context assembly, recall API
-│   ├── token-budget.ts     # Unified token budget (splits context window between streams)
-│   ├── settings.ts         # User settings (~/.agent-sh/settings.json)
-│   ├── extension-loader.ts # Extension loading (-e, settings.json, extensions dir)
-│   ├── executor.ts         # Isolated child process execution (shared by shell + bash tool)
-│   ├── types.ts            # Shared type definitions
+│   ├── index.ts              # Interactive terminal entry point (CLI args, Shell, extensions)
+│   ├── core.ts               # createCore() — pure kernel (no LLM, no agent)
+│   ├── builtin-extensions.ts # Declarative manifest of built-in extensions
+│   ├── event-bus.ts          # Typed EventBus: emit/on, emitPipe, emitPipeAsync, emitTransform
+│   ├── shell.ts              # PTY lifecycle + wiring (InputHandler + OutputParser)
+│   ├── input-handler.ts      # Keyboard input, agent mode, bus-driven autocomplete
+│   ├── output-parser.ts      # OSC parsing, command boundary detection
+│   ├── context-manager.ts    # Shell exchange log, context assembly, recall API
+│   ├── token-budget.ts       # Unified token budget (splits context window between streams)
+│   ├── settings.ts           # User settings (~/.agent-sh/settings.json)
+│   ├── extension-loader.ts   # Extension loading (-e, settings.json, extensions dir)
+│   ├── executor.ts           # Isolated child process execution (shared by shell + bash tool)
+│   ├── types.ts              # Shared type definitions
 │   │
-│   ├── agent/              # Agent backends (behind AgentBackend interface)
-│   │   ├── types.ts        # AgentBackend, ToolDefinition, ToolResult
-│   │   ├── index.ts        # Factory: config → AgentLoop
-│   │   ├── agent-loop.ts   # Internal agent (OpenAI-compat API, bus-driven)
-│   │   ├── tool-registry.ts       # Map-based tool registry
-│   │   ├── conversation-state.ts  # Three-tier conversation: active + nuclear + history
-│   │   ├── nuclear-form.ts       # Nuclear one-liner generation + serialization
-│   │   ├── history-file.ts       # Persistent JSONL history file
-│   │   ├── system-prompt.ts       # System prompt builder
-│   │   └── tools/          # Built-in tool implementations
+│   ├── agent/                # Agent subsystem (used by agent-backend extension)
+│   │   ├── types.ts          # AgentBackend, ToolDefinition, ToolResult
+│   │   ├── agent-loop.ts     # Internal agent (OpenAI-compat API, bus-driven)
+│   │   ├── tool-registry.ts         # Map-based tool registry
+│   │   ├── conversation-state.ts    # Three-tier conversation: active + nuclear + history
+│   │   ├── nuclear-form.ts         # Nuclear one-liner generation + serialization
+│   │   ├── history-file.ts         # Persistent JSONL history file
+│   │   ├── system-prompt.ts         # System prompt builder
+│   │   └── tools/            # Built-in tool implementations
 │   │       ├── bash.ts, read-file.ts, write-file.ts, edit-file.ts
 │   │       ├── grep.ts, glob.ts, ls.ts, user-shell.ts, display.ts
 │   │
-│   ├── utils/              # Shared primitives
-│   │   ├── llm-client.ts   # OpenAI SDK wrapper (shared by agent loop + extensions)
+│   ├── utils/                # Shared primitives
+│   │   ├── llm-client.ts     # OpenAI SDK wrapper
+│   │   ├── handler-registry.ts # Named function registry (define/advise/call)
 │   │   ├── terminal-buffer.ts  # Headless xterm.js mirror of the terminal
 │   │   ├── floating-panel.ts   # Composited floating overlay with handler-based rendering
+│   │   ├── compositor.ts       # Routes named render streams to surfaces
 │   │   ├── palette.ts, ansi.ts, diff.ts, diff-renderer.ts
 │   │   ├── box-frame.ts, tool-display.ts, output-writer.ts
 │   │   ├── stream-transform.ts, markdown.ts, file-watcher.ts
-│   │   └── line-editor.ts, frame-renderer.ts, handler-registry.ts
+│   │   └── line-editor.ts, frame-renderer.ts
 │   │
-│   └── extensions/         # Built-in extensions
+│   └── extensions/           # Built-in extensions (loaded via manifest, disableable)
+│       ├── agent-backend.ts  # LLM provider resolution + AgentLoop registration
 │       ├── tui-renderer.ts, slash-commands.ts
 │       ├── file-autocomplete.ts, shell-recall.ts
-│       ├── shell-exec.ts, command-suggest.ts
+│       ├── command-suggest.ts
 │       ├── terminal-buffer.ts  # terminal_read + terminal_keys tools
 │       └── overlay-agent.ts    # Ctrl+\ floating overlay agent
 │
-├── examples/               # Example extensions and agent integrations
-├── docs/                   # Documentation
+├── examples/                 # Example extensions and agent integrations
+│   └── extensions/
+│       ├── peer-mesh.ts      # Cross-instance communication (Ray-inspired)
+│       ├── tmux-pane.ts      # Tmux side pane output/interactive modes
+│       ├── claude-code-bridge/  # Claude Code SDK backend
+│       └── pi-bridge/          # Pi agent backend
+├── docs/                     # Documentation
 ├── package.json
 └── tsconfig.json
 ```

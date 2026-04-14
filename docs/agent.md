@@ -1,6 +1,6 @@
 # Internal Agent
 
-The internal agent (AgentLoop) is the default backend when you provide `--api-key` and `--model`. It calls any OpenAI-compatible API directly, manages conversation state, and executes tools in a loop until the LLM is done.
+The internal agent (AgentLoop) is loaded as a built-in extension (`agent-backend`) when an LLM provider is configured. It resolves providers from settings and CLI flags, creates an `LlmClient`, and calls any OpenAI-compatible API directly. It manages conversation state and executes tools in a loop until the LLM is done.
 
 ## The Query Flow
 

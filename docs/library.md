@@ -9,7 +9,7 @@ agent-sh has two integration points. The difference: **extensions customize the 
 | **Use when** | You want to add features to the interactive terminal — themes, custom renderers, input modes, content transforms | You're building something else entirely — a REST API, Electron app, test harness, CI pipeline |
 | **You get** | `ExtensionContext` — bus, rendering hooks, `setPalette`, `createBlockTransform`, named handlers | `AgentShellCore` — bus, `query()`, lifecycle control (`activateBackend`, `kill`) |
 | **Who controls the frontend?** | The built-in TUI does; you decorate it | You do; there is no TUI |
-| **How to use** | Export an `activate` function, load with `-e` | Import `createCore()`, wire your own I/O |
+| **How to use** | Export an `activate` function, load with `-e` | Import `createCore()`, load extensions, wire your own I/O |
 
 If you're adding a Mermaid renderer or a custom slash command, write an extension. If you're building a web server that talks to an LLM, use the library.
 
@@ -17,11 +17,17 @@ If you're adding a Mermaid renderer or a custom slash command, write an extensio
 
 ```typescript
 import { createCore } from "agent-sh";
+import { loadBuiltinExtensions } from "agent-sh/builtin-extensions";
 
 const core = createCore({
   apiKey: process.env.OPENAI_API_KEY,
   model: "gpt-4o",
 });
+
+const extCtx = core.extensionContext({ quit: () => process.exit(0) });
+
+// Load the built-in agent backend + other built-in extensions
+await loadBuiltinExtensions(extCtx);
 
 // Subscribe to events
 core.bus.on("agent:response-chunk", ({ blocks }) => {
@@ -34,11 +40,12 @@ core.bus.onPipeAsync("permission:request", async (p) => {
   return { ...p, decision: { approved: true } };
 });
 
-// Send a query
+// Activate the backend, then send a query
+core.activateBackend();
 const response = await core.query("explain this codebase");
 ```
 
-`createCore()` returns a headless kernel — the event bus, context manager, and agent backend, with no terminal attached. You wire your own I/O by listening to bus events.
+`createCore()` returns a headless kernel — the event bus, context manager, handler registry, and compositor, with no terminal, LLM, or agent attached. You load extensions (including the agent backend) and wire your own I/O by listening to bus events.
 
 ## AgentShellCore API
 
@@ -46,22 +53,29 @@ const response = await core.query("explain this codebase");
 |---|---|
 | `bus` | The event bus — same one extensions use. See [Extensions: Event Bus](extensions.md#event-bus) |
 | `contextManager` | Access exchange history, working directory, context assembly |
-| `llmClient` | Shared LLM client for fast-path features (null if extension backend provides its own) |
+| `handlers` | Named handler registry for `define`/`advise`/`call` |
 | `query(text, opts?)` | Convenience wrapper: emits `agent:submit`, collects response chunks, resolves with the full text |
-| `activateBackend()` | Wires the agent backend to bus events. Call after loading any extensions |
-| `extensionContext(opts)` | Creates an `ExtensionContext` — use this to load extensions in library mode (optional) |
+| `activateBackend()` | Activates the chosen agent backend. Call after loading extensions |
+| `extensionContext(opts)` | Creates an `ExtensionContext` — use this to load extensions in library mode |
 | `cancel()` | Cancel the current agent request |
 | `kill()` | Clean shutdown |
 
 ## Loading Extensions in Library Mode
 
-Extensions aren't loaded automatically in library mode — you get a bare kernel. If you want them, opt in:
+Extensions aren't loaded automatically in library mode — you get a bare kernel with no agent. You must load extensions to get an agent backend:
 
 ```typescript
+import { createCore } from "agent-sh";
+import { loadBuiltinExtensions } from "agent-sh/builtin-extensions";
+
 const core = createCore({ apiKey: "...", model: "gpt-4o" });
 const extCtx = core.extensionContext({ quit: () => process.exit(0) });
 
-// Load specific extensions
+// Load built-in extensions (includes agent-backend, tui-renderer, etc.)
+// Optionally disable specific ones:
+await loadBuiltinExtensions(extCtx, ["tui-renderer", "overlay-agent"]);
+
+// Load your own extensions
 import myTheme from "./my-theme";
 myTheme(extCtx);
 
@@ -69,6 +83,6 @@ myTheme(extCtx);
 core.activateBackend();
 ```
 
-This is exactly what the CLI does internally: `createCore()` → load extensions → `activateBackend()`. The interactive terminal is just another layer on top of the same kernel.
+This is exactly what the CLI does internally: `createCore()` → load built-in extensions → load user extensions → `activateBackend()`. The interactive terminal is just another layer on top of the same kernel.
 
 See [Architecture](architecture.md) for details on the core design and EventBus.
