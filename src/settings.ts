@@ -94,6 +94,10 @@ export interface Settings {
   startupBanner?: boolean;
   /** Show a subtle agent-sh indicator in the shell prompt. */
   promptIndicator?: boolean;
+
+  // ── Built-in extensions ──────────────────────────────────
+  /** Names of built-in extensions to disable (e.g. ["command-suggest", "overlay-agent"]). */
+  disabledBuiltins?: string[];
 }
 
 const DEFAULTS: Required<Settings> = {
@@ -120,6 +124,7 @@ const DEFAULTS: Required<Settings> = {
   skillPaths: [],
   startupBanner: true,
   promptIndicator: true,
+  disabledBuiltins: [],
 };
 
 let cached: Settings | null = null;

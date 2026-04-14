@@ -1,6 +1,5 @@
 import type { EventBus, ContentBlock } from "./event-bus.js";
 import type { ContextManager } from "./context-manager.js";
-import type { LlmClient } from "./utils/llm-client.js";
 import type { ColorPalette } from "./utils/palette.js";
 import type { BlockTransformOptions, FencedBlockTransformOptions } from "./utils/stream-transform.js";
 import type { ToolDefinition } from "./agent/types.js";
@@ -78,8 +77,6 @@ export interface AgentShellConfig {
 export interface ExtensionContext {
   bus: EventBus;
   contextManager: ContextManager;
-  /** LLM client for fast-path features (null in ACP mode). */
-  llmClient: LlmClient | null;
   /** Stable per-instance identifier (4-char hex). */
   readonly instanceId: string;
   quit: () => void;

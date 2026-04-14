@@ -226,6 +226,8 @@ export interface ShellEvents {
   // Switch provider at runtime (slash command → core)
   "config:switch-provider": { provider: string };
 
+  // Query initial modes (sync pipe: agent backend extension → core)
+  "config:get-initial-modes": { modes: AgentMode[]; initialModeIndex: number };
   // Set modes (core → agent loop: after provider switch)
   "config:set-modes": { modes: AgentMode[] };
   // Append modes (core → agent loop: after provider register)
@@ -241,6 +243,13 @@ export interface ShellEvents {
     /** Provider supports the reasoning_effort parameter. Default: true. */
     supportsReasoningEffort?: boolean;
   };
+
+  // Tool/instruction registration (extension → active agent backend)
+  "agent:register-tool": { tool: import("./agent/types.js").ToolDefinition };
+  "agent:unregister-tool": { name: string };
+  "agent:get-tools": { tools: import("./agent/types.js").ToolDefinition[] };
+  "agent:register-instruction": { name: string; text: string };
+  "agent:remove-instruction": { name: string };
 
   // Autocomplete (sync pipe: extensions inspect buffer and append items)
   "autocomplete:request": {

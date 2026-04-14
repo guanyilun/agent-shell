@@ -134,7 +134,7 @@ function createRenderState(): RenderState {
 }
 
 export default function activate(ctx: ExtensionContext): void {
-  const { bus, llmClient, define, compositor } = ctx;
+  const { bus, define, compositor } = ctx;
   const s = createRenderState();
 
   /** Shorthand — get the current agent surface. */
@@ -553,7 +553,7 @@ export default function activate(ctx: ExtensionContext): void {
   }
 
   function showUserQuery(query: string): void {
-    const model = backendInfo?.model ?? llmClient?.model;
+    const model = backendInfo?.model;
     const backend = backendInfo?.name;
     let modelLabel: string | undefined;
     if (backend && model) {

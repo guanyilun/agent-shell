@@ -16,7 +16,7 @@ import type { EventBus, ShellEvents } from "../event-bus.js";
 import type { AgentMode } from "../types.js";
 import type { ContextManager } from "../context-manager.js";
 import type { LlmClient } from "../utils/llm-client.js";
-import type { HandlerRegistry } from "../utils/handler-registry.js";
+import type { HandlerFunctions } from "../utils/handler-registry.js";
 import { setMaxListeners } from "node:events";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -47,6 +47,16 @@ import { discoverProjectSkills } from "./skills.js";
 
 type PendingToolCall = ProtocolPendingToolCall;
 
+export interface AgentLoopConfig {
+  bus: EventBus;
+  contextManager: ContextManager;
+  llmClient: LlmClient;
+  handlers: HandlerFunctions;
+  modes?: AgentMode[];
+  initialModeIndex?: number;
+  compositor?: Compositor;
+}
+
 export class AgentLoop implements AgentBackend {
   private abortController: AbortController | null = null;
   private toolRegistry = new ToolRegistry();
@@ -57,26 +67,31 @@ export class AgentLoop implements AgentBackend {
   private modes: AgentMode[];
   private currentModeIndex = 0;
   private boundListeners: Array<{ event: string; fn: (...args: any[]) => void }> = [];
+  private ctorListeners: Array<{ event: string; fn: (...args: any[]) => void }> = [];
+  private ctorPipeListeners: Array<{ event: string; fn: (...args: any[]) => any }> = [];
   private lastProjectSkillNames = new Set<string>();
   private static readonly THINKING_LEVELS = ["off", "low", "medium", "high"];
 
+  private bus: EventBus;
+  private contextManager: ContextManager;
+  private llmClient: LlmClient;
+  private handlers: HandlerFunctions;
   private thinkingLevel = "off";
   private compositor: Compositor | null = null;
   private toolProtocol: ToolProtocol;
 
-  constructor(
-    private bus: EventBus,
-    private contextManager: ContextManager,
-    private llmClient: LlmClient,
-    private handlers: HandlerRegistry,
-    modeConfig?: AgentMode[],
-    initialModeIndex?: number,
-  ) {
+  constructor(config: AgentLoopConfig) {
+    this.bus = config.bus;
+    this.contextManager = config.contextManager;
+    this.llmClient = config.llmClient;
+    this.handlers = config.handlers;
+    this.compositor = config.compositor ?? null;
+
     // Default modes: just the configured model
-    this.modes = modeConfig ?? [
-      { model: llmClient.model },
+    this.modes = config.modes ?? [
+      { model: config.llmClient.model },
     ];
-    this.currentModeIndex = initialModeIndex ?? 0;
+    this.currentModeIndex = config.initialModeIndex ?? 0;
 
     // Unified token budget — adapts to current model's context window
     this.tokenBudget = new TokenBudget(this.currentMode.contextWindow);
@@ -92,6 +107,21 @@ export class AgentLoop implements AgentBackend {
 
     // Register handlers — extensions can advise these
     this.registerHandlers();
+
+    // Subscribe to bus-based tool/instruction registration from extensions.
+    // These must be in the constructor (not wire()) because extensions call
+    // registerTool() during activate(), before activateBackend() calls wire().
+    const onCtor = <K extends keyof ShellEvents>(event: K, fn: (payload: ShellEvents[K]) => void) => {
+      this.bus.on(event, fn);
+      this.ctorListeners.push({ event, fn });
+    };
+    onCtor("agent:register-tool", ({ tool }) => this.registerTool(tool));
+    onCtor("agent:unregister-tool", ({ name }) => this.unregisterTool(name));
+    onCtor("agent:register-instruction", ({ name, text }) => this.registerInstruction(name, text));
+    onCtor("agent:remove-instruction", ({ name }) => this.removeInstruction(name));
+    const getToolsPipe = () => ({ tools: this.getTools() });
+    this.bus.onPipe("agent:get-tools", getToolsPipe);
+    this.ctorPipeListeners.push({ event: "agent:get-tools", fn: getToolsPipe });
   }
 
   /** Subscribe to bus events — activates this backend. */
@@ -240,11 +270,6 @@ export class AgentLoop implements AgentBackend {
     this.boundListeners = [];
   }
 
-  /** Set compositor (called after construction, when compositor is available). */
-  setCompositor(compositor: Compositor): void {
-    this.compositor = compositor;
-  }
-
   /** Register a tool (used by extensions via ctx.registerTool). */
   registerTool(tool: ToolDefinition): void {
     this.toolRegistry.register(tool);
@@ -285,6 +310,16 @@ export class AgentLoop implements AgentBackend {
 
   kill(): void {
     this.cancel();
+    this.unwire();
+    // Clean up constructor-level bus subscriptions
+    for (const { event, fn } of this.ctorListeners) {
+      this.bus.off(event as any, fn);
+    }
+    this.ctorListeners = [];
+    for (const { event, fn } of this.ctorPipeListeners) {
+      this.bus.offPipe(event as any, fn);
+    }
+    this.ctorPipeListeners = [];
   }
 
   private cancel(): void {

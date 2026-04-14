@@ -1,15 +1,15 @@
 /**
  * Command suggestion extension (fast-path LLM feature).
  *
- * After a shell command fails (non-zero exit), uses llmClient.complete()
+ * After a shell command fails (non-zero exit), uses LlmClient.complete()
  * to suggest a fix. Shows the suggestion below the prompt.
  *
- * Only active when llmClient is available (internal agent mode).
+ * Only active when an LLM client is available (registered by agent-backend).
  */
 import type { ExtensionContext } from "../types.js";
+import type { LlmClient } from "../utils/llm-client.js";
 
-export default function activate({ bus, llmClient }: ExtensionContext): void {
-  if (!llmClient) return;
+export default function activate({ bus, call }: ExtensionContext): void {
 
   let suggesting = false;
 
@@ -17,6 +17,9 @@ export default function activate({ bus, llmClient }: ExtensionContext): void {
     if (exitCode === null || exitCode === 0) return;
     if (!command.trim()) return;
     if (suggesting) return; // don't stack suggestions
+
+    const llmClient = call("llm:get-client") as LlmClient | undefined;
+    if (!llmClient) return;
 
     suggesting = true;
 

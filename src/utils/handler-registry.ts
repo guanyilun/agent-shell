@@ -27,6 +27,13 @@ interface HandlerEntry {
   advisors: Advisor[];
 }
 
+/** The subset of HandlerRegistry methods available to extensions. */
+export interface HandlerFunctions {
+  define(name: string, fn: (...args: any[]) => any): void;
+  advise(name: string, advisor: (next: (...args: any[]) => any, ...args: any[]) => any): () => void;
+  call(name: string, ...args: any[]): any;
+}
+
 export class HandlerRegistry {
   private entries = new Map<string, HandlerEntry>();
 
