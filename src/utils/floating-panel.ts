@@ -927,6 +927,11 @@ export class FloatingPanel {
     }
     this.suppressNextRedraw = true;
 
+    // Re-check alt screen state: the program we overlaid may have exited
+    // (e.g. agent quit vim via terminal_keys) while the panel was active.
+    const stillInAltScreen = !this.usedAltScreen && !!this.buffer?.altScreen;
+    const programExited = !this.usedAltScreen && !stillInAltScreen;
+
     if (this.usedAltScreen) {
       process.stdout.write("\x1b[?1049l");
     }
@@ -942,9 +947,11 @@ export class FloatingPanel {
     this.ptyBuffer = "";
     this.bus.emit("shell:stdout-release", {});
 
-    if (!this.usedAltScreen) {
-      // TUI app was running (vim, htop, etc.) — we didn't enter our own
-      // alt screen, so the app needs SIGWINCH to repaint its UI.
+    if (stillInAltScreen || programExited) {
+      // Either a TUI app is still running and needs SIGWINCH to repaint,
+      // or the overlaid program exited (e.g. agent quit vim) and we
+      // discarded its stale buffer — SIGWINCH makes the shell redraw
+      // its prompt cleanly.
       const cols = process.stdout.columns || 80;
       const rows = process.stdout.rows || 24;
       this.bus.emit("shell:pty-resize", { cols, rows: rows - 1 });
