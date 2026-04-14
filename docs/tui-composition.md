@@ -233,6 +233,25 @@ export default function activate(ctx: ExtensionContext): void {
 
 The renderer doesn't know whether it's writing to stdout or a panel. The compositor resolves the target on each `surface()` call, so redirects take effect immediately — even mid-response.
 
+## Remote sessions
+
+For most extensions that route output to a different surface, use `createRemoteSession()` instead of manual compositor redirects. It bundles compositor routing, shell lifecycle advisors, and chrome suppression into one call:
+
+```typescript
+const session = ctx.createRemoteSession({
+  surface: panelSurface,
+  suppressQueryBox: true,   // session has own input
+  interactive: true,         // enable terminal_read/terminal_keys context
+});
+
+session.submit("what's on screen?");
+session.close();  // restores everything
+```
+
+See [Extensions: Remote Sessions](extensions.md#remote-sessions) for the full API.
+
+Use the compositor directly only when you need fine-grained control — e.g. redirecting a single sub-stream like `"agent:diff"` without affecting the rest.
+
 ## Relationship to other systems
 
 | System | Role | Compositor interaction |
@@ -241,6 +260,7 @@ The renderer doesn't know whether it's writing to stdout or a panel. The composi
 | **Handler registry** | Advisable render functions (`render:code-block`, etc.) | Handlers produce lines; compositor routes them to surfaces |
 | **FloatingPanel** | Screen compositing, input routing, alt-screen management | Panel provides the surface; compositor routes to it |
 | **MarkdownRenderer** | Streaming markdown → lines | Produces lines; tui-renderer drains them to compositor surface |
+| **RemoteSession** | High-level "route output elsewhere" primitive | Creates compositor redirects + lifecycle advisors in one call |
 
 The compositor sits between "produce lines" and "display lines". It doesn't affect *what* gets rendered — only *where*.
 
@@ -250,7 +270,8 @@ The compositor sits between "produce lines" and "display lines". It doesn't affe
 |---|---|
 | `src/utils/compositor.ts` | `RenderSurface`, `Compositor`, `DefaultCompositor`, `StdoutSurface` |
 | `src/extensions/tui-renderer.ts` | Main renderer — writes to compositor streams |
-| `src/extensions/overlay-agent.ts` | Redirects streams to floating panel |
+| `src/extensions/overlay-agent.ts` | Uses `createRemoteSession` to route to floating panel |
 | `src/utils/floating-panel.ts` | Panel screen management and content API |
-| `src/core.ts` | Creates compositor, registers default surfaces |
-| `src/types.ts` | `ExtensionContext.compositor` type |
+| `src/core.ts` | Creates compositor, registers default surfaces, implements `createRemoteSession` |
+| `src/types.ts` | `ExtensionContext.compositor`, `RemoteSession`, `RemoteSessionOptions` |
+| `examples/extensions/tmux-pane.ts` | Tmux side pane — `/split` and `/rsplit` using `createRemoteSession` |

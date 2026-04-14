@@ -62,6 +62,8 @@ TypeScript and JavaScript are both supported (`.ts`, `.tsx`, `.mts`, `.js`, `.mj
 | `call` | `(name, ...args) => any` | Call a named handler |
 | `terminalBuffer` | `TerminalBuffer \| null` | Shared headless xterm.js buffer mirroring PTY output (lazy singleton, null if `@xterm/headless` not installed) |
 | `createFloatingPanel` | `(config: FloatingPanelConfig) => FloatingPanel` | Create a floating panel overlay with composited rendering, input routing, and handler-based customization |
+| `compositor` | `Compositor` | Routes named render streams to surfaces. See [TUI Composition](tui-composition.md) |
+| `createRemoteSession` | `(opts: RemoteSessionOptions) => RemoteSession` | Create a remote session that routes agent output to a surface. See [Remote Sessions](#remote-sessions) |
 
 ## Extension Settings
 
@@ -678,6 +680,101 @@ open() → [input] → submit → [active] → setDone() → [input] (follow-up)
 **Screen restore**: On dismiss, the panel uses a SIGWINCH double-resize (resize to `rows-1`, then back to `rows`) to force the foreground program to fully repaint. This is necessary because ncurses ignores same-size SIGWINCH (`resizeterm` returns early when dimensions haven't changed), and ncurses's `curscr` is stale after the overlay drew on the terminal — a simple exit from alt screen would leave overlay artifacts in cells that ncurses considers unchanged.
 
 **Keyboard protocol support**: The trigger key is recognized in all encodings — raw control byte, xterm modifyOtherKeys (`\e[27;5;code~`), and kitty keyboard protocol (`\e[code;5u`). This ensures the trigger works inside vim and other programs that enable extended keyboard protocols.
+
+## Remote Sessions
+
+A remote session bundles all the wiring needed to route agent output away from stdout — compositor redirects, shell lifecycle advisors, and chrome suppression — into a single call. Use it when building side panes, web UIs, remote displays, or any extension where agent output should appear somewhere other than the main terminal.
+
+```typescript
+const session = ctx.createRemoteSession({
+  surface: mySurface,          // where output goes (RenderSurface)
+  suppressQueryBox: true,      // hide query box (session has own input)
+  interactive: true,           // set interactive-session context
+});
+
+session.submit("what's on screen?");  // submit a query
+session.close();                       // restore everything
+```
+
+### RemoteSessionOptions
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `surface` | `RenderSurface` | (required) | The surface to render agent output to |
+| `suppressBorders` | `boolean` | `true` | Suppress response top/bottom borders |
+| `suppressQueryBox` | `boolean` | `false` | Suppress the user query box (use when the session has its own input) |
+| `suppressUsage` | `boolean` | `true` | Suppress token usage stats line |
+| `interactive` | `boolean` | `false` | Add `interactive-session: true` to dynamic context (tells agent to use terminal_read/terminal_keys) |
+
+### What createRemoteSession handles
+
+Internally, a remote session:
+
+1. **Redirects render streams** — `"agent"`, `"query"`, `"status"` all route to the provided surface
+2. **Keeps the shell interactive** — advises `shell:on-processing-start` and `shell:on-processing-done` to skip pause/unpause
+3. **Suppresses chrome** — advises `tui:response-border`, `tui:render-user-query`, `tui:render-usage` based on options
+4. **Sets dynamic context** — advises `dynamic-context:build` to inject `interactive-session: true` when `interactive` is set
+
+Calling `session.close()` removes all advisors and restores all compositor routing in one call.
+
+### Example: tmux side pane
+
+```typescript
+// Output-only: queries from main shell, output in side pane
+const session = ctx.createRemoteSession({ surface });
+// session.close() when done
+
+// Interactive: side pane has own input prompt
+const session = ctx.createRemoteSession({
+  surface,
+  suppressQueryBox: true,
+  interactive: true,
+});
+conn.on("data", (d) => session.submit(d.toString().trim()));
+```
+
+### Example: overlay agent
+
+```typescript
+const session = ctx.createRemoteSession({
+  surface: panelSurface,
+  suppressQueryBox: true,
+  interactive: true,
+});
+session.submit(query);
+// ... later, on dismiss ...
+session.close();
+```
+
+## Shell Lifecycle Handlers
+
+The shell's behavior during agent processing is controlled by two advisable handlers. Extensions advise these to change how the shell responds when the agent starts and stops working.
+
+### `shell:on-processing-start`
+
+Default: pauses the shell (blocks PTY output and input) while the agent works. This is correct when agent output shares stdout with the terminal.
+
+```typescript
+// Skip pause — agent output goes to a separate surface
+ctx.advise("shell:on-processing-start", (next) => {
+  if (mySessionActive) return;  // don't pause
+  return next();                // default: pause
+});
+```
+
+### `shell:on-processing-done`
+
+Default: unpauses the shell, re-enters agent input mode or redraws the shell prompt.
+
+```typescript
+// Skip prompt redraw — already handled by the extension
+ctx.advise("shell:on-processing-done", (next) => {
+  if (mySessionActive) return;  // skip
+  return next();                // default: unpause + redraw
+});
+```
+
+> **Note:** `createRemoteSession()` advises both of these automatically. You only need to advise them directly if you're building custom lifecycle behavior without using remote sessions.
 
 ## Rendering Architecture
 
