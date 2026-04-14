@@ -28,7 +28,7 @@ import { HistoryFile } from "./history-file.js";
 import { STATIC_SYSTEM_PROMPT, buildDynamicContext } from "./system-prompt.js";
 import type { Compositor } from "../utils/compositor.js";
 import { createToolUI } from "../utils/tool-interactive.js";
-import { TokenBudget } from "../token-budget.js";
+import { TokenBudget } from "./token-budget.js";
 import { getSettings } from "../settings.js";
 import { createToolProtocol, type ToolProtocol, type PendingToolCall as ProtocolPendingToolCall, type ToolResult as ProtocolToolResult } from "./tool-protocol.js";
 

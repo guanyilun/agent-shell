@@ -1,11 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { visibleLen } from "./utils/ansi.js";
-import { palette as p } from "./utils/palette.js";
-import { LineEditor } from "./utils/line-editor.js";
-import { CONFIG_DIR, getSettings } from "./settings.js";
-import type { EventBus } from "./event-bus.js";
-import type { InputModeConfig } from "./types.js";
+import { visibleLen } from "../utils/ansi.js";
+import { palette as p } from "../utils/palette.js";
+import { LineEditor } from "../utils/line-editor.js";
+import { CONFIG_DIR, getSettings } from "../settings.js";
+import type { EventBus } from "../event-bus.js";
+import type { InputModeConfig } from "../types.js";
 
 const HISTORY_FILE = path.join(CONFIG_DIR, "history");
 

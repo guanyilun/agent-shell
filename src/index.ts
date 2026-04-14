@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import * as path from "node:path";
-import { Shell } from "./shell.js";
+import { Shell } from "./shell/shell.js";
 import { createCore } from "./core.js";
 import { palette as p } from "./utils/palette.js";
-import { loadBuiltinExtensions } from "./builtin-extensions.js";
+import { loadBuiltinExtensions } from "./extensions/index.js";
 import { loadExtensions } from "./extension-loader.js";
 import { getSettings } from "./settings.js";
 import { discoverSkills } from "./agent/skills.js";

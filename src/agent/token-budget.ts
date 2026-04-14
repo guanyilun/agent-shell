@@ -8,7 +8,7 @@
  * The budget accounts for fixed overhead (system prompt, tool definitions,
  * response reserve) and divides the remaining space by a configurable ratio.
  */
-import { getSettings } from "./settings.js";
+import { getSettings } from "../settings.js";
 
 /** Overhead estimates (tokens). */
 const SYSTEM_PROMPT_OVERHEAD = 800;

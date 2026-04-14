@@ -118,26 +118,27 @@ agent-sh/
 ├── src/
 │   ├── index.ts              # Interactive terminal entry point (CLI args, Shell, extensions)
 │   ├── core.ts               # createCore() — pure kernel (no LLM, no agent)
-│   ├── builtin-extensions.ts # Declarative manifest of built-in extensions
 │   ├── event-bus.ts          # Typed EventBus: emit/on, emitPipe, emitPipeAsync, emitTransform
-│   ├── shell.ts              # PTY lifecycle + wiring (InputHandler + OutputParser)
-│   ├── input-handler.ts      # Keyboard input, agent mode, bus-driven autocomplete
-│   ├── output-parser.ts      # OSC parsing, command boundary detection
 │   ├── context-manager.ts    # Shell exchange log, context assembly, recall API
-│   ├── token-budget.ts       # Unified token budget (splits context window between streams)
 │   ├── settings.ts           # User settings (~/.agent-sh/settings.json)
 │   ├── extension-loader.ts   # Extension loading (-e, settings.json, extensions dir)
 │   ├── executor.ts           # Isolated child process execution (shared by shell + bash tool)
 │   ├── types.ts              # Shared type definitions
 │   │
+│   ├── shell/                # Interactive terminal frontend (PTY, input, output)
+│   │   ├── shell.ts          # PTY lifecycle + wiring (InputHandler + OutputParser)
+│   │   ├── input-handler.ts  # Keyboard input, agent mode, bus-driven autocomplete
+│   │   └── output-parser.ts  # OSC parsing, command boundary detection
+│   │
 │   ├── agent/                # Agent subsystem (used by agent-backend extension)
 │   │   ├── types.ts          # AgentBackend, ToolDefinition, ToolResult
 │   │   ├── agent-loop.ts     # Internal agent (OpenAI-compat API, bus-driven)
-│   │   ├── tool-registry.ts         # Map-based tool registry
-│   │   ├── conversation-state.ts    # Three-tier conversation: active + nuclear + history
-│   │   ├── nuclear-form.ts         # Nuclear one-liner generation + serialization
-│   │   ├── history-file.ts         # Persistent JSONL history file
-│   │   ├── system-prompt.ts         # System prompt builder
+│   │   ├── token-budget.ts   # Unified token budget (splits context window between streams)
+│   │   ├── tool-registry.ts  # Map-based tool registry
+│   │   ├── conversation-state.ts  # Three-tier conversation: active + nuclear + history
+│   │   ├── nuclear-form.ts   # Nuclear one-liner generation + serialization
+│   │   ├── history-file.ts   # Persistent JSONL history file
+│   │   ├── system-prompt.ts  # System prompt builder
 │   │   └── tools/            # Built-in tool implementations
 │   │       ├── bash.ts, read-file.ts, write-file.ts, edit-file.ts
 │   │       ├── grep.ts, glob.ts, ls.ts, user-shell.ts, display.ts
@@ -154,6 +155,7 @@ agent-sh/
 │   │   └── line-editor.ts, frame-renderer.ts
 │   │
 │   └── extensions/           # Built-in extensions (loaded via manifest, disableable)
+│       ├── index.ts          # Declarative manifest + loader
 │       ├── agent-backend.ts  # LLM provider resolution + AgentLoop registration
 │       ├── tui-renderer.ts, slash-commands.ts
 │       ├── file-autocomplete.ts, shell-recall.ts

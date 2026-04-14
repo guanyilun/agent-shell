@@ -17,7 +17,7 @@ If you're adding a Mermaid renderer or a custom slash command, write an extensio
 
 ```typescript
 import { createCore } from "agent-sh";
-import { loadBuiltinExtensions } from "agent-sh/builtin-extensions";
+import { loadBuiltinExtensions } from "agent-sh/extensions";
 
 const core = createCore({
   apiKey: process.env.OPENAI_API_KEY,
@@ -66,7 +66,7 @@ Extensions aren't loaded automatically in library mode — you get a bare kernel
 
 ```typescript
 import { createCore } from "agent-sh";
-import { loadBuiltinExtensions } from "agent-sh/builtin-extensions";
+import { loadBuiltinExtensions } from "agent-sh/extensions";
 
 const core = createCore({ apiKey: "...", model: "gpt-4o" });
 const extCtx = core.extensionContext({ quit: () => process.exit(0) });

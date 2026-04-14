@@ -2,11 +2,11 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as pty from "node-pty";
-import type { EventBus } from "./event-bus.js";
+import type { EventBus } from "../event-bus.js";
 import { InputHandler, type InputContext } from "./input-handler.js";
 import { OutputParser } from "./output-parser.js";
-import { getSettings } from "./settings.js";
-import { RefCounter } from "./utils/output-writer.js";
+import { getSettings } from "../settings.js";
+import { RefCounter } from "../utils/output-writer.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export interface ShellHandlers {
