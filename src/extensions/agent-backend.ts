@@ -13,13 +13,14 @@ import type { ExtensionContext } from "../types.js";
 import type { AgentMode, AgentShellConfig } from "../types.js";
 import { AgentLoop } from "../agent/agent-loop.js";
 import { LlmClient } from "../utils/llm-client.js";
-import { resolveProvider, getProviderNames, type ResolvedProvider } from "../settings.js";
+import { resolveProvider, getProviderNames, getSettings, type ResolvedProvider } from "../settings.js";
 
 export default function agentBackend(ctx: ExtensionContext): void {
   const { bus } = ctx;
 
   // ── Resolve providers ──────────────────────────────────────
   const config: AgentShellConfig = ctx.call("config:get-shell-config") ?? {};
+  const settings = getSettings();
 
   let activeProvider: ResolvedProvider | null = null;
   const providerRegistry = new Map<string, ResolvedProvider>();
@@ -29,7 +30,7 @@ export default function agentBackend(ctx: ExtensionContext): void {
     if (p) providerRegistry.set(name, p);
   }
 
-  const providerName = config.provider;
+  const providerName = config.provider ?? settings.defaultProvider;
   if (providerName) {
     activeProvider = providerRegistry.get(providerName) ?? null;
   }
