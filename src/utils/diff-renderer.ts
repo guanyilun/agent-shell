@@ -589,6 +589,94 @@ function truncateText(text: string, maxWidth: number): string {
   return text.slice(0, i) + p.reset + "…";
 }
 
+// ── Truncation ──────────────────────────────────────────────────
+
+/**
+ * Trim context lines from hunks so the rendered output fits within a budget.
+ * Change lines are never removed — only the surrounding context shrinks.
+ */
+function trimHunksToFit(hunks: DiffHunk[], maxLines: number): DiffHunk[] {
+  // Count change lines across all hunks
+  let changeCount = 0;
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line.type !== "context") changeCount++;
+    }
+  }
+
+  // Separators between hunks
+  const separators = Math.max(0, hunks.length - 1);
+
+  // How many context lines can we afford?
+  const contextBudget = Math.max(0, maxLines - changeCount - separators);
+
+  // Count total context to see if trimming is needed
+  let totalContext = 0;
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line.type === "context") totalContext++;
+    }
+  }
+
+  if (totalContext <= contextBudget) return hunks;
+
+  // Determine how many context lines to keep per side of each change.
+  // Binary-search for the largest per-side context that fits.
+  let lo = 0;
+  let hi = 3; // original context size from groupHunks
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (countContextWithLimit(hunks, mid) <= contextBudget) lo = mid;
+    else hi = mid - 1;
+  }
+
+  return rebuildHunks(hunks, lo);
+}
+
+/** Count how many context lines remain if we keep at most `ctx` per side of each change. */
+function countContextWithLimit(hunks: DiffHunk[], ctx: number): number {
+  let count = 0;
+  for (const hunk of hunks) {
+    const lines = hunk.lines;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i]!.type !== "context") continue;
+      // Keep this context line if it's within `ctx` of any change
+      let nearChange = false;
+      for (let d = 1; d <= ctx; d++) {
+        if ((i - d >= 0 && lines[i - d]!.type !== "context") ||
+            (i + d < lines.length && lines[i + d]!.type !== "context")) {
+          nearChange = true;
+          break;
+        }
+      }
+      if (nearChange) count++;
+    }
+  }
+  return count;
+}
+
+/** Rebuild hunks keeping only context lines within `ctx` distance of a change. */
+function rebuildHunks(hunks: DiffHunk[], ctx: number): DiffHunk[] {
+  return hunks.map((hunk) => {
+    const lines = hunk.lines;
+    const kept: DiffLine[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i]!.type !== "context") {
+        kept.push(lines[i]!);
+        continue;
+      }
+      for (let d = 1; d <= ctx; d++) {
+        if ((i - d >= 0 && lines[i - d]!.type !== "context") ||
+            (i + d < lines.length && lines[i + d]!.type !== "context")) {
+          kept.push(lines[i]!);
+          break;
+        }
+      }
+    }
+    return { lines: kept };
+  });
+}
+
 // ── Public API ───────────────────────────────────────────────────
 
 /** Select display mode based on available terminal width. */
@@ -611,17 +699,21 @@ export function renderDiff(diff: DiffResult, opts: DiffRenderOptions): string[] 
     return [header, ...renderSummary(diff)];
   }
 
+  // Trim context lines from hunks if the diff would exceed the budget,
+  // so that actual changes are always visible.
+  const trimmed: DiffResult = { ...diff, hunks: trimHunksToFit(diff.hunks, maxLines) };
+
   let bodyLines: string[];
   switch (mode) {
     case "split":
-      bodyLines = renderSplit(diff, opts);
+      bodyLines = renderSplit(trimmed, opts);
       break;
     case "unified":
-      bodyLines = renderUnified(diff, opts);
+      bodyLines = renderUnified(trimmed, opts);
       break;
   }
 
-  // Truncation
+  // Final safety net — if still over budget, simple tail truncation.
   if (bodyLines.length > maxLines) {
     const overflow = bodyLines.length - maxLines;
     bodyLines = bodyLines.slice(0, maxLines);

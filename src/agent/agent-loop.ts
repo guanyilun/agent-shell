@@ -537,7 +537,7 @@ export class AgentLoop implements AgentBackend {
             if (typeof args.content === "string") {
               // write_file
               newContent = args.content;
-            } else if (typeof args.old_text === "string" && typeof args.new_text === "string" && oldContent) {
+            } else if (typeof args.old_text === "string" && typeof args.new_text === "string" && oldContent !== null) {
               // edit_file
               newContent = oldContent.replace(
                 (args.old_text as string).replace(/\r\n/g, "\n"),
