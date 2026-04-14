@@ -27,6 +27,7 @@ import * as settingsMod from "./settings.js";
 import { resolveProvider, getProviderNames, type ResolvedProvider } from "./settings.js";
 import { HandlerRegistry } from "./utils/handler-registry.js";
 import { TerminalBuffer } from "./utils/terminal-buffer.js";
+import crypto from "node:crypto";
 import { FloatingPanel, type FloatingPanelConfig } from "./utils/floating-panel.js";
 import { DefaultCompositor, StdoutSurface } from "./utils/compositor.js";
 
@@ -63,6 +64,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
   const bus = new EventBus();
   const handlers = new HandlerRegistry();
   const contextManager = new ContextManager(bus, handlers);
+  const instanceId = crypto.randomBytes(2).toString("hex");
 
   // ── Resolve provider ─────────────────────────────────────────
   const settings = settingsMod.getSettings();
@@ -365,6 +367,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
         bus,
         contextManager,
         llmClient,
+        instanceId,
         quit: opts.quit,
         setPalette,
         createBlockTransform: (o) => streamTransform.createBlockTransform(bus, o),

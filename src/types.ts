@@ -80,6 +80,8 @@ export interface ExtensionContext {
   contextManager: ContextManager;
   /** LLM client for fast-path features (null in ACP mode). */
   llmClient: LlmClient | null;
+  /** Stable per-instance identifier (4-char hex). */
+  readonly instanceId: string;
   quit: () => void;
   /** Override color palette slots for theming. */
   setPalette: (overrides: Partial<ColorPalette>) => void;
