@@ -328,6 +328,17 @@ export class EventBus {
     listeners.push(fn);
   }
 
+  /** Remove a transform listener from a pipeline event. */
+  offPipe<K extends keyof ShellEvents>(
+    event: K,
+    fn: PipeListener<ShellEvents[K]>,
+  ): void {
+    const listeners = this.pipeListeners.get(event);
+    if (!listeners) return;
+    const idx = listeners.indexOf(fn);
+    if (idx !== -1) listeners.splice(idx, 1);
+  }
+
   /**
    * Emit a pipeline event — each registered pipe listener receives the
    * output of the previous one. Returns the final transformed payload.
@@ -341,7 +352,16 @@ export class EventBus {
     if (!listeners) return payload;
     let result = payload;
     for (const fn of listeners) {
-      result = fn(result);
+      try {
+        const out = fn(result);
+        if (out && typeof (out as any).then === "function") {
+          console.error(`[event-bus] Warning: async handler in sync pipe "${String(event)}" — use onPipeAsync instead`);
+          continue;
+        }
+        result = out;
+      } catch (err) {
+        console.error(`[event-bus] Pipe handler error in "${String(event)}":`, err instanceof Error ? err.message : err);
+      }
     }
     return result;
   }

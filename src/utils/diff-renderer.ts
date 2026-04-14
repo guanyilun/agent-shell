@@ -332,7 +332,9 @@ function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
 
     for (let i = 0; i < hunk.lines.length; i++) {
       const line = hunk.lines[i];
-      const no = String(line.oldNo ?? line.newNo ?? "").padStart(noW);
+      const no = String(
+        line.type === "removed" ? (line.oldNo ?? "") : (line.newNo ?? line.oldNo ?? ""),
+      ).padStart(noW);
 
       if (line.type === "context") {
         const raw = truncateText(line.text, lineTextW);

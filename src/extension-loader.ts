@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ExtensionContext } from "./types.js";
+import type { EventBus } from "./event-bus.js";
 import { CONFIG_DIR, getSettings } from "./settings.js";
 
 const EXT_DIR = path.join(CONFIG_DIR, "extensions");
@@ -20,6 +21,75 @@ async function ensureTsSupport(): Promise<void> {
     // tsx not available — TS extensions will fail with a clear error
   }
 }
+
+// ── Scoped context for reloadable extensions ────────────────────
+
+type Cleanup = () => void;
+
+/**
+ * Wrap an ExtensionContext to track all registrations (bus.on, bus.onPipe,
+ * advise, command:register). Returns the wrapped context and a dispose()
+ * function that tears down everything registered through it.
+ */
+function createScopedContext(ctx: ExtensionContext): { scoped: ExtensionContext; dispose: () => void } {
+  const cleanups: Cleanup[] = [];
+  const bus = ctx.bus;
+
+  const scopedBus: EventBus = Object.create(bus);
+
+  // Track bus.on registrations
+  scopedBus.on = ((event: any, fn: any) => {
+    bus.on(event, fn);
+    cleanups.push(() => bus.off(event, fn));
+  }) as typeof bus.on;
+
+  // Track bus.onPipe registrations
+  scopedBus.onPipe = ((event: any, fn: any) => {
+    bus.onPipe(event, fn);
+    cleanups.push(() => bus.offPipe(event, fn));
+  }) as typeof bus.onPipe;
+
+  // Track advise registrations
+  const scopedAdvise: typeof ctx.advise = (name, wrapper) => {
+    const unadvise = ctx.advise(name, wrapper);
+    cleanups.push(unadvise);
+    return unadvise;
+  };
+
+  // Track instruction registrations
+  const scopedRegisterInstruction: typeof ctx.registerInstruction = (name, text) => {
+    ctx.registerInstruction(name, text);
+    cleanups.push(() => ctx.removeInstruction(name));
+  };
+
+  // Track tool registrations
+  const scopedRegisterTool: typeof ctx.registerTool = (tool) => {
+    ctx.registerTool(tool);
+    cleanups.push(() => ctx.unregisterTool(tool.name));
+  };
+
+  const scoped: ExtensionContext = {
+    ...ctx,
+    bus: scopedBus,
+    advise: scopedAdvise,
+    registerInstruction: scopedRegisterInstruction,
+    removeInstruction: ctx.removeInstruction,
+    registerTool: scopedRegisterTool,
+    unregisterTool: ctx.unregisterTool,
+  };
+
+  const dispose = () => {
+    for (const fn of cleanups) {
+      try { fn(); } catch { /* ignore */ }
+    }
+    cleanups.length = 0;
+  };
+
+  return { scoped, dispose };
+}
+
+// Track disposers for user extensions so reload can tear them down
+const extensionDisposers = new Map<string, () => void>();
 
 
 /**
@@ -54,26 +124,8 @@ export async function loadExtensions(
   }
 
   // 3. ~/.agent-sh/extensions/ directory
-  try {
-    const entries = await fs.readdir(EXT_DIR, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(EXT_DIR, entry.name);
-      // Resolve symlinks to check if they point to directories
-      const isDir = entry.isDirectory() ||
-        (entry.isSymbolicLink() && (await fs.stat(fullPath)).isDirectory());
-      if (isDir) {
-        // Directory extension: look for index.{ts,js,mjs,...}
-        const indexFile = await findIndex(fullPath);
-        if (indexFile) {
-          specifiers.push(indexFile);
-        }
-      } else if (SCRIPT_EXTS.some((ext) => entry.name.endsWith(ext))) {
-        specifiers.push(fullPath);
-      }
-    }
-  } catch {
-    // Directory doesn't exist — no user extensions
-  }
+  const userSpecifiers = await discoverUserExtensions();
+  specifiers.push(...userSpecifiers);
 
   // Deduplicate
   const seen = new Set<string>();
@@ -83,14 +135,51 @@ export async function loadExtensions(
     return true;
   });
 
-  // Load each extension
+  // Load each extension (user extensions get scoped contexts for reloadability)
+  const loaded = await loadSpecifiers(unique, ctx, false, userSpecifiers);
+  return loaded;
+}
+
+async function discoverUserExtensions(): Promise<string[]> {
+  const specifiers: string[] = [];
+  try {
+    const entries = await fs.readdir(EXT_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(EXT_DIR, entry.name);
+      const isDir = entry.isDirectory() ||
+        (entry.isSymbolicLink() && (await fs.stat(fullPath)).isDirectory());
+      if (isDir) {
+        const indexFile = await findIndex(fullPath);
+        if (indexFile) specifiers.push(indexFile);
+      } else if (SCRIPT_EXTS.some((ext) => entry.name.endsWith(ext))) {
+        specifiers.push(fullPath);
+      }
+    }
+  } catch {
+    // Directory doesn't exist — no user extensions
+  }
+  return specifiers;
+}
+
+async function loadSpecifiers(
+  specifiers: string[],
+  ctx: ExtensionContext,
+  bustCache: boolean,
+  userSpecifiers?: string[],
+): Promise<string[]> {
+  const userSet = new Set(userSpecifiers ?? []);
   const loaded: string[] = [];
-  for (const specifier of unique) {
+  for (const specifier of specifiers) {
     try {
-      const importPath = await resolveSpecifier(specifier);
+      let importPath = await resolveSpecifier(specifier);
 
       if (TS_EXTS.some((ext) => importPath.endsWith(ext))) {
         await ensureTsSupport();
+      }
+      // Append timestamp query to bust Node's module cache on reload
+      if (bustCache) {
+        const sep = importPath.includes("?") ? "&" : "?";
+        importPath += `${sep}t=${Date.now()}`;
       }
       const mod = await import(importPath);
       // tsx may double-wrap default exports: mod.default.default
@@ -100,10 +189,20 @@ export async function loadExtensions(
           ? mod.default.default
           : mod.activate;
       if (typeof activate === "function") {
-        activate(ctx);
-        // Extract a short name from the specifier
         const base = path.basename(specifier).replace(/\.(ts|js|mjs|mts|tsx)$/, "");
         const name = base === "index" ? path.basename(path.dirname(specifier)) : base;
+
+        // User extensions get a scoped context so /reload can tear them down
+        if (userSet.has(specifier)) {
+          // Dispose previous load if reloading
+          extensionDisposers.get(name)?.();
+
+          const { scoped, dispose } = createScopedContext(ctx);
+          activate(scoped);
+          extensionDisposers.set(name, dispose);
+        } else {
+          activate(ctx);
+        }
         loaded.push(name);
       }
     } catch (err) {
@@ -112,8 +211,16 @@ export async function loadExtensions(
       });
     }
   }
-
   return loaded;
+}
+
+/**
+ * Reload user extensions (from ~/.agent-sh/extensions/).
+ * Tears down old registrations, busts the module cache, and re-activates.
+ */
+export async function reloadExtensions(ctx: ExtensionContext): Promise<string[]> {
+  const specifiers = await discoverUserExtensions();
+  return loadSpecifiers(specifiers, ctx, true, specifiers);
 }
 
 /**

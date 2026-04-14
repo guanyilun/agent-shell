@@ -110,10 +110,11 @@ export function toNuclearEntries(
 
 /** Format a nuclear entry as a display line (for in-context injection). */
 export function formatNuclearLine(entry: NuclearEntry): string {
-  const time = new Date(entry.ts).toLocaleTimeString("en-US", {
-    hour: "2-digit", minute: "2-digit", hour12: false,
-  });
-  return `#${entry.seq} ${time} ${entry.sum}`;
+  const d = new Date(entry.ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  // ISO-ish compact: 2026-04-13 14:05
+  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `#${entry.seq} [${stamp}] ${entry.sum}`;
 }
 
 // ── Serialization (JSONL for history file) ────────────────────────

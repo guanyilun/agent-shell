@@ -168,6 +168,13 @@ async function main(): Promise<void> {
     const shellEnv = await captureShellEnvAsync(shellPath);
     if (Object.keys(shellEnv).length > 0) {
       Object.assign(baseEnv, mergeShellEnv(baseEnv, shellEnv));
+      // Expose captured env vars to process.env so extensions can read them.
+      // Only add vars not already present to avoid clobbering runtime state.
+      for (const [k, v] of Object.entries(baseEnv)) {
+        if (process.env[k] === undefined) {
+          process.env[k] = v;
+        }
+      }
       if (process.env.DEBUG) {
         console.error('[agent-sh] Shell environment captured');
       }

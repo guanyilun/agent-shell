@@ -74,6 +74,7 @@ Configure via `~/.agent-sh/settings.json`. See the [Usage Guide](docs/usage.md#c
 - [Context Management](docs/context-management.md) — three-tier history, token budget, design philosophy
 - [Architecture](docs/architecture.md) — design philosophy, component overview, project structure
 - [Extensions](docs/extensions.md) — event bus, content transforms, custom backends, theming
+- [TUI Composition](docs/tui-composition.md) — compositor, render surfaces, stream routing
 - [Library Usage](docs/library.md) — embedding agent-sh in your own apps
 - [Troubleshooting](docs/troubleshooting.md) — common errors and debug mode
 

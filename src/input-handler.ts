@@ -149,7 +149,7 @@ export class InputHandler {
       }
       this.promptWrappedLines = totalTermLines - 1;
 
-      // Position cursor: find which line and column the cursor is on
+      // Position cursor: find which logical line and column the cursor is on
       let charsRemaining = this.editor.cursor;
       let cursorLine = 0;
       for (let li = 0; li < lines.length; li++) {
@@ -161,13 +161,33 @@ export class InputHandler {
         cursorLine = li + 1;
       }
 
-      // Move from end position to cursor position
-      const linesFromEnd = lines.length - 1 - cursorLine;
-      if (linesFromEnd > 0) {
-        process.stdout.write(`\x1b[${linesFromEnd}A`);
+      // Compute terminal rows for cursor positioning (not logical lines)
+      // Each logical line may wrap across multiple terminal rows.
+      const cursorColAbs = promptVisLen + charsRemaining;
+      const cursorTermRow = Math.floor(cursorColAbs / termW);
+
+      // Count terminal rows occupied by lines after cursor's logical line
+      let termRowsAfterCursor = 0;
+      for (let li = cursorLine + 1; li < lines.length; li++) {
+        const lineVisLen = promptVisLen + lines[li]!.length;
+        termRowsAfterCursor += lineVisLen > 0 ? Math.ceil(lineVisLen / termW) : 1;
       }
-      const cursorCol = (cursorLine === 0 ? promptVisLen : promptVisLen) + charsRemaining;
-      process.stdout.write(`\r\x1b[${cursorCol}C`);
+
+      // Also count remaining terminal rows on cursor's own logical line
+      const cursorLineVisLen = promptVisLen + lines[cursorLine]!.length;
+      const cursorLineTotalRows = cursorLineVisLen > 0 ? Math.ceil(cursorLineVisLen / termW) : 1;
+      const rowsAfterCursorInLine = cursorLineTotalRows - 1 - cursorTermRow;
+
+      const totalRowsFromEnd = termRowsAfterCursor + rowsAfterCursorInLine;
+      if (totalRowsFromEnd > 0) {
+        process.stdout.write(`\x1b[${totalRowsFromEnd}A`);
+      }
+      const cursorCol = cursorColAbs % termW;
+      if (cursorCol > 0) {
+        process.stdout.write(`\r\x1b[${cursorCol}C`);
+      } else {
+        process.stdout.write(`\r`);
+      }
     }
   }
 

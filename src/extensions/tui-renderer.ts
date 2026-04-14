@@ -28,7 +28,7 @@ import type { DiffResult } from "../utils/diff.js";
 import { getSettings } from "../settings.js";
 import type { ExtensionContext } from "../types.js";
 import type { ToolResultDisplay, ToolResultBody } from "../agent/types.js";
-import { StdoutWriter } from "../utils/output-writer.js";
+import type { RenderSurface } from "../utils/compositor.js";
 
 /** Encode a PNG buffer as a terminal inline image escape sequence. */
 function encodeImageForTerminal(data: Buffer): string | null {
@@ -134,13 +134,11 @@ function createRenderState(): RenderState {
 }
 
 export default function activate(ctx: ExtensionContext): void {
-  const { bus, llmClient, define } = ctx;
-  const writer = new StdoutWriter();
+  const { bus, llmClient, define, compositor } = ctx;
   const s = createRenderState();
 
-  // Suppress all TUI output while stdout is held (overlay extensions)
-  bus.on("shell:stdout-hold", () => { writer.hold(); });
-  bus.on("shell:stdout-release", () => { writer.release(); });
+  /** Shorthand — get the current agent surface. */
+  function out(): RenderSurface { return compositor.surface("agent"); }
 
   // Gate: other extensions (e.g. overlay) can advise this to suppress
   // TUI rendering of agent output while they own the display.
@@ -290,7 +288,7 @@ export default function activate(ctx: ExtensionContext): void {
           break;
         case "raw":
           flushForRaw();
-          writer.write(block.escape);
+          out().write(block.escape);
           break;
       }
     }
@@ -480,7 +478,7 @@ export default function activate(ctx: ExtensionContext): void {
   });
   bus.on("ui:error", (e) => showError(e.message));
   bus.on("ui:suggestion", (e) => {
-    writer.write(`${p.dim}💡 ${e.text}${p.reset}\n`);
+    compositor.surface("status").writeLine(`${p.dim}💡 ${e.text}${p.reset}`);
   });
 
   // ── Rendering functions ─────────────────────────────────────
@@ -488,7 +486,7 @@ export default function activate(ctx: ExtensionContext): void {
   function drain(): void {
     if (!s.renderer) return;
     for (const line of s.renderer.drainLines()) {
-      writer.write(line + "\n");
+      out().write(line + "\n");
       // Track whether we just emitted a blank line (for contentGap dedup).
       // Lines from the renderer are indented ("  "), so a blank line is "  " or empty.
       lastEmittedLineBlank = line.trimEnd() === "" || line.trimEnd().replace(/\x1b\[[^m]*m/g, "").trim() === "";
@@ -496,7 +494,7 @@ export default function activate(ctx: ExtensionContext): void {
   }
 
   function startAgentResponse(): void {
-    s.renderer = new MarkdownRenderer(writer.columns);
+    s.renderer = new MarkdownRenderer(out().columns);
     s.hadToolCalls = false;
     s.renderer.printTopBorder();
     drain();
@@ -515,7 +513,7 @@ export default function activate(ctx: ExtensionContext): void {
       const gap: string | null = ctx.call("tui:render-content-gap", s.lastContentKind, kind);
       if (gap) {
         if (s.renderer) { s.renderer.flush(); drain(); }
-        writer.write(gap);
+        out().write(gap);
       }
     }
     s.lastContentKind = kind;
@@ -538,7 +536,7 @@ export default function activate(ctx: ExtensionContext): void {
       s.renderer.flush();
       s.renderer.printBottomBorder();
       drain();
-      writer.write("\n");
+      out().write("\n");
       s.renderer = null;
     }
   }
@@ -555,10 +553,11 @@ export default function activate(ctx: ExtensionContext): void {
       modelLabel = `${p.bold}${backend}${p.reset}`;
     }
 
-    const framed: string[] = ctx.call("tui:render-user-query", query, writer.columns, modelLabel);
-    writer.write("\n");
+    const querySurface = compositor.surface("query");
+    const framed: string[] = ctx.call("tui:render-user-query", query, querySurface.columns, modelLabel);
+    querySurface.write("\n");
     for (const line of framed) {
-      writer.write(line + "\n");
+      querySurface.writeLine(line);
     }
   }
 
@@ -570,7 +569,7 @@ export default function activate(ctx: ExtensionContext): void {
       s.isThinking = false;
       if (s.showThinkingText && s.renderer) {
         s.renderer.flush();
-        const w = Math.min(80, writer.columns);
+        const w = Math.min(80, out().columns);
         s.renderer.writeLine(`${p.dim}${"─".repeat(w)}${p.reset}`);
         drain();
       }
@@ -609,7 +608,7 @@ export default function activate(ctx: ExtensionContext): void {
   });
 
   function writeCodeBlock(language: string, code: string): void {
-    ctx.call("render:code-block", language, code, writer.columns);
+    ctx.call("render:code-block", language, code, out().columns);
   }
 
   function flushForRaw(): void {
@@ -624,7 +623,7 @@ export default function activate(ctx: ExtensionContext): void {
     flushForRaw();
     const escape = encodeImageForTerminal(data);
     if (escape) {
-      writer.write("  " + escape + "\n");
+      out().write("  " + escape + "\n");
     }
   });
 
@@ -654,7 +653,7 @@ export default function activate(ctx: ExtensionContext): void {
   /** Render a diff as framed box lines (pure — no TUI state side effects). */
   function renderDiffBody(diff: DiffResult, filePath: string, width: number): string[] {
     if (diff.isIdentical) return [];
-    const boxW = Math.min(120, width);
+    const boxW = Math.min(120, width - 2);  // -2 for writeLine indent
     const contentW = boxW - 4;
 
     const diffLines = renderDiff(diff, {
@@ -760,13 +759,13 @@ export default function activate(ctx: ExtensionContext): void {
       locations: extra?.locations,
       rawInput: extra?.rawInput,
       displayDetail: extra?.displayDetail,
-    }, writer.columns);
+    }, out().columns);
 
     if (extra?.groupContinuation && lines.length > 0) {
       // Swap the colored kind icon for a muted tree connector,
       // and strip the tool name prefix — show detail only.
       const detail = extra.displayDetail || extractDetail(extra);
-      const maxW = Math.max(1, writer.columns - 6);
+      const maxW = Math.max(1, out().columns - 6);
       const text = detail.length > maxW ? detail.slice(0, maxW - 1) + "…" : detail;
       lines[0] = detail
         ? `${p.muted}├${p.reset} ${p.dim}${text}${p.reset}`
@@ -786,7 +785,7 @@ export default function activate(ctx: ExtensionContext): void {
         drain();
         s.toolLineOpen = false;
       } else {
-        writer.write(`  ${batchPrefix}${lines[lines.length - 1]}`);
+        out().write(`  ${batchPrefix}${lines[lines.length - 1]}`);
         s.toolLineOpen = true;
       }
     }
@@ -802,7 +801,7 @@ export default function activate(ctx: ExtensionContext): void {
     const mark: string = ctx.call("tui:render-tool-complete", exitCode, elapsed, resultDisplay?.summary);
 
     if (s.toolLineOpen && s.commandOutputLineCount === 0) {
-      writer.write(` ${mark}\n`);
+      out().write(` ${mark}\n`);
       s.toolLineOpen = false;
     } else {
       closeToolLine();
@@ -819,7 +818,7 @@ export default function activate(ctx: ExtensionContext): void {
 
   function renderResultBody(body: ToolResultBody): void {
     if (!s.renderer) return;
-    const lines: string[] = ctx.call("render:result-body", body, writer.columns) ?? [];
+    const lines: string[] = ctx.call("render:result-body", body, out().columns) ?? [];
     for (const line of lines) {
       s.renderer!.writeLine(line);
     }
@@ -848,7 +847,7 @@ export default function activate(ctx: ExtensionContext): void {
         s.spinner.frame++;
         const elapsed = formatElapsed(Date.now() - s.spinner.startTime);
         const line: string = ctx.call("tui:render-spinner", s.spinnerLabel, frame, elapsed, s.spinnerOpts.hint);
-        writer.write(`\r  ${line}\x1b[K`);
+        out().write(`\r  ${line}\x1b[K`);
       }
     }, 80);
   }
@@ -859,14 +858,14 @@ export default function activate(ctx: ExtensionContext): void {
       s.spinnerInterval = null;
     }
     if (s.spinner) {
-      writer.write("\r\x1b[2K");
+      out().write("\r\x1b[2K");
       s.spinner = null;
     }
   }
 
   function closeToolLine(): void {
     if (s.toolLineOpen) {
-      writer.write("\n");
+      out().write("\n");
       s.toolLineOpen = false;
     }
   }
@@ -975,7 +974,7 @@ export default function activate(ctx: ExtensionContext): void {
     const lines: string[] = ctx.call(
       "render:result-body",
       { kind: "diff", diff, filePath } satisfies ToolResultBody,
-      writer.columns,
+      out().columns,
     ) ?? [];
 
     if (!s.renderer) startAgentResponse();
@@ -998,7 +997,7 @@ export default function activate(ctx: ExtensionContext): void {
 
     if (!entry.expandedLines) {
       const { filePath, diff } = entry;
-      const boxW = Math.min(120, writer.columns);
+      const boxW = Math.min(120, out().columns - 2);  // -2 for writeLine indent
       const contentW = boxW - 4;
 
       const diffLines = renderDiff(diff, {
@@ -1019,9 +1018,9 @@ export default function activate(ctx: ExtensionContext): void {
       });
     }
 
-    writer.write("\n");
+    out().write("\n");
     for (const line of entry.expandedLines) {
-      writer.write(line + "\n");
+      out().write(line + "\n");
     }
   }
 
@@ -1029,12 +1028,12 @@ export default function activate(ctx: ExtensionContext): void {
     const lines: string[] = ctx.call(
       "render:result-body",
       { kind: "diff", diff: entry.diff, filePath: entry.filePath } satisfies ToolResultBody,
-      writer.columns,
+      out().columns,
     ) ?? [];
 
-    writer.write("\n");
+    out().write("\n");
     for (const line of lines) {
-      writer.write(line + "\n");
+      out().write(line + "\n");
     }
   }
 
@@ -1065,7 +1064,7 @@ export default function activate(ctx: ExtensionContext): void {
     } else {
       if (s.renderer) {
         s.renderer.flush();
-        const w = Math.min(80, writer.columns);
+        const w = Math.min(80, out().columns);
         s.renderer.writeLine(`${p.dim}${"─".repeat(w)}${p.reset}`);
         drain();
       }
@@ -1074,10 +1073,11 @@ export default function activate(ctx: ExtensionContext): void {
   }
 
   function showError(message: string): void {
-    writer.write("\n" + ctx.call("tui:render-error", message) + "\n");
+    const s = compositor.surface("status");
+    s.write("\n" + ctx.call("tui:render-error", message) + "\n");
   }
 
   function showInfo(message: string): void {
-    writer.write(ctx.call("tui:render-info", message) + "\n");
+    compositor.surface("status").writeLine(ctx.call("tui:render-info", message));
   }
 }

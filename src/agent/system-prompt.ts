@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ToolDefinition } from "./types.js";
 import type { ContextManager } from "../context-manager.js";
 import { discoverSkills } from "./skills.js";
 
@@ -68,28 +67,8 @@ Use this to run complete, non-interactive commands in the user's real shell. Use
 - Any command where the user wants real side effects
 - Set return_output=true only if you need to inspect the result
 
-**Terminal interaction** (terminal_read, terminal_keys):
-Use these to observe and interact with what is currently on the user's terminal screen.
-- terminal_read: see what the user sees (current screen contents, cursor position)
-- terminal_keys: send keystrokes as if the user typed them
-Use for: driving interactive programs (vim, htop, less, ssh, REPLs), answering questions
-about what's on screen, or typing at the shell prompt when a program is already running.
-Do NOT use user_shell to interact with an already-running program — use these instead.
-
 Default to scratchpad tools for your own investigation. Use display when the
 user is the intended audience. Use user_shell when the command has real effects.
-Use terminal_read/terminal_keys when interacting with what's already on screen.
-
-# Interactive Overlay Sessions
-
-When the dynamic context includes \`interactive-session: true\`, the user has summoned you
-via a hotkey overlay from inside their live terminal. They may be in the middle of using
-a program (vim, ssh, a REPL, etc.) or at a shell prompt. In this mode:
-- Start with terminal_read if you need to understand what's on screen.
-- Prefer terminal_keys to interact with whatever is currently running.
-- Use user_shell only for running new, standalone commands — not for interacting with
-  what's already on screen.
-- Keep responses concise — the user is in the middle of a workflow.
 
 # Tool Usage Guidelines
 - Use read_file before editing a file you haven't seen
@@ -100,22 +79,15 @@ a program (vim, ssh, a REPL, etc.) or at a shell prompt. In this mode:
 
 /**
  * Build the dynamic context — injected as a user message before each query.
- * Contains everything that changes: tools, shell context, conventions, cwd.
+ * Contains everything that changes: shell context, conventions, cwd.
  *
- * Runs through the "agent:dynamic-context" pipe so extensions can append.
+ * Runs through the "dynamic-context:build" handler so extensions can advise.
  */
 export function buildDynamicContext(
-  tools: ToolDefinition[],
   contextManager: ContextManager,
   shellBudgetTokens?: number,
 ): string {
   const sections: string[] = [];
-
-  // Tools
-  sections.push(
-    "# Available Tools\n" +
-      tools.map((t) => `- ${t.name}: ${t.description}`).join("\n"),
-  );
 
   // Project conventions (CLAUDE.md / AGENT.md)
   const conventions = loadConventionFiles(contextManager.getCwd());

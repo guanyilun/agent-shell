@@ -925,21 +925,28 @@ export class FloatingPanel {
     if (this.usedAltScreen) {
       process.stdout.write("\x1b[?1049l");
     }
-    // ncurses's curscr is stale — only a real dimension change triggers
-    // clearok + full repaint (same-size SIGWINCH is a no-op).
-    const cols = process.stdout.columns || 80;
-    const rows = process.stdout.rows || 24;
-    this.bus.emit("shell:pty-resize", { cols, rows: rows - 1 });
-    setTimeout(() => {
-      this.bus.emit("shell:pty-resize", { cols, rows });
-    }, 50);
 
-    if (!this.buffer && this.ptyBuffer) {
+    // Replay PTY output that arrived while the overlay was active.
+    // Without this, commands run by the agent (e.g. user_shell ls)
+    // would vanish — the alt screen exit restores the saved screen
+    // from before the overlay opened, losing any shell output produced
+    // during the session.
+    if (this.ptyBuffer) {
       process.stdout.write(this.ptyBuffer);
     }
     this.ptyBuffer = "";
-    this.bus.emit("shell:stdout-hide", {});
     this.bus.emit("shell:stdout-release", {});
+
+    if (!this.usedAltScreen) {
+      // TUI app was running (vim, htop, etc.) — we didn't enter our own
+      // alt screen, so the app needs SIGWINCH to repaint its UI.
+      const cols = process.stdout.columns || 80;
+      const rows = process.stdout.rows || 24;
+      this.bus.emit("shell:pty-resize", { cols, rows: rows - 1 });
+      setTimeout(() => {
+        this.bus.emit("shell:pty-resize", { cols, rows });
+      }, 50);
+    }
   }
 
   // ── Passthrough rendering ─────────────────────────────────

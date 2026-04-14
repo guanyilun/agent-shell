@@ -27,6 +27,7 @@ import { ConversationState } from "./conversation-state.js";
 import { HistoryFile } from "./history-file.js";
 import { STATIC_SYSTEM_PROMPT, buildDynamicContext } from "./system-prompt.js";
 import { TokenBudget } from "../token-budget.js";
+import { getSettings } from "../settings.js";
 
 // Core tool factories
 import { createBashTool } from "./tools/bash.js";
@@ -180,8 +181,8 @@ export class AgentLoop implements AgentBackend {
       this.lastProjectSkillNames.clear();
     });
     on("agent:compact-request", () => {
-      const budgetTokens = this.tokenBudget.conversationBudgetTokens;
-      const stats = this.conversation.compact(budgetTokens);
+      // Force compaction: use target of 0 so every non-pinned turn is evicted
+      const stats = this.conversation.compact(0, 10, true);
       this.conversation.flush().catch(() => {});
       if (stats) {
         this.bus.emit("ui:info", {
@@ -240,9 +241,37 @@ export class AgentLoop implements AgentBackend {
     this.toolRegistry.register(tool);
   }
 
+  /** Unregister a tool by name. */
+  unregisterTool(name: string): void {
+    this.toolRegistry.unregister(name);
+  }
+
   /** Get all registered tools. */
   getTools(): ToolDefinition[] {
     return this.toolRegistry.all();
+  }
+
+  // ── Extension instructions & tool tracking ──────────────────────
+
+  private instructions = new Map<string, string>();
+
+  /** Register a named instruction block for the system prompt. */
+  registerInstruction(name: string, text: string): void {
+    this.instructions.set(name, text);
+  }
+
+  /** Remove a named instruction block. */
+  removeInstruction(name: string): void {
+    this.instructions.delete(name);
+  }
+
+  /** Get instruction blocks registered by extensions. */
+  getInstructionSections(): string[] {
+    const sections: string[] = [];
+    for (const [name, text] of this.instructions) {
+      sections.push(`## ${name}\n${text}`);
+    }
+    return sections;
   }
 
   kill(): void {
@@ -406,6 +435,7 @@ export class AgentLoop implements AgentBackend {
     // conversation_recall — search/expand evicted conversation turns
     this.toolRegistry.register({
       name: "conversation_recall",
+      displayName: "recall",
       description:
         "Browse, search, or expand evicted conversation turns. " +
         "Use when you need context from earlier in the conversation that was compacted away.",
@@ -450,10 +480,18 @@ export class AgentLoop implements AgentBackend {
   private registerHandlers(): void {
     const h = this.handlers;
 
+    // System prompt: static identity + behavioral instructions.
+    // Extensions can use registerInstruction() for a managed section,
+    // or advise this handler directly for full control.
+    h.define("system-prompt:build", () => {
+      const instructions = this.getInstructionSections();
+      if (instructions.length === 0) return STATIC_SYSTEM_PROMPT;
+      return STATIC_SYSTEM_PROMPT + "\n\n# Extension Instructions\n\n" + instructions.join("\n\n");
+    });
+
     // Extensions compose additional context (git info, project rules, etc.)
     h.define("dynamic-context:build", () =>
       buildDynamicContext(
-        this.toolRegistry.all(),
         this.contextManager,
         this.tokenBudget.shellBudgetTokens,
       ),
@@ -627,10 +665,11 @@ export class AgentLoop implements AgentBackend {
     let fullResponseText = "";
 
     while (!signal.aborted) {
-      // Auto-compact if conversation exceeds the model-aware budget
+      // Auto-compact when conversation exceeds threshold fraction of budget
       const budgetTokens = this.tokenBudget.conversationBudgetTokens;
-      if (this.conversation.estimateTokens() > budgetTokens) {
-        const stats = this.conversation.compact(budgetTokens);
+      const autoCompactThreshold = Math.floor(budgetTokens * getSettings().autoCompactThreshold);
+      if (this.conversation.estimateTokens() > autoCompactThreshold) {
+        const stats = this.conversation.compact(autoCompactThreshold);
         await this.conversation.flush();
         if (stats) {
           this.bus.emit("ui:info", {
@@ -639,9 +678,9 @@ export class AgentLoop implements AgentBackend {
         }
       }
 
-      // System prompt is static (cacheable); dynamic context uses handler
-      // so extensions can compose additional context via advise()
-      const systemPrompt = STATIC_SYSTEM_PROMPT;
+      // System prompt uses handler so extensions can append instructions (cacheable);
+      // dynamic context uses handler for per-query state via advise()
+      const systemPrompt = this.handlers.call("system-prompt:build") as string;
       const dynamicContext = this.handlers.call("dynamic-context:build");
 
       // Stream LLM response with retry

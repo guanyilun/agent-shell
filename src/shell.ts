@@ -272,14 +272,16 @@ export class Shell implements InputContext {
    * Routed through shell:redraw-prompt pipe so extensions (e.g. overlay)
    * can suppress it by setting `handled: true`.
    */
-  freshPrompt(): void {
+  freshPrompt(): boolean {
     const result = this.bus.emitPipe("shell:redraw-prompt", {
       cwd: this.outputParser.getCwd(),
       handled: false,
     });
     if (!result.handled) {
       this.ptyProcess.write("\n");
+      return true;
     }
+    return false;
   }
 
   onCommandEntered(command: string, cwd: string): void {
@@ -331,9 +333,12 @@ export class Shell implements InputContext {
     this.bus.on("agent:processing-done", () => {
       this.paused = false;
       this.agentActive = false;
-      this.echoSkip = true;
       if (!this.inputHandler.handleProcessingDone()) {
-        this.freshPrompt();
+        // echoSkip only when freshPrompt actually wrote \n to the PTY.
+        // When the overlay suppresses freshPrompt, no echo to skip.
+        if (this.freshPrompt()) {
+          this.echoSkip = true;
+        }
       }
     });
 

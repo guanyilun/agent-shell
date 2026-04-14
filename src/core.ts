@@ -28,6 +28,7 @@ import { resolveProvider, getProviderNames, type ResolvedProvider } from "./sett
 import { HandlerRegistry } from "./utils/handler-registry.js";
 import { TerminalBuffer } from "./utils/terminal-buffer.js";
 import { FloatingPanel, type FloatingPanelConfig } from "./utils/floating-panel.js";
+import { DefaultCompositor, StdoutSurface } from "./utils/compositor.js";
 
 // Re-export types that library consumers need
 export { EventBus } from "./event-bus.js";
@@ -278,6 +279,13 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
     bus.emit("config:changed", {});
   });
 
+  // ── Compositor ──────────────────────────────────────────────
+  const compositor = new DefaultCompositor();
+  const stdoutSurface = new StdoutSurface();
+  compositor.setDefault("agent", stdoutSurface);
+  compositor.setDefault("query", stdoutSurface);
+  compositor.setDefault("status", stdoutSurface);
+
   // ── Lazy singleton terminal buffer ──────────────────────────
   let terminalBufferSingleton: TerminalBuffer | null | undefined; // undefined = not yet created
   const getTerminalBuffer = (): TerminalBuffer | null => {
@@ -360,7 +368,10 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
         registerCommand: (name, description, handler) =>
           bus.emit("command:register", { name, description, handler }),
         registerTool: (tool) => agentLoop?.registerTool(tool),
+        unregisterTool: (name) => agentLoop?.unregisterTool(name),
         getTools: () => agentLoop?.getTools() ?? [],
+        registerInstruction: (name, text) => agentLoop?.registerInstruction(name, text),
+        removeInstruction: (name) => agentLoop?.removeInstruction(name),
         define: (name, fn) => handlers.define(name, fn),
         advise: (name, wrapper) => handlers.advise(name, wrapper),
         call: (name, ...args) => handlers.call(name, ...args),
@@ -369,6 +380,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
           const tb = config.dimBackground !== false ? getTerminalBuffer() : null;
           return new FloatingPanel(bus, { ...config, terminalBuffer: tb ?? undefined });
         },
+        compositor,
       };
     },
 

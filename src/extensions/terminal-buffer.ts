@@ -29,7 +29,8 @@ function settle(ms = 100): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export default function activate({ bus, terminalBuffer: tb, registerTool }: ExtensionContext): void {
+export default function activate(ctx: ExtensionContext): void {
+  const { bus, terminalBuffer: tb, registerTool, registerInstruction } = ctx;
   if (!tb) return; // @xterm/headless not installed
 
   registerTool({
@@ -41,7 +42,15 @@ export default function activate({ bus, terminalBuffer: tb, registerTool }: Exte
       "diagnosing errors on screen, or checking state before/after sending keystrokes with terminal_keys.",
     input_schema: {
       type: "object",
-      properties: {},
+      properties: {
+        include_scrollback: {
+          type: "boolean",
+          description:
+            "If true, include scrollback buffer (content that scrolled off screen) " +
+            "in addition to the visible viewport. Useful for capturing output from " +
+            "long-running or streaming commands. Default: false.",
+        },
+      },
     },
     showOutput: true,
 
@@ -51,8 +60,9 @@ export default function activate({ bus, terminalBuffer: tb, registerTool }: Exte
       locations: [],
     }),
 
-    async execute() {
-      const { text, altScreen, cursorX, cursorY } = tb.readScreen();
+    async execute(args) {
+      const includeScrollback = (args.include_scrollback as boolean) ?? false;
+      const { text, altScreen, cursorX, cursorY } = tb.readScreen({ includeScrollback });
       const info = [
         altScreen ? "mode: alternate screen" : "mode: normal",
         `cursor: row=${cursorY} col=${cursorX}`,
