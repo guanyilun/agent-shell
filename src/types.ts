@@ -12,6 +12,34 @@ export type { ContentBlock } from "./event-bus.js";
 export type { BlockTransformOptions, FencedBlockTransformOptions } from "./utils/stream-transform.js";
 export type { RenderSurface } from "./utils/compositor.js";
 
+// ── Remote sessions ──────────────────────────────────────────────
+
+export interface RemoteSessionOptions {
+  /** The surface to render agent output to. */
+  surface: import("./utils/compositor.js").RenderSurface;
+  /** Suppress response borders (default: true). */
+  suppressBorders?: boolean;
+  /** Suppress user query box (default: false).
+   *  True for sessions with their own input (rsplit, overlay).
+   *  False for sessions where input comes from the main shell (split). */
+  suppressQueryBox?: boolean;
+  /** Suppress usage stats line (default: true). */
+  suppressUsage?: boolean;
+  /** Set interactive-session dynamic context (default: false). */
+  interactive?: boolean;
+}
+
+export interface RemoteSession {
+  /** Submit a query to the agent from this session. */
+  submit(query: string): void;
+  /** The surface this session renders to. */
+  readonly surface: import("./utils/compositor.js").RenderSurface;
+  /** Whether this session is currently active. */
+  readonly active: boolean;
+  /** Tear down — restores all routing and advisors. */
+  close(): void;
+}
+
 /** A model entry in the cycling list, optionally tied to a provider. */
 export interface AgentMode {
   model: string;
@@ -109,6 +137,18 @@ export interface ExtensionContext {
    * Extensions use `compositor.redirect()` to capture output (e.g. overlay panels).
    */
   compositor: Compositor;
+
+  // ── Remote sessions ────────────────────────────────────────────
+  /**
+   * Create a remote session that routes agent output to a surface and
+   * optionally accepts queries. Handles all compositor routing, shell
+   * lifecycle advisors, and chrome suppression.
+   *
+   *   const session = ctx.createRemoteSession({ surface, interactive: true });
+   *   session.submit("what's on screen?");
+   *   session.close();  // restores everything
+   */
+  createRemoteSession: (opts: RemoteSessionOptions) => RemoteSession;
 }
 
 /**

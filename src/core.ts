@@ -20,7 +20,7 @@ import { EventBus, type ContentBlock } from "./event-bus.js";
 import { ContextManager } from "./context-manager.js";
 import { AgentLoop } from "./agent/agent-loop.js";
 import { LlmClient } from "./utils/llm-client.js";
-import type { AgentShellConfig, AgentMode, ExtensionContext } from "./types.js";
+import type { AgentShellConfig, AgentMode, ExtensionContext, RemoteSessionOptions, RemoteSession } from "./types.js";
 import { setPalette } from "./utils/palette.js";
 import * as streamTransform from "./utils/stream-transform.js";
 import * as settingsMod from "./settings.js";
@@ -384,6 +384,49 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
           return new FloatingPanel(bus, { ...config, terminalBuffer: tb ?? undefined });
         },
         compositor,
+        createRemoteSession: (opts: RemoteSessionOptions): RemoteSession => {
+          const { surface } = opts;
+          const cleanups: (() => void)[] = [];
+          let active = true;
+
+          // Redirect all render streams
+          cleanups.push(compositor.redirect("agent", surface));
+          cleanups.push(compositor.redirect("query", surface));
+          cleanups.push(compositor.redirect("status", surface));
+
+          // Keep shell interactive
+          cleanups.push(handlers.advise("shell:on-processing-start", (next) => active ? undefined : next()));
+          cleanups.push(handlers.advise("shell:on-processing-done", (next) => active ? undefined : next()));
+
+          // Suppress chrome
+          if (opts.suppressBorders !== false) {
+            cleanups.push(handlers.advise("tui:response-border", (next, ...a) => active ? null : next(...a)));
+          }
+          if (opts.suppressQueryBox) {
+            cleanups.push(handlers.advise("tui:render-user-query", (next, ...a) => active ? [] : next(...a)));
+          }
+          if (opts.suppressUsage !== false) {
+            cleanups.push(handlers.advise("tui:render-usage", (next, ...a) => active ? "" : next(...a)));
+          }
+          if (opts.interactive) {
+            cleanups.push(handlers.advise("dynamic-context:build", (next) => {
+              const base = next() as string;
+              return active ? base + "\ninteractive-session: true\n" : base;
+            }));
+          }
+
+          return {
+            submit(query: string) { bus.emit("agent:submit", { query }); },
+            get surface() { return surface; },
+            get active() { return active; },
+            close() {
+              if (!active) return;
+              active = false;
+              for (const fn of cleanups.reverse()) fn();
+              cleanups.length = 0;
+            },
+          };
+        },
       };
     },
 

@@ -1,71 +1,40 @@
 /**
  * Tmux side-pane extension.
  *
- * When running inside tmux, provides `/split` to open a side pane
- * where all agent output is rendered. The user's shell stays
- * undisturbed in the original pane. Uses the compositor to redirect
- * the "agent" stream to a tmux pane surface.
+ * Two modes:
+ *   /split  — agent output renders in the side pane, queries typed
+ *             in the main shell (> prompt).
+ *   /rsplit — reverse split: the side pane has its own input prompt,
+ *             the agent can see and control the main pane via
+ *             terminal_read / terminal_keys.
  *
- * The side pane runs `cat` to stay alive and accepts writes via its tty.
+ * Both modes use createRemoteSession() which handles compositor
+ * routing, shell lifecycle, and chrome suppression automatically.
  *
  * Usage:
- *   # Load directly
  *   ash -e ./examples/extensions/tmux-pane.ts
  *
  *   # Or install permanently
  *   cp examples/extensions/tmux-pane.ts ~/.agent-sh/extensions/
- *
- * Commands:
- *   /split        — toggle side pane on/off
- *   /split open   — open the side pane
- *   /split close  — close the side pane
  */
 import * as fs from "node:fs";
-import { execSync, spawn, type ChildProcess } from "node:child_process";
-import type { ExtensionContext, RenderSurface } from "agent-sh/types";
+import * as net from "node:net";
+import * as os from "node:os";
+import * as path from "node:path";
+import { execSync, spawn } from "node:child_process";
+import type { ExtensionContext, RenderSurface, RemoteSession } from "agent-sh/types";
+
+// ── Helpers ─────────────────────────────────────────────────────
 
 function inTmux(): boolean {
   return !!process.env.TMUX;
 }
 
 function tmux(...args: string[]): string {
-  return execSync("tmux " + args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" "), { encoding: "utf-8" }).trim();
-}
-
-interface TmuxPane {
-  paneId: string;
-  tty: string;
-  fd: fs.WriteStream;
-  process: ChildProcess;
-}
-
-function createTmuxPane(widthPercent = 45, onError?: () => void): TmuxPane {
-  // Split horizontally, get pane id and tty
-  const output = tmux(
-    "split-window", "-h",
-    "-l", `${widthPercent}%`,
-    "-P", "-F", "#{pane_id}",
-    // Run cat to keep pane alive
-    "cat",
-  );
-  const paneId = output.trim();
-
-  // Small delay for pane to initialize its tty
-  execSync("sleep 0.1");
-
-  const tty = tmux("display-message", "-p", "-t", paneId, "#{pane_tty}");
-  const fd = fs.createWriteStream(tty, { flags: "w" });
-
-  // When the pane is killed externally, the fd gets an EIO error.
-  // Trigger cleanup so the compositor stops routing to the dead surface.
-  fd.on("error", () => { onError?.(); });
-
-  // Get the cat process — we spawned it via tmux, so we don't have a
-  // direct handle. We'll track the pane id for cleanup instead.
-  const proc = spawn("true", [], { stdio: "ignore", detached: true });
-  proc.unref();
-
-  return { paneId, tty, fd, process: proc };
+  return execSync(
+    "tmux " + args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" "),
+    { encoding: "utf-8" },
+  ).trim();
 }
 
 function getPaneWidth(paneId: string): number {
@@ -76,21 +45,70 @@ function getPaneWidth(paneId: string): number {
   }
 }
 
-function killPane(pane: TmuxPane): void {
-  try { pane.fd.end(); } catch { /* ignore */ }
-  try { tmux("kill-pane", "-t", pane.paneId); } catch { /* ignore */ }
+function paneExists(paneId: string): boolean {
+  try {
+    tmux("display-message", "-p", "-t", paneId, "#{pane_id}");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-function createTmuxSurface(pane: TmuxPane): RenderSurface {
-  // Cache pane width — refreshed on SIGWINCH via tmux, but we only
-  // need to query it occasionally (not on every line).
-  let cachedWidth = getPaneWidth(pane.paneId);
+// ── Chat client script (runs in rsplit pane) ────────────────────
+
+const CHAT_CLIENT_SCRIPT = `
+const net = require("net");
+const readline = require("readline");
+
+const sockPath = process.argv[2];
+if (!sockPath) { console.error("No socket path"); process.exit(1); }
+
+const sock = net.createConnection(sockPath);
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+sock.on("data", (data) => {
+  readline.clearLine(process.stdout, 0);
+  readline.cursorTo(process.stdout, 0);
+  process.stdout.write(data.toString());
+  rl.prompt(true);
+});
+
+sock.on("end", () => process.exit(0));
+sock.on("error", () => process.exit(1));
+
+rl.setPrompt("\\x1b[36m❯\\x1b[0m ");
+rl.prompt();
+
+rl.on("line", (line) => {
+  const trimmed = line.trim();
+  if (!trimmed) { rl.prompt(); return; }
+  sock.write(trimmed + "\\n");
+});
+
+rl.on("close", () => { sock.end(); process.exit(0); });
+`;
+
+// ── Surface factory ─────────────────────────────────────────────
+
+function createSurface(
+  paneId: string,
+  ttyFd: fs.WriteStream,
+  socketClient: () => net.Socket | undefined,
+): RenderSurface {
+  let cachedWidth = getPaneWidth(paneId);
   let lastWidthCheck = Date.now();
 
   return {
     write(text: string): void {
-      if (pane.fd.destroyed) return;
-      try { pane.fd.write(text); } catch { /* pane may be gone */ }
+      // In rsplit mode, route through socket so client can manage prompt
+      const c = socketClient();
+      if (c && !c.destroyed) {
+        try { c.write(text); } catch {}
+        return;
+      }
+      // In split mode (or fallback), write directly to tty
+      if (ttyFd.destroyed) return;
+      try { ttyFd.write(text); } catch {}
     },
     writeLine(line: string): void {
       this.write(line + "\n");
@@ -98,7 +116,7 @@ function createTmuxSurface(pane: TmuxPane): RenderSurface {
     get columns(): number {
       const now = Date.now();
       if (now - lastWidthCheck > 2000) {
-        cachedWidth = getPaneWidth(pane.paneId);
+        cachedWidth = getPaneWidth(paneId);
         lastWidthCheck = now;
       }
       return cachedWidth;
@@ -106,127 +124,184 @@ function createTmuxSurface(pane: TmuxPane): RenderSurface {
   };
 }
 
+// ── Pane state ──────────────────────────────────────────────────
+
+type PaneMode = "split" | "rsplit";
+
+interface PaneState {
+  mode: PaneMode;
+  paneId: string;
+  ttyFd: fs.WriteStream;
+  session: RemoteSession;
+  // rsplit-mode only
+  server?: net.Server;
+  client?: net.Socket;
+  sockPath?: string;
+  scriptPath?: string;
+}
+
+// ── Extension ───────────────────────────────────────────────────
+
 export default function activate(ctx: ExtensionContext): void {
-  const { bus, compositor, advise, registerCommand } = ctx;
+  const { bus, registerCommand, registerInstruction, createRemoteSession } = ctx;
 
-  if (!inTmux()) return; // silently no-op outside tmux
+  if (!inTmux()) return;
 
-  let pane: TmuxPane | null = null;
-  let surface: RenderSurface | null = null;
-  let restoreAgent: (() => void) | null = null;
-  let restoreQuery: (() => void) | null = null;
-  let restoreStatus: (() => void) | null = null;
+  let state: PaneState | null = null;
 
-  // In split mode, don't pause the shell — agent output goes to a
-  // separate pane so the user can keep working.
-  advise("shell:on-processing-start", (next) => {
-    if (pane) return; // skip pause — user keeps their shell
-    return next();
-  });
+  registerInstruction("Tmux Interactive Session", [
+    "When the dynamic context includes `interactive-session: true`, the user is chatting",
+    "with you in a side pane next to their terminal. They may have a program running in",
+    "the other pane (vim, htop, a REPL, etc.). In this mode:",
+    "- Use terminal_read to see what's on their screen.",
+    "- Use terminal_keys to interact with their running program.",
+    "- Use user_shell only for standalone commands, not for interacting with what's on screen.",
+    "- Keep responses concise.",
+  ].join("\n"));
 
-  advise("shell:on-processing-done", (next) => {
-    if (pane) return; // skip prompt redraw — already redrawn on query
-    return next();
-  });
-
-  // Suppress response borders in the side pane — the pane itself
-  // provides visual separation between queries.
-  advise("tui:response-border", (next, position: string, width: number) => {
-    if (pane) return null;
-    return next(position, width);
-  });
+  // ── Open / close ──────────────────────────────────────────────
 
   function openSplit(): void {
-    if (pane) return; // already open
+    if (state) close();
 
     try {
-      pane = createTmuxPane(45, () => destroyStalePane());
-      surface = createTmuxSurface(pane);
+      const paneId = tmux(
+        "split-window", "-h", "-l", "45%",
+        "-P", "-F", "#{pane_id}", "cat",
+      ).trim();
+      execSync("sleep 0.1");
 
-      // Redirect all render streams to the side pane.
-      restoreAgent = compositor.redirect("agent", surface);
-      restoreQuery = compositor.redirect("query", surface);
-      restoreStatus = compositor.redirect("status", surface);
+      const tty = tmux("display-message", "-p", "-t", paneId, "#{pane_tty}");
+      const ttyFd = fs.createWriteStream(tty, { flags: "w" });
+      ttyFd.on("error", () => destroyStale());
 
-      // Write a subtle header
+      const surface = createSurface(paneId, ttyFd, () => undefined);
+      const session = createRemoteSession({ surface });
+
+      state = { mode: "split", paneId, ttyFd, session };
       surface.writeLine("\x1b[2m── agent output ──\x1b[0m\n");
-
-      bus.emit("ui:info", { message: "Side pane opened. Agent output redirected." });
+      bus.emit("ui:info", { message: "Split pane opened (/split to close, /rsplit for interactive)." });
     } catch (e) {
       bus.emit("ui:error", {
-        message: `Failed to create tmux pane: ${e instanceof Error ? e.message : String(e)}`,
+        message: `Failed to open split: ${e instanceof Error ? e.message : String(e)}`,
       });
-      pane = null;
-      surface = null;
     }
   }
 
-  function closeSplit(): void {
-    if (!pane) return;
+  function openRsplit(): void {
+    if (state) close();
 
-    restoreAgent?.();
-    restoreQuery?.();
-    restoreStatus?.();
-    restoreAgent = restoreQuery = restoreStatus = null;
+    try {
+      const sockPath = path.join(os.tmpdir(), `agent-sh-chat-${process.pid}.sock`);
+      try { fs.unlinkSync(sockPath); } catch {}
 
-    killPane(pane);
-    pane = null;
-    surface = null;
+      let client: net.Socket | undefined;
 
-    bus.emit("ui:info", { message: "Side pane closed." });
+      const server = net.createServer((conn) => {
+        client = conn;
+        if (state) state.client = conn;
+        conn.on("data", (data) => {
+          for (const line of data.toString().split("\n")) {
+            const trimmed = line.trim();
+            if (trimmed) session.submit(trimmed);
+          }
+        });
+        conn.on("end", () => { client = undefined; if (state) state.client = undefined; });
+        conn.on("error", () => { client = undefined; if (state) state.client = undefined; });
+      });
+      server.listen(sockPath);
+
+      const scriptPath = path.join(os.tmpdir(), `agent-sh-chat-${process.pid}.js`);
+      fs.writeFileSync(scriptPath, CHAT_CLIENT_SCRIPT);
+
+      const paneId = tmux(
+        "split-window", "-h", "-l", "45%",
+        "-P", "-F", "#{pane_id}",
+        "node", scriptPath, sockPath,
+      ).trim();
+      execSync("sleep 0.2");
+
+      const tty = tmux("display-message", "-p", "-t", paneId, "#{pane_tty}");
+      const ttyFd = fs.createWriteStream(tty, { flags: "w" });
+      ttyFd.on("error", () => destroyStale());
+
+      const surface = createSurface(paneId, ttyFd, () => client);
+      const session = createRemoteSession({
+        surface,
+        suppressQueryBox: true,
+        interactive: true,
+      });
+
+      state = { mode: "rsplit", paneId, ttyFd, session, server, client, sockPath, scriptPath };
+      bus.emit("ui:info", { message: "Reverse split opened (/rsplit to close, /split for output-only)." });
+    } catch (e) {
+      bus.emit("ui:error", {
+        message: `Failed to open rsplit: ${e instanceof Error ? e.message : String(e)}`,
+      });
+      if (state) close();
+    }
   }
 
-  function toggle(): void {
-    if (pane) closeSplit();
-    else openSplit();
+  function close(): void {
+    if (!state) return;
+    const s = state;
+    state = null;
+
+    s.session.close();
+    if (s.client) { try { s.client.end(); } catch {} }
+    if (s.server) { try { s.server.close(); } catch {} }
+    try { s.ttyFd.end(); } catch {}
+    try { tmux("kill-pane", "-t", s.paneId); } catch {}
+    if (s.sockPath) { try { fs.unlinkSync(s.sockPath); } catch {} }
+    if (s.scriptPath) { try { fs.unlinkSync(s.scriptPath); } catch {} }
   }
+
+  function destroyStale(): void {
+    if (!state) return;
+    const s = state;
+    state = null;
+
+    s.session.close();
+    if (s.client) { try { s.client.end(); } catch {} }
+    if (s.server) { try { s.server.close(); } catch {} }
+    try { s.ttyFd.end(); } catch {}
+    if (s.sockPath) { try { fs.unlinkSync(s.sockPath); } catch {} }
+    if (s.scriptPath) { try { fs.unlinkSync(s.scriptPath); } catch {} }
+  }
+
+  // ── Commands ──────────────────────────────────────────────────
 
   registerCommand("split", "Toggle tmux side pane for agent output", (args) => {
     const cmd = args.trim().toLowerCase();
-    if (cmd === "close") return closeSplit();
+    if (cmd === "close") return close();
     if (cmd === "open") return openSplit();
-    toggle();
+    if (state?.mode === "split") close(); else openSplit();
   });
 
-  // In split mode, give the user their shell prompt back immediately
-  // after submitting a query — don't wait for the agent to finish.
+  registerCommand("rsplit", "Toggle interactive tmux side pane (reverse split)", (args) => {
+    const cmd = args.trim().toLowerCase();
+    if (cmd === "close") return close();
+    if (cmd === "open") return openRsplit();
+    if (state?.mode === "rsplit") close(); else openRsplit();
+  });
+
+  // ── Lifecycle events ──────────────────────────────────────────
+
+  // In split mode, redraw prompt immediately after query submit.
   bus.on("agent:query", () => {
-    if (!pane) return;
-    // Send a newline to the PTY to trigger the shell's precmd hook,
-    // which redraws the prompt. setImmediate ensures the query box
-    // renders to the side pane first.
-    setImmediate(() => {
-      bus.emit("shell:pty-write", { data: "\n" });
-    });
+    if (state?.mode !== "split") return;
+    setImmediate(() => bus.emit("shell:pty-write", { data: "\n" }));
   });
 
+  // In rsplit mode, re-prompt the client after agent finishes.
   bus.on("agent:processing-done", () => {
-    if (!pane) return;
-
-    // Check if pane was closed externally
-    try {
-      tmux("display-message", "-p", "-t", pane.paneId, "#{pane_id}");
-    } catch {
-      destroyStalePane();
-      return;
+    if (!state) return;
+    if (!paneExists(state.paneId)) { destroyStale(); return; }
+    if (state.mode === "rsplit" && state.client && !state.client.destroyed) {
+      state.client.write("\n");
     }
-
-    // Separate responses visually in the side pane
-    surface?.writeLine("");
+    state.session.surface.writeLine("");
   });
 
-  // Clean up on exit
-  process.on("exit", () => {
-    if (pane) killPane(pane);
-  });
-
-  function destroyStalePane(): void {
-    restoreAgent?.();
-    restoreQuery?.();
-    restoreStatus?.();
-    restoreAgent = restoreQuery = restoreStatus = null;
-    try { pane?.fd.end(); } catch { /* ignore */ }
-    pane = null;
-    surface = null;
-  }
+  process.on("exit", () => { if (state) close(); });
 }
