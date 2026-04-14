@@ -681,15 +681,26 @@ open() → [input] → submit → [active] → setDone() → [input] (follow-up)
 
 ## Rendering Architecture
 
-The tui-renderer turns content blocks into terminal output. All output flows through an **OutputWriter** (`write(text)` + `columns`). Extensions should never call `process.stdout.write` directly.
+The tui-renderer turns content blocks into terminal output. All output flows through the **compositor**, which routes named streams (`"agent"`, `"query"`, `"status"`) to **render surfaces**. Extensions should never call `process.stdout.write` directly.
 
 ```
 ContentBlock (from transform pipeline)
-    ├── text        → MarkdownRenderer.push(chunk) → drainLines() → writer
-    ├── code-block  → ctx.call("render:code-block") → drainLines() → writer
-    ├── image       → ctx.call("render:image")       → writer
-    └── raw         → writer.write(escape)
+    ├── text        → MarkdownRenderer.push(chunk) → drainLines() → compositor
+    ├── code-block  → ctx.call("render:code-block") → drainLines() → compositor
+    ├── image       → ctx.call("render:image")       → compositor
+    └── raw         → compositor.surface("agent").write(escape)
 ```
+
+Extensions can redirect any stream to a different surface (e.g. a floating panel):
+
+```typescript
+// Redirect agent output to a panel
+const restore = ctx.compositor.redirect("agent", panelSurface);
+// ... later ...
+restore(); // back to stdout
+```
+
+Streams are hierarchical: `"agent:diff"` falls back to `"agent"` if no override exists. See [TUI Composition](tui-composition.md) for the full compositor design, surface API, and examples.
 
 Rendering components follow a **return lines, don't write** convention — each returns `string[]`, making them testable in isolation:
 

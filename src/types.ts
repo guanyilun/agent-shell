@@ -6,6 +6,7 @@ import type { BlockTransformOptions, FencedBlockTransformOptions } from "./utils
 import type { ToolDefinition } from "./agent/types.js";
 import type { TerminalBuffer } from "./utils/terminal-buffer.js";
 import type { FloatingPanel, FloatingPanelConfig } from "./utils/floating-panel.js";
+import type { Compositor } from "./utils/compositor.js";
 
 export type { ContentBlock } from "./event-bus.js";
 export type { BlockTransformOptions, FencedBlockTransformOptions } from "./utils/stream-transform.js";
@@ -100,6 +101,13 @@ export interface ExtensionContext {
    * handler-based customization.
    */
   createFloatingPanel: (config: FloatingPanelConfig) => FloatingPanel;
+
+  // ── Compositor ─────────────────────────────────────────────────
+  /**
+   * Routes named render streams ("agent", "query", "status") to surfaces.
+   * Extensions use `compositor.redirect()` to capture output (e.g. overlay panels).
+   */
+  compositor: Compositor;
 }
 
 /**

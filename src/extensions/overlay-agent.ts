@@ -5,33 +5,78 @@
  * inside vim, htop, or ssh. Composites a floating response box on top
  * of the current terminal content.
  *
- * Rendering reuses the shared tui:render-* handlers so that extensions
- * advising those handlers affect both the main TUI and the overlay.
+ * Uses the compositor to redirect agent output into the floating panel.
+ * The full tui-renderer pipeline (markdown, tool grouping, spinner, diffs)
+ * applies — the overlay just changes *where* the output goes.
  *
  * Requires: npm install @xterm/headless@5.5.0 @xterm/addon-serialize@0.13.0
  */
 import type { ExtensionContext } from "../types.js";
-import { MarkdownRenderer } from "../utils/markdown.js";
-import { palette as p } from "../utils/palette.js";
-import {
-  renderToolCall,
-  formatElapsed,
-} from "../utils/tool-display.js";
+import type { RenderSurface } from "../utils/compositor.js";
+import type { FloatingPanel } from "../utils/floating-panel.js";
 
-interface ChatMessage {
-  role: "user" | "assistant";
-  lines: string[];
+/** Adapt a FloatingPanel to the RenderSurface interface. */
+function createPanelSurface(panel: FloatingPanel): RenderSurface {
+  return {
+    write(text: string): void {
+      // Handle \r (carriage return) — overwrite the current line.
+      // The spinner uses "\r  <content>\x1b[K" to update in-place.
+      if (text.startsWith("\r")) {
+        // Strip \r and any erase-line sequences
+        const cleaned = text.replace(/^\r/, "").replace(/\x1b\[\d*K/g, "");
+        if (cleaned.trim()) {
+          panel.updateLastLine(() => cleaned);
+        }
+        return;
+      }
+
+      // Regular text — may contain newlines
+      panel.appendText(text);
+    },
+    writeLine(line: string): void {
+      panel.appendLine(line);
+    },
+    get columns(): number {
+      return panel.computeGeometry().contentW;
+    },
+  };
 }
 
 export default function activate(ctx: ExtensionContext): void {
-  const { bus, advise, call, createFloatingPanel, registerInstruction } = ctx;
+  const { bus, compositor, advise, registerInstruction, createFloatingPanel } = ctx;
 
   const panel = createFloatingPanel({
     trigger: "\x1c", // Ctrl+\
     dimBackground: true,
   });
 
-  // Suppress TUI renderer when overlay owns agent output
+  const panelSurface = createPanelSurface(panel);
+
+  // ── Compositor routing ────────────────────────────────────────
+  // When the panel is active, redirect all render streams to it.
+  let restoreAgent: (() => void) | null = null;
+  let restoreQuery: (() => void) | null = null;
+  let restoreStatus: (() => void) | null = null;
+
+  function redirectToPanel(): void {
+    if (restoreAgent) return; // already redirected
+    restoreAgent = compositor.redirect("agent", panelSurface);
+    restoreQuery = compositor.redirect("query", panelSurface);
+    restoreStatus = compositor.redirect("status", panelSurface);
+  }
+
+  function restoreRouting(): void {
+    restoreAgent?.();
+    restoreQuery?.();
+    restoreStatus?.();
+    restoreAgent = restoreQuery = restoreStatus = null;
+  }
+
+  // Suppress TUI renderer when overlay owns agent output.
+  // TODO: Once tui-renderer fully uses compositor routing, remove this gate
+  // and let the compositor redirect handle everything. The tui-renderer's
+  // full pipeline (markdown, tool grouping, diffs) would then apply to the
+  // overlay too — which is the desired end state.
   advise("tui:should-render-agent", (next) => {
     return panel.active ? false : next();
   });
@@ -54,138 +99,29 @@ export default function activate(ctx: ExtensionContext): void {
     return base + "\ninteractive-session: true\n";
   });
 
-  // ── Conversation state (persists across hide/show) ─────────
-  const messages: ChatMessage[] = [];
-  let renderer: MarkdownRenderer | null = null;
-  let currentAssistantMsg: ChatMessage | null = null;
-
-  // ── Tool state ─────────────────────────────────────────────
-  let toolStartTime = 0;
-
-  function getContentWidth(): number {
-    return panel.computeGeometry().contentW;
-  }
-
-  /** Rebuild panel content from full message history. */
-  function rebuildContent(): void {
-    panel.clearContent();
-    for (const msg of messages) {
-      for (const line of msg.lines) {
-        panel.appendLine(line);
-      }
-      panel.appendLine("");
-    }
-  }
-
-  /** Append a line to current assistant message and panel (if visible). */
-  function appendLine(line: string): void {
-    currentAssistantMsg?.lines.push(line);
-    if (panel.visible) panel.appendLine(line);
-  }
-
-  function drainRenderer(): void {
-    if (!renderer) return;
-    for (const line of renderer.drainLines()) {
-      appendLine(line);
-    }
-  }
-
-  function flushRenderer(): void {
-    if (!renderer) return;
-    renderer.flush();
-    drainRenderer();
-  }
-
-  function startAssistantMessage(): void {
-    flushRenderer();
-    currentAssistantMsg = { role: "assistant", lines: [] };
-    messages.push(currentAssistantMsg);
-    renderer = new MarkdownRenderer(getContentWidth());
-  }
-
-  function finalizeAssistantMessage(): void {
-    flushRenderer();
-    renderer = null;
-    currentAssistantMsg = null;
-  }
-
-  // ── Panel lifecycle ────────────────────────────────────────
+  // ── Panel lifecycle ────────────────────────────────────────────
 
   panel.handlers.advise("panel:submit", (_next, query: string) => {
-    messages.push({
-      role: "user",
-      lines: [`${p.accent}${p.bold}❯${p.reset} ${query}`],
-    });
-
+    redirectToPanel();
     panel.setActive();
-    rebuildContent();
-    startAssistantMessage();
     bus.emit("agent:submit", { query });
   });
 
   panel.handlers.advise("panel:show", (_next) => {
-    rebuildContent();
-    if (renderer) drainRenderer();
+    if (panel.active) redirectToPanel();
   });
 
-  // ── Stream agent response into panel ───────────────────────
-
-  bus.on("agent:response-chunk", (e) => {
-    if (!panel.active) return;
-    if (!currentAssistantMsg) startAssistantMessage();
-
-    for (const block of e.blocks) {
-      if (block.type === "text" && block.text) {
-        renderer!.push(block.text);
-        drainRenderer();
-      } else if (block.type === "code-block") {
-        flushRenderer();
-        // Reuse the shared code-block handler
-        call("render:code-block", block.language, block.code, getContentWidth());
-      }
-    }
-  });
-
-  // Capture lines emitted by render:code-block into the overlay
-  advise("render:code-block", (next, language: string, code: string, width: number) => {
-    if (!panel.active) return next(language, code, width);
-    // Render code block as indented dim lines for the overlay
-    const label = language ? `${p.dim}${language}${p.reset}` : "";
-    if (label) appendLine(label);
-    for (const codeLine of code.split("\n")) {
-      appendLine(`  ${p.dim}${codeLine}${p.reset}`);
-    }
-  });
-
-  bus.on("agent:tool-started", (e) => {
-    if (!panel.active) return;
-    if (!currentAssistantMsg) startAssistantMessage();
-    flushRenderer();
-    toolStartTime = Date.now();
-
-    const lines = renderToolCall({
-      title: e.title,
-      kind: e.kind,
-      icon: e.icon,
-      locations: e.locations,
-      rawInput: e.rawInput,
-      displayDetail: e.displayDetail,
-    }, getContentWidth());
-
-    for (const line of lines) appendLine(line);
-  });
-
-  bus.on("agent:tool-completed", (e) => {
-    if (!panel.active) return;
-
-    const elapsed = toolStartTime ? formatElapsed(Date.now() - toolStartTime) : "";
-    const mark: string = call("tui:render-tool-complete", e.exitCode, elapsed, undefined);
-    appendLine(`  ${mark}`);
+  // Restore routing on hide (panel:dismiss is the hide handler)
+  panel.handlers.advise("panel:dismiss", (next) => {
+    next();
+    restoreRouting();
   });
 
   bus.on("agent:processing-done", () => {
     if (!panel.active) return;
-    finalizeAssistantMessage();
     panel.setDone();
+    // setDone() may trigger dismiss() which resets phase to idle.
+    // If that happened, restore routing now (dismiss() doesn't call panel:dismiss).
+    if (!panel.active) restoreRouting();
   });
 }
