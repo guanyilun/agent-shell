@@ -116,9 +116,9 @@ export class ConversationState {
    * them with nuclear one-liner summaries that stay in the conversation.
    * Read-only tool results are dropped entirely.
    */
-  compact(targetTokens: number, recentTurnsToKeep = 10): { before: number; after: number } | null {
+  compact(targetTokens: number, recentTurnsToKeep = 10, force = false): { before: number; after: number } | null {
     const before = this.estimateTokens();
-    if (before <= targetTokens) return null;
+    if (!force && before <= targetTokens) return null;
 
     const turns = this.parseTurns();
     if (turns.length <= 2) return null;

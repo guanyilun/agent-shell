@@ -27,6 +27,7 @@ import { ConversationState } from "./conversation-state.js";
 import { HistoryFile } from "./history-file.js";
 import { STATIC_SYSTEM_PROMPT, buildDynamicContext } from "./system-prompt.js";
 import { TokenBudget } from "../token-budget.js";
+import { getSettings } from "../settings.js";
 
 // Core tool factories
 import { createBashTool } from "./tools/bash.js";
@@ -180,8 +181,8 @@ export class AgentLoop implements AgentBackend {
       this.lastProjectSkillNames.clear();
     });
     on("agent:compact-request", () => {
-      const budgetTokens = this.tokenBudget.conversationBudgetTokens;
-      const stats = this.conversation.compact(budgetTokens);
+      // Force compaction: use target of 0 so every non-pinned turn is evicted
+      const stats = this.conversation.compact(0, 10, true);
       this.conversation.flush().catch(() => {});
       if (stats) {
         this.bus.emit("ui:info", {
@@ -664,10 +665,11 @@ export class AgentLoop implements AgentBackend {
     let fullResponseText = "";
 
     while (!signal.aborted) {
-      // Auto-compact if conversation exceeds the model-aware budget
+      // Auto-compact when conversation exceeds threshold fraction of budget
       const budgetTokens = this.tokenBudget.conversationBudgetTokens;
-      if (this.conversation.estimateTokens() > budgetTokens) {
-        const stats = this.conversation.compact(budgetTokens);
+      const autoCompactThreshold = Math.floor(budgetTokens * getSettings().autoCompactThreshold);
+      if (this.conversation.estimateTokens() > autoCompactThreshold) {
+        const stats = this.conversation.compact(autoCompactThreshold);
         await this.conversation.flush();
         if (stats) {
           this.bus.emit("ui:info", {

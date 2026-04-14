@@ -72,6 +72,8 @@ export interface Settings {
   historyStartupEntries?: number;
   /** Max nuclear entries kept in-context before flushing to history file (default: 200). */
   nuclearMaxEntries?: number;
+  /** Auto-compact threshold as fraction of conversation budget (0-1, default 0.5). */
+  autoCompactThreshold?: number;
 
   // ── Display ───────────────────────────────────────────────
   /** Max command output lines shown inline in TUI. */
@@ -108,6 +110,7 @@ const DEFAULTS: Required<Settings> = {
   historyMaxBytes: 102400,
   historyStartupEntries: 50,
   nuclearMaxEntries: 200,
+  autoCompactThreshold: 0.5,
   maxCommandOutputLines: 3,
   readOutputMaxLines: 10,
   diffMaxLines: 20,
