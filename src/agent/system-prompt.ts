@@ -1,7 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ContextManager } from "../context-manager.js";
 import { discoverSkills } from "./skills.js";
+
+/** Resolve the absolute path to agent-sh's own docs directory. */
+const DOCS_DIR = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../docs",
+);
 
 /** File names to scan for project conventions (checked in order). */
 const CONVENTION_FILES = ["CLAUDE.md", "AGENT.md"];
@@ -75,7 +82,11 @@ user is the intended audience. Use user_shell when the command has real effects.
 - Prefer edit_file over write_file for modifying existing files
 - Use grep/glob to find files before reading them
 - Keep bash commands focused; avoid long-running blocking commands
-- Always check command exit codes for errors`;
+- Always check command exit codes for errors
+
+# Documentation
+agent-sh documentation is available in: ${DOCS_DIR}
+Use read_file on ${DOCS_DIR}/README.md for an index of all docs.`;
 
 /**
  * Build the dynamic context — injected as a user message before each query.
