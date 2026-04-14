@@ -88,22 +88,22 @@ export default function activate(ctx: ExtensionContext): void {
     }
   });
 
-  // On dismiss, don't close the session — it keeps the compositor
-  // redirected to the (now invisible) panel surface so agent output
-  // doesn't leak to the main buffer. Session is cleaned up when
-  // processing finishes or on next submit.
+  // On dismiss: close session only if agent is not actively processing.
+  // If agent is still working (phase="active"), keep session alive so
+  // output buffers in the panel and agent can keep executing tools.
   panel.handlers.advise("panel:dismiss", (next) => {
     next();
+    if (session && !panel.processing) {
+      session.close();
+      session = null;
+    }
   });
 
   bus.on("agent:processing-done", () => {
-    if (panel.active) {
-      panel.setDone();
-    }
-    // Panel dismissed (or setDone triggered auto-dismiss) — clean up session
-    if (!panel.active) {
-      session?.close();
-      session = null;
-    }
+    if (!panel.active) return;
+    panel.setDone();
+    // If panel was hidden while processing (passthrough), setDone()
+    // triggers dismiss() which closes the session above.
+    // If panel is still visible, session stays for the follow-up prompt.
   });
 }

@@ -497,6 +497,11 @@ export class FloatingPanel {
     return this.phase !== "idle";
   }
 
+  /** Whether the agent is currently processing a query. */
+  get processing(): boolean {
+    return this.phase === "active";
+  }
+
   /** Whether the panel is currently visible on screen. */
   get visible(): boolean {
     return this._visible;

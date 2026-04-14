@@ -659,6 +659,15 @@ open() → [input] → submit → [active] → setDone() → [input] (follow-up)
 
 **Passthrough mode**: When the user hides the panel while the agent is still working (`active` phase), the panel enters passthrough mode instead of handing rendering back to the foreground program. It stays on alt screen with stdout held, and renders the TerminalBuffer content directly at 50ms intervals. This avoids ncurses curscr desync — the program's screen stays correct because we do full repaints, not differential updates. When the agent finishes (`setDone()`), passthrough auto-dismisses and hands back control via a SIGWINCH double-resize that forces ncurses to do a clean full repaint.
 
+**Session lifecycle with RemoteSession**: When using a FloatingPanel with `createRemoteSession` (as in the built-in overlay agent), the session controls compositor routing — all agent output goes to the panel surface while the session is active. Session lifetime follows these rules:
+
+- **Created** on first submit (or re-created on show if previously closed)
+- **Stays alive** when the panel is hidden during `active` phase — the agent keeps processing in the background, output buffers in the panel, and the agent can still execute tools (terminal keys, shell commands)
+- **Closed** when the panel is dismissed and the agent is NOT processing (`panel.processing === false`) — this restores compositor routing to the main terminal
+- **Closed** when `setDone()` triggers auto-dismiss from passthrough mode
+
+The `processing` getter distinguishes "agent actively working" from "waiting for follow-up input". This prevents the main agent's output from being routed to a hidden panel after the overlay agent has finished.
+
 **Content API**: `appendText(text)`, `appendLine(line)`, `updateLastLine(fn)`, `clearContent()`, `setTitle(title)`, `setFooter(footer)`.
 
 **Handler-based rendering** — all rendering is customizable via the handler/advise pattern:

@@ -95,6 +95,11 @@ export class ConversationState {
     });
   }
 
+  /** Add tool results as a user message (for inline tool protocol). */
+  addToolResultInline(content: string): void {
+    this.messages.push({ role: "user", content });
+  }
+
   addSystemNote(text: string): void {
     this.messages.push({ role: "user", content: text });
   }

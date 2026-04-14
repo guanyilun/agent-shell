@@ -30,6 +30,7 @@ import type { Compositor } from "../utils/compositor.js";
 import { createToolUI } from "../utils/tool-interactive.js";
 import { TokenBudget } from "../token-budget.js";
 import { getSettings } from "../settings.js";
+import { createToolProtocol, type ToolProtocol, type PendingToolCall as ProtocolPendingToolCall, type ToolResult as ProtocolToolResult } from "./tool-protocol.js";
 
 // Core tool factories
 import { createBashTool } from "./tools/bash.js";
@@ -44,11 +45,7 @@ import { createDisplayTool } from "./tools/display.js";
 import { createListSkillsTool } from "./tools/list-skills.js";
 import { discoverProjectSkills } from "./skills.js";
 
-interface PendingToolCall {
-  id: string;
-  name: string;
-  argumentsJson: string;
-}
+type PendingToolCall = ProtocolPendingToolCall;
 
 export class AgentLoop implements AgentBackend {
   private abortController: AbortController | null = null;
@@ -65,6 +62,7 @@ export class AgentLoop implements AgentBackend {
 
   private thinkingLevel = "off";
   private compositor: Compositor | null = null;
+  private toolProtocol: ToolProtocol;
 
   constructor(
     private bus: EventBus,
@@ -82,6 +80,9 @@ export class AgentLoop implements AgentBackend {
 
     // Unified token budget — adapts to current model's context window
     this.tokenBudget = new TokenBudget(this.currentMode.contextWindow);
+
+    // Tool protocol — controls how tools are presented to the LLM
+    this.toolProtocol = createToolProtocol(getSettings().toolMode ?? "api");
 
     // Register core tools
     this.registerCoreTools();
@@ -701,15 +702,16 @@ export class AgentLoop implements AgentBackend {
       // Stream LLM response with retry
       const result = await this.streamWithRetry(systemPrompt, dynamicContext, signal);
 
-      const { text, toolCalls, assistantContent, assistantToolCalls } = result;
+      const { text, toolCalls: streamedToolCalls } = result;
+
+      // Extract tool calls via protocol (API mode uses streamed calls,
+      // inline mode parses XML from text)
+      const toolCalls = this.toolProtocol.extractToolCalls(text, streamedToolCalls);
 
       fullResponseText += text;
 
-      // Record the assistant message in conversation
-      this.conversation.addAssistantMessage(
-        assistantContent,
-        assistantToolCalls,
-      );
+      // Record the assistant message via protocol
+      this.toolProtocol.recordAssistant(this.conversation, text, toolCalls);
 
       // No tool calls → agent is done
       if (toolCalls.length === 0) break;
@@ -733,13 +735,30 @@ export class AgentLoop implements AgentBackend {
       // Execute tool calls — run read-only tools in parallel, permission-
       // requiring tools sequentially (to avoid overlapping permission prompts).
       const batchTotal = toolCalls.length;
+      const collectedResults: ProtocolToolResult[] = [];
+
       const executeSingle = async (tc: PendingToolCall, batchIndex?: number) => {
+        // Rewrite meta-tool calls (e.g., use_extension → actual tool)
+        tc = this.toolProtocol.rewriteToolCall(tc);
+
+        // Check for validation errors from rewrite (e.g., wrong extension params)
+        try {
+          const maybeError = JSON.parse(tc.argumentsJson);
+          if (maybeError._error) {
+            collectedResults.push({
+              callId: tc.id, toolName: tc.name,
+              content: maybeError._error, isError: true,
+            });
+            return;
+          }
+        } catch { /* not an error payload, continue */ }
+
         const tool = this.toolRegistry.get(tc.name);
         if (!tool) {
-          this.conversation.addToolResult(
-            tc.id,
-            `Error: Unknown tool "${tc.name}"`,
-          );
+          collectedResults.push({
+            callId: tc.id, toolName: tc.name,
+            content: `Unknown tool "${tc.name}"`, isError: true,
+          });
           return;
         }
 
@@ -747,10 +766,10 @@ export class AgentLoop implements AgentBackend {
         try {
           args = JSON.parse(tc.argumentsJson);
         } catch {
-          this.conversation.addToolResult(
-            tc.id,
-            `Error: Invalid JSON arguments for ${tc.name}`,
-          );
+          collectedResults.push({
+            callId: tc.id, toolName: tc.name,
+            content: `Invalid JSON arguments for ${tc.name}`, isError: true,
+          });
           return;
         }
 
@@ -765,11 +784,8 @@ export class AgentLoop implements AgentBackend {
             batchIndex, batchTotal: batchTotal > 1 ? batchTotal : undefined },
         );
 
-        // Add tool result to conversation (truncate large outputs to avoid
-        // blowing through the context window on a single tool call)
-        let content = result.isError
-          ? `Error: ${result.content}`
-          : result.content;
+        // Truncate large outputs to avoid blowing context
+        let content = result.content;
         const maxBytes = 16_384; // ~4k tokens
         if (content.length > maxBytes) {
           const headBytes = Math.floor(maxBytes * 0.6);
@@ -792,7 +808,10 @@ export class AgentLoop implements AgentBackend {
             ...lines.slice(tailStart),
           ].join("\n");
         }
-        this.conversation.addToolResult(tc.id, content);
+        collectedResults.push({
+          callId: tc.id, toolName: tc.name,
+          content, isError: result.isError,
+        });
       };
 
       // Partition into parallel-safe (read-only) and sequential (needs permission)
@@ -821,6 +840,9 @@ export class AgentLoop implements AgentBackend {
         if (signal.aborted) break;
         await executeSingle(tc, ++batchIdx);
       }
+
+      // Record all tool results via protocol
+      this.toolProtocol.recordResults(this.conversation, collectedResults);
 
       // Loop back — LLM sees tool results
     }
@@ -892,10 +914,6 @@ export class AgentLoop implements AgentBackend {
   ): Promise<{
     text: string;
     toolCalls: PendingToolCall[];
-    assistantContent: string | null;
-    assistantToolCalls:
-      | { id: string; function: { name: string; arguments: string } }[]
-      | undefined;
   }> {
     let text = "";
     const pendingToolCalls: PendingToolCall[] = [];
@@ -910,9 +928,26 @@ export class AgentLoop implements AgentBackend {
     // Let extensions transform the message array (compact, summarize, filter, etc.)
     const messages = this.handlers.call("conversation:prepare", rawMessages);
 
+    // Tool protocol controls what goes in the API tools param vs dynamic context
+    const apiTools = this.toolProtocol.getApiTools(this.toolRegistry.all());
+    const toolPrompt = this.toolProtocol.getToolPrompt(this.toolRegistry.all());
+
+    // Append tool catalog to dynamic context (closer to user query = better followed)
+    if (toolPrompt) {
+      const ctxMsg = messages[1]; // dynamic context user message
+      if (ctxMsg && typeof ctxMsg.content === "string") {
+        ctxMsg.content += "\n" + toolPrompt;
+      }
+    }
+
+    // Stream filter strips tool tags from display (inline mode only)
+    const streamFilter = this.toolProtocol.createStreamFilter(
+      this.toolRegistry.all().map((t) => t.name),
+    );
+
     const stream = await this.llmClient.stream({
       messages,
-      tools: this.toolRegistry.toAPITools(),
+      tools: apiTools,
       model: this.currentModel,
       reasoning_effort: this.shouldSendReasoningEffort() ? this.thinkingLevel : undefined,
       signal,
@@ -920,6 +955,16 @@ export class AgentLoop implements AgentBackend {
 
     for await (const chunk of stream) {
       if (signal.aborted) break;
+
+      // Token usage (may arrive in a chunk with empty choices)
+      if ((chunk as any).usage) {
+        const u = (chunk as any).usage;
+        this.bus.emit("agent:usage", {
+          prompt_tokens: u.prompt_tokens ?? 0,
+          completion_tokens: u.completion_tokens ?? 0,
+          total_tokens: u.total_tokens ?? 0,
+        });
+      }
 
       const choice = chunk.choices[0];
       if (!choice) continue;
@@ -929,9 +974,15 @@ export class AgentLoop implements AgentBackend {
       // Text content
       if (delta?.content) {
         text += delta.content;
-        this.bus.emitTransform("agent:response-chunk", {
-          blocks: [{ type: "text", text: delta.content }],
-        });
+        // Filter tool tags from display output (inline mode)
+        const displayText = streamFilter
+          ? streamFilter.feed(delta.content)
+          : delta.content;
+        if (displayText) {
+          this.bus.emitTransform("agent:response-chunk", {
+            blocks: [{ type: "text", text: displayText }],
+          });
+        }
       }
 
       // Reasoning/thinking tokens (non-standard, e.g. DeepSeek)
@@ -960,31 +1011,21 @@ export class AgentLoop implements AgentBackend {
           }
         }
       }
+    }
 
-      // Token usage (final chunk from providers that support it)
-      if ((chunk as any).usage) {
-        const u = (chunk as any).usage;
-        this.bus.emit("agent:usage", {
-          prompt_tokens: u.prompt_tokens ?? 0,
-          completion_tokens: u.completion_tokens ?? 0,
-          total_tokens: u.total_tokens ?? 0,
+    // Flush any buffered content from the stream filter
+    if (streamFilter) {
+      const remaining = streamFilter.flush();
+      if (remaining) {
+        this.bus.emitTransform("agent:response-chunk", {
+          blocks: [{ type: "text", text: remaining }],
         });
       }
     }
 
-    // Build assistant tool calls for conversation recording
-    const assistantToolCalls = pendingToolCalls.length
-      ? pendingToolCalls.map((tc) => ({
-          id: tc.id,
-          function: { name: tc.name, arguments: tc.argumentsJson },
-        }))
-      : undefined;
-
     return {
       text,
       toolCalls: pendingToolCalls,
-      assistantContent: text || null,
-      assistantToolCalls,
     };
   }
 }
