@@ -18,8 +18,43 @@ import { palette as p } from "agent-sh/utils/palette.js";
 import type { ExtensionContext } from "agent-sh/types";
 import type { ToolUI } from "agent-sh/agent/types.js";
 
-export default function activate({ bus }: ExtensionContext) {
+export default function activate(ctx: ExtensionContext) {
   let autoApproveWrites = false;
+
+  // Advise the TUI diff renderer to add permission prompt framing.
+  // This replaces the default plain diff box with one that has a warning
+  // border and key hints, so only one diff box is shown (not two).
+  ctx.advise("tui:render-diff", (next, filePath: string, diff: any, width: number) => {
+    const boxW = Math.min(84, width);
+    const contentW = boxW - 4;
+    const MAX_DISPLAY = 25;
+
+    const stats = diff.isNewFile
+      ? `(+${diff.added} lines)`
+      : `(+${diff.added} / -${diff.removed})`;
+    const title = diff.isNewFile
+      ? `new: ${filePath}  ${stats}`
+      : `${filePath}  ${stats}`;
+
+    const diffLines = renderDiff(diff, {
+      width: contentW,
+      filePath,
+      maxLines: MAX_DISPLAY,
+      trueColor: true,
+      mode: "unified",
+    });
+    const content = ["", ...diffLines.slice(1), ""];
+
+    return renderBoxFrame(content, {
+      width: boxW,
+      style: "rounded",
+      borderColor: p.warning,
+      title,
+      footer: [`  ${p.bold}[y] Apply  [n] Skip  [a] Don't ask again${p.reset}`],
+    });
+  });
+
+  const { bus } = ctx;
 
   bus.onPipeAsync("permission:request", async (payload) => {
     const ui = payload.ui as ToolUI | undefined;
@@ -82,36 +117,15 @@ async function handleToolCall(payload: any, ui: ToolUI) {
 }
 
 async function handleFileWrite(payload: any, ui: ToolUI) {
-  const diff = payload.metadata.diff;
-  const filePath = payload.metadata.path ?? payload.title;
-
   const answer = await ui.custom<"approve" | "approve_all" | "reject">({
     render(width) {
       const boxW = Math.min(84, width);
-      const contentW = boxW - 4;
-      const MAX_DISPLAY = 25;
-
-      const stats = diff.isNewFile
-        ? `(+${diff.added} lines)`
-        : `(+${diff.added} / -${diff.removed})`;
-      const title = diff.isNewFile
-        ? `new: ${filePath}  ${stats}`
-        : `${filePath}  ${stats}`;
-
-      const diffLines = renderDiff(diff, {
-        width: contentW,
-        filePath,
-        maxLines: MAX_DISPLAY,
-        trueColor: true,
-        mode: "unified",
-      });
-      const content = ["", ...diffLines.slice(1), ""];
-
-      return renderBoxFrame(content, {
+      // Just show the prompt actions — the diff itself was already rendered
+      // by our advise on "tui:render-diff".
+      return renderBoxFrame([], {
         width: boxW,
         style: "rounded",
         borderColor: p.warning,
-        title,
         footer: [`  ${p.bold}[y] Apply  [n] Skip  [a] Don't ask again${p.reset}`],
       });
     },

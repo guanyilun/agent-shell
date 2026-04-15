@@ -22,7 +22,7 @@ import {
   type SpinnerState,
   type SpinnerOpts,
 } from "../utils/tool-display.js";
-import { renderDiff, renderDiffAsync } from "../utils/diff-renderer.js";
+import { renderDiff } from "../utils/diff-renderer.js";
 import { renderBoxFrame } from "../utils/box-frame.js";
 import type { DiffResult } from "../utils/diff.js";
 import { getSettings } from "../settings.js";
@@ -456,19 +456,20 @@ export default function activate(ctx: ExtensionContext): void {
     // to the event loop between hunks (keeping the spinner responsive).
   });
 
-  // Async pipe: render diffs progressively (yields between hunks) then
-  // restart the spinner.  Runs after the sync `on` handler above (which
+  // Async pipe: render diffs via the tui:render-diff handler (extensions can
+  // advise to customize).  Runs after the sync `on` handler above (which
   // flushes state) and before shell.ts's pipe (which pauses stdout).
   bus.onPipeAsync("permission:request", async (e) => {
     if (!shouldRender()) return e;
 
     if (e.kind === "file-write" && e.metadata?.diff) {
       showCollapsedThinking();
-      // Start spinner now so it animates during the async diff rendering
-      // (yields between hunks let the spinner interval fire).
-      startThinkingSpinner();
-      await showFileDiff(e.title, e.metadata.diff as DiffResult);
-      // Spinner keeps running after diff — shows activity while tool executes.
+      const lines = ctx.call("tui:render-diff", e.title, e.metadata.diff as DiffResult, cappedW()) as string[];
+      if (lines.length > 0) {
+        if (!s.renderer) startAgentResponse();
+        for (const line of lines) s.renderer!.writeLine(line);
+        drain();
+      }
     }
     // Don't endAgentResponse() here — permission requests that aren't
     // file-write diffs are handled inline (auto-approved or by extensions).
@@ -664,6 +665,18 @@ export default function activate(ctx: ExtensionContext): void {
       return renderLinesBody(body.lines, width, body.maxLines);
     }
     return [];
+  });
+
+  /**
+   * Default renderer for standalone diffs (e.g. permission prompts).
+   * Extensions can advise this to customize diff rendering:
+   *
+   *   ctx.advise("tui:render-diff", (next, filePath, diff, width) => {
+   *     return myCustomDiffBox(filePath, diff, width);
+   *   });
+   */
+  define("tui:render-diff", (filePath: string, diff: DiffResult, width: number): string[] => {
+    return renderDiffBody(diff, filePath, width);
   });
 
   /** Render a diff as framed box lines (pure — no TUI state side effects). */
@@ -978,39 +991,6 @@ export default function activate(ctx: ExtensionContext): void {
       ? `${p.success}+${diff.added}${p.reset}`
       : `${p.success}+${diff.added}${p.reset} ${p.error}-${diff.removed}${p.reset}`;
     return `${p.dim}${filePath}${p.reset}  ${stats}`;
-  }
-
-  async function showFileDiff(filePath: string, diff: DiffResult): Promise<void> {
-    if (diff.isIdentical) return;
-    contentGap("diff");
-
-    if (!s.renderer) startAgentResponse();
-
-    const boxW = Math.min(120, cappedW() - 2);
-    const contentW = boxW - 4;
-
-    await renderDiffAsync(
-      diff,
-      {
-        width: contentW,
-        filePath,
-        maxLines: getSettings().diffMaxLines,
-        trueColor: true,
-      },
-      (diffLines) => {
-        const body = diffLines.length > 1 ? ["", ...diffLines.slice(1), ""] : diffLines;
-        const framed = renderBoxFrame(body, {
-          width: boxW,
-          style: "rounded",
-          borderColor: p.dim,
-          title: diffTitle(filePath, diff),
-        });
-        for (const line of framed) {
-          s.renderer!.writeLine(line);
-        }
-        drain();
-      },
-    );
   }
 
   function toggleThinkingDisplay(): void {
