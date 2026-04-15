@@ -60,16 +60,11 @@ Built-in extensions are loaded from a declarative manifest and can be individual
 
 The shell and the agent are **separate worlds** by default. The PTY runs your real shell; the agent runs its tools in isolated child processes. A `cd` by the agent's `bash` tool doesn't change your shell's cwd.
 
-The connection between them is **context**: each query includes shell context (recent commands, output, cwd). The agent sees what you've been doing but can't touch your shell state — unless it uses `user_shell`.
+The connection between them is **context**: each query includes shell context (recent commands, output, cwd). The agent sees what you've been doing but can't touch your shell state.
 
-### user_shell & display — The Bridge
+Extensions can cross this boundary using `shell:exec-request`. The core event bus makes this easy to wire up — an extension just registers a tool that emits the event and returns the result. We don't include a PTY tool as built-in because the right behavior depends on user preference (confirmation prompts? output capture? restricted commands?). See the `user_shell` example in `examples/extensions/` for a ready-made implementation.
 
-Two tools cross the shell↔agent boundary via `shell:exec-request`:
-
-- **`user_shell`** — for commands with lasting effects (`cd`, `export`, `source`, `npm install`). Output goes to the user's terminal; the agent gets `"Command executed"` by default (set `return_output=true` to inspect).
-- **`display`** — for read-only display (`cat`, `git log`, `diff`). Output goes to the user's terminal; the agent gets `"Output displayed to user."` — it never sees the content.
-
-Both write commands to the actual PTY via the same bus event:
+The pattern works like this:
 
 ```
 agent calls user_shell({ command: "cd src" })
@@ -79,8 +74,6 @@ agent calls user_shell({ command: "cd src" })
         → shell:command-done fires with output
           → result returned to agent
 ```
-
-With the internal agent, both are built-in tools. Extension backends can implement them however they choose — see [Extensions: Custom Agent Backends](extensions.md#custom-agent-backends).
 
 ## Agent Backend
 

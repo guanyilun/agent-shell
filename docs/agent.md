@@ -37,7 +37,7 @@ See [Context Management](context-management.md) for the full design: token budge
 The system prompt is rebuilt on **every LLM call** (not cached), so context is always fresh. It includes:
 
 1. **Identity** — "You are an AI coding assistant in agent-sh..."
-2. **Tool decision guide** — when to use scratchpad tools vs display vs user_shell
+2. **Tool decision guide** — when to use scratchpad tools
 3. **Available tools** — name + description of every registered tool
 4. **Tool usage guidelines** — read before editing, prefer edit over write, use grep/glob to find files, etc.
 5. **Shell context** — the assembled context from above
@@ -159,27 +159,19 @@ Tools that require permission: **bash**, **write_file**, **edit_file** (anything
 
 ## Built-in Tools
 
-The agent registers core tools on startup, with additional tools contributed by built-in extensions. The most important distinction is between `bash`, `display`, and `user_shell` — they all run shell commands but in different ways:
+The agent registers core tools on startup, with additional tools contributed by extensions in `~/.agent-sh/extensions/`.
 
-### bash vs display vs user_shell
+### bash
 
-- **`bash`** — runs in an **isolated subprocess** (`/bin/bash -c`). The agent uses this for investigation: reading files, running tests, checking state. A `cd` here doesn't affect your shell. Output is captured and returned to the LLM.
-- **`display`** — runs in **your live PTY** but for **read-only display**. The agent uses this when the user asks to see something (`cat`, `git log`, `diff`). Output appears in your terminal but is NOT returned to the LLM.
-- **`user_shell`** — runs in **your live PTY** for commands with **lasting effects**: `cd`, `export`, `source`, `npm install`. Output appears in your terminal directly.
+The primary tool for investigation and code execution. **`bash`** runs in an **isolated subprocess** (`/bin/bash -c`). The agent uses this for reading files, running tests, checking state, and executing commands. A `cd` here doesn't affect your shell. Output is captured and returned to the LLM.
 
-The agent decides which tool to use based on intent — no user mode selection needed. The three-way split provides:
-
-1. **Safety** — bash runs in isolation, so the agent can't accidentally break your shell state.
-2. **Clarity** — display vs user_shell makes the agent's intent explicit (showing vs acting).
-3. **Token efficiency** — display and user_shell return minimal text by default instead of the full output. The user already sees it in the terminal; sending it back to the LLM wastes tokens.
+Extensions can add tools that cross the shell↔agent boundary via `shell:exec-request` — for example, running commands with lasting effects in the live PTY (`cd`, `export`, `source`). We don't include such a tool as built-in because the right behavior depends on user preference. See `examples/extensions/user_shell` for a ready-made implementation to start from.
 
 ### All tools
 
 | Tool | Purpose | Permission | Modifies files |
 |---|---|---|---|
 | `bash` | Run commands in isolated subprocess | Yes | Yes |
-| `display` | Show command output to user in live PTY | No | No |
-| `user_shell` | Run commands with lasting effects in user's live PTY | No | Yes |
 | `read_file` | Read file contents (line-numbered, with offset/limit) | No | No |
 | `write_file` | Create or overwrite a file | Yes | Yes |
 | `edit_file` | Find-and-replace in a file (old_text → new_text) | Yes | Yes |
@@ -312,7 +304,7 @@ type ToolResultBody =
   | { kind: "lines"; lines: string[]; maxLines?: number }
 
 interface ToolDisplayInfo {
-  kind: "read" | "write" | "execute" | "search" | "display";
+  kind: "read" | "write" | "execute" | "search";
   locations?: { path: string; line?: number | null }[];
   icon?: string;         // custom icon (e.g. "◆", "⌕")
 }

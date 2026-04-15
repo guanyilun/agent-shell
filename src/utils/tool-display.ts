@@ -80,7 +80,6 @@ const KIND_ICONS: Record<string, string> = {
   move: "↗",
   search: "⌕",
   execute: "▶",
-  display: "◇",
   think: "◇",
   fetch: "↓",
   switch_mode: "⇄",

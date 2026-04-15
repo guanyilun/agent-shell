@@ -509,6 +509,14 @@ export class AgentLoop implements AgentBackend {
         return { content, exitCode: 0, isError: false };
       },
     });
+
+    // System instruction: proactively search history for prior preferences
+    this.registerInstruction(
+      "recall-guidance",
+      "When starting a task that may have been discussed before (conventions, preferences, corrections), " +
+      "use conversation_recall to search history for relevant prior entries. " +
+      "Treat recurring user guidance as standing preferences.",
+    );
   }
 
   /**

@@ -501,7 +501,7 @@ export class DeferredToolProtocol implements ToolProtocol {
 /** Core tool names — always sent with full schema. */
 const CORE_TOOLS = [
   "bash", "read_file", "write_file", "edit_file",
-  "grep", "glob", "ls", "display",
+  "grep", "glob", "ls",
   "list_skills", "conversation_recall",
 ];
 
