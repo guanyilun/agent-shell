@@ -120,54 +120,31 @@ export class InputHandler {
     const display = showBuffer ? this.editor.displayText : "";
     const dCursor = showBuffer ? this.editor.displayCursor : 0;
 
-    if (!showBuffer || !display.includes("\n")) {
-      // Single-line rendering
-      const bufferText = showBuffer ? p.accent + display + p.reset : "";
-      process.stdout.write(promptPrefix + bufferText);
-
-      const bufferVisLen = display.length;
-      const totalVisLen = promptVisLen + bufferVisLen;
-      const totalRows = totalVisLen > 0 ? Math.ceil(totalVisLen / termW) : 1;
-
-      // Position cursor
-      if (showBuffer) {
-        const cursorColAbs = promptVisLen + dCursor;
-        const cursorTermRow = Math.floor(cursorColAbs / termW);
-        const cursorCol = cursorColAbs % termW;
-        const rowsFromEnd = totalRows - 1 - cursorTermRow;
-
-        if (rowsFromEnd > 0) {
-          process.stdout.write(`\x1b[${rowsFromEnd}A`);
-        }
-        if (cursorCol > 0) {
-          process.stdout.write(`\r\x1b[${cursorCol}C`);
-        } else {
-          process.stdout.write(`\r`);
-        }
-
-        // Track how many rows below top the cursor sits (for next move-up)
-        this.cursorRowsBelow = cursorTermRow;
-      } else {
-        this.cursorRowsBelow = totalRows - 1;
-      }
+    if (!showBuffer) {
+      // No buffer — just write the prompt prefix, cursor stays at end
+      process.stdout.write(promptPrefix);
+      const totalVisLen = promptVisLen;
+      this.cursorRowsBelow = totalVisLen > 0 ? Math.ceil(totalVisLen / termW) - 1 : 0;
+    } else if (!display.includes("\n")) {
+      // Single-line: write up to cursor, save, write rest, restore.
+      // The terminal handles all wrapping — no manual row/col math needed.
+      const before = display.slice(0, dCursor);
+      const after = display.slice(dCursor);
+      process.stdout.write(
+        promptPrefix + p.accent + before + p.reset +
+        "\x1b7" +                           // DECSC — save cursor position
+        p.accent + after + p.reset +
+        "\x1b8"                             // DECRC — restore cursor position
+      );
+      const beforeVisLen = promptVisLen + dCursor;
+      this.cursorRowsBelow = beforeVisLen > 0 ? Math.ceil(beforeVisLen / termW) - 1 : 0;
     } else {
-      // Multi-line: render each line with continuation indent
+      // Multi-line: render each line with continuation indent.
+      // Same save/restore strategy — cursor position is never computed.
       const lines = display.split("\n");
       const indent = " ".repeat(promptVisLen);
-      let totalTermLines = 0;
 
-      for (let li = 0; li < lines.length; li++) {
-        const prefix = li === 0 ? promptPrefix : indent;
-        const prefixVisLen = li === 0 ? promptVisLen : promptVisLen;
-        const lineText = lines[li]!;
-        process.stdout.write(prefix + p.accent + lineText + p.reset);
-        if (li < lines.length - 1) process.stdout.write("\n");
-
-        // Count terminal lines this logical line occupies
-        const lineVisLen = prefixVisLen + lineText.length;
-        totalTermLines += lineVisLen > 0 ? Math.ceil(lineVisLen / termW) : 1;
-      }
-      // Position cursor: find which logical line and offset the cursor is on
+      // Locate cursor: which logical line and offset within it
       let charsRemaining = dCursor;
       let cursorLine = 0;
       for (let li = 0; li < lines.length; li++) {
@@ -179,31 +156,36 @@ export class InputHandler {
         cursorLine = li + 1;
       }
 
-      // Count terminal rows above cursor's logical line
-      let termRowsAboveCursor = 0;
-      for (let li = 0; li < cursorLine; li++) {
-        const lineVisLen = promptVisLen + lines[li]!.length;
-        termRowsAboveCursor += lineVisLen > 0 ? Math.ceil(lineVisLen / termW) : 1;
+      let output = "";
+      let cursorRowFromTop = 0;
+      let rowsSoFar = 0;
+
+      for (let li = 0; li < lines.length; li++) {
+        const prefix = li === 0 ? promptPrefix : indent;
+        const lineText = lines[li]!;
+        const lineVisLen = promptVisLen + lineText.length;
+        const lineTermRows = lineVisLen > 0 ? Math.ceil(lineVisLen / termW) : 1;
+
+        if (li === cursorLine) {
+          // Split this line at the cursor
+          const before = lineText.slice(0, charsRemaining);
+          const after = lineText.slice(charsRemaining);
+          output += prefix + p.accent + before + p.reset;
+          output += "\x1b7";                // DECSC — save cursor position
+          output += p.accent + after + p.reset;
+
+          const beforeColAbs = promptVisLen + charsRemaining;
+          cursorRowFromTop = rowsSoFar + (beforeColAbs > 0 ? Math.ceil(beforeColAbs / termW) - 1 : 0);
+        } else {
+          output += prefix + p.accent + lineText + p.reset;
+        }
+
+        if (li < lines.length - 1) output += "\n";
+        rowsSoFar += lineTermRows;
       }
 
-      // Within cursor's logical line, which terminal row is the cursor on?
-      const cursorColAbs = promptVisLen + charsRemaining;
-      const cursorTermRowInLine = Math.floor(cursorColAbs / termW);
-      const cursorGlobalTermRow = termRowsAboveCursor + cursorTermRowInLine;
-      const rowsFromBottom = totalTermLines - 1 - cursorGlobalTermRow;
-
-      if (rowsFromBottom > 0) {
-        process.stdout.write(`\x1b[${rowsFromBottom}A`);
-      }
-      const cursorCol = cursorColAbs % termW;
-      if (cursorCol > 0) {
-        process.stdout.write(`\r\x1b[${cursorCol}C`);
-      } else {
-        process.stdout.write(`\r`);
-      }
-
-      // Track how many rows below top the cursor sits (for next move-up)
-      this.cursorRowsBelow = cursorGlobalTermRow;
+      process.stdout.write(output + "\x1b8"); // DECRC — restore cursor position
+      this.cursorRowsBelow = cursorRowFromTop;
     }
   }
 
@@ -409,16 +391,8 @@ export class InputHandler {
     if (this.autocompleteLines > 0) {
       process.stdout.write(`\x1b[${this.autocompleteLines}A`);
     }
-    // Reposition cursor: must match the layout in writeModePromptLine()
-    const agentInfo = this.onShowAgentInfo();
-    const indicator = this.activeMode?.indicator ?? "●";
-    const infoPrefix = agentInfo.info
-      ? `${agentInfo.info} ${indicator} `
-      : `${indicator} `;
-    const icon = this.activeMode?.promptIcon ?? "❯";
-    const promptVisLen = visibleLen(infoPrefix) + visibleLen(icon) + 1;
-    const col = promptVisLen + this.editor.displayCursor;
-    process.stdout.write(`\r\x1b[${col}C`);
+    // Restore cursor to the position saved by writeModePromptLine()
+    process.stdout.write("\x1b8");
   }
 
   private applyAutocomplete(): void {
