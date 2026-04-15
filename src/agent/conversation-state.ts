@@ -204,8 +204,22 @@ export class ConversationState {
     for (let i = 0; i < turns.length; i++) {
       turns[i]!.priority = this.inferPriority(turns[i]!.messages);
     }
+    // Two-tier pin: last turn verbatim, next (pinnedCount-1) slimmed
+    const verbatimCount = 1;
+    const slimmedCount = Math.max(0, pinnedCount - verbatimCount);
+    const slimStart = turns.length - pinnedCount;
+    const slimEnd = slimStart + slimmedCount;
+    const slimmedIndices = new Set<number>();
+    for (let i = slimStart; i < slimEnd; i++) {
+      slimmedIndices.add(i);
+    }
+    // Pin first turn and last verbatim turn (not evictable)
     turns[0]!.priority = Priority.PINNED;
-    for (let i = turns.length - pinnedCount; i < turns.length; i++) {
+    for (let i = turns.length - verbatimCount; i < turns.length; i++) {
+      turns[i]!.priority = Priority.PINNED;
+    }
+    // Slimmed turns are also not evictable — they'll be trimmed, not removed
+    for (const i of slimmedIndices) {
       turns[i]!.priority = Priority.PINNED;
     }
 
@@ -250,7 +264,7 @@ export class ConversationState {
 
     if (evictedIndices.size === 0) return null;
 
-    // Rebuild: first turn + nuclear summary block + remaining turns
+    // Rebuild: first turn + nuclear block + slimmed turns + verbatim last turn
     const rebuilt: ChatCompletionMessageParam[] = [];
     let insertedNuclearBlock = false;
 
@@ -260,6 +274,8 @@ export class ConversationState {
           rebuilt.push(this.buildNuclearBlock());
           insertedNuclearBlock = true;
         }
+      } else if (slimmedIndices.has(i)) {
+        rebuilt.push(...this.slimTurn(turns[i]!.messages));
       } else {
         rebuilt.push(...turns[i]!.messages);
       }
@@ -419,6 +435,64 @@ export class ConversationState {
       }
       messages.splice(insertIdx, 0, this.buildNuclearBlock());
     }
+  }
+
+  // ── Internal: Two-tier pin for recent turns ────────────────────
+
+  /**
+   * Slim down a turn's messages for the "second tier" of the recent window.
+   * - Drops read-only tool call/results (read_file, grep, glob, ls, search)
+   * - Truncates remaining tool results to ~500 chars
+   * - Keeps user/assistant messages intact
+   */
+  private slimTurn(messages: ChatCompletionMessageParam[]): ChatCompletionMessageParam[] {
+    const MAX_RESULT_LEN = 500;
+    const result: ChatCompletionMessageParam[] = [];
+
+    // Collect tool_call ids that are read-only so we can skip their results
+    const readOnlyToolIds = new Set<string>();
+
+    for (const msg of messages) {
+      // Assistant message with tool calls — filter out read-only tools
+      if (msg.role === "assistant" && "tool_calls" in msg && msg.tool_calls) {
+        const kept = msg.tool_calls.filter((tc) => {
+          if (!("function" in tc)) return true; // keep custom tool calls
+          if (READ_ONLY_TOOLS.has(tc.function.name)) {
+            readOnlyToolIds.add(tc.id);
+            return false;
+          }
+          return true;
+        });
+        if (kept.length === 0) {
+          // All calls were read-only — drop the tool_calls field entirely
+          const { tool_calls: _, ...rest } = msg;
+          result.push(rest);
+        } else {
+          result.push({ ...msg, tool_calls: kept });
+        }
+        continue;
+      }
+
+      // Tool result — skip if read-only, truncate otherwise
+      if (msg.role === "tool") {
+        if (readOnlyToolIds.has(msg.tool_call_id)) continue;
+        const content = typeof msg.content === "string" ? msg.content : "";
+        if (content.length > MAX_RESULT_LEN) {
+          result.push({
+            ...msg,
+            content: content.slice(0, MAX_RESULT_LEN) + "\n... [truncated by compact]",
+          });
+        } else {
+          result.push(msg);
+        }
+        continue;
+      }
+
+      // User / assistant text — keep intact
+      result.push(msg);
+    }
+
+    return result;
   }
 
   // ── Internal: Turn parsing and priority ───────────────────────
