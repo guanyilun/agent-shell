@@ -120,7 +120,7 @@ const DEFAULTS: Required<Settings> = {
   autoCompactThreshold: 0.5,
   maxCommandOutputLines: 3,
   readOutputMaxLines: 10,
-  diffMaxLines: 20,
+  diffMaxLines: Infinity,
   skillPaths: [],
   startupBanner: true,
   promptIndicator: true,
