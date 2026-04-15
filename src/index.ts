@@ -309,6 +309,14 @@ async function main(): Promise<void> {
       }
     }
 
+    const extSections = bus.emitPipe("banner:collect", { sections: [] }).sections;
+    for (const sec of extSections) {
+      sections += `\n\n  ${p.muted}${sec.label}:${p.reset}`;
+      for (const item of sec.items) {
+        sections += `\n    ${p.dim}${item}${p.reset}`;
+      }
+    }
+
     const hint = `${p.muted}Type ${p.warning}>${p.muted} to ask AI · ${p.warning}>/help${p.muted} for commands${p.reset}`;
     const borderLine = `${p.muted}${"─".repeat(bannerW)}${p.reset}`;
 

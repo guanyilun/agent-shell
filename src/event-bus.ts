@@ -251,6 +251,11 @@ export interface ShellEvents {
   "agent:register-instruction": { name: string; text: string };
   "agent:remove-instruction": { name: string };
 
+  // Banner section collection (sync pipe: extensions contribute labeled items to startup banner)
+  "banner:collect": {
+    sections: Array<{ label: string; items: string[] }>;
+  };
+
   // Autocomplete (sync pipe: extensions inspect buffer and append items)
   "autocomplete:request": {
     buffer: string;

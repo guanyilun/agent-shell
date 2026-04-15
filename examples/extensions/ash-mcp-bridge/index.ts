@@ -65,6 +65,17 @@ export default async function activate(ctx: any): Promise<void> {
     }
   }
 
+  // Contribute connected servers to the startup banner
+  bus.onPipe("banner:collect", (e) => {
+    if (connected.length > 0) {
+      e.sections.push({
+        label: "MCP Servers",
+        items: connected.map((s) => s.name),
+      });
+    }
+    return e;
+  });
+
   // Clean up on exit
   bus.on("app:quit", () => {
     for (const server of connected) {
