@@ -1,10 +1,9 @@
 /**
- * Persistent history file — Tier 3 of the three-tier history system.
+ * Persistent history file — append-only JSONL at ~/.agent-sh/history.
  *
- * Append-only JSONL file at ~/.agent-sh/history. Multiple agent-sh
- * instances can write concurrently — each line is under PIPE_BUF so
- * O_APPEND writes are atomic. Only truncation (which rewrites the file)
- * uses a lock file for safety.
+ * Multiple agent-sh instances can write concurrently — each line is under
+ * PIPE_BUF so O_APPEND writes are atomic. Only truncation (which rewrites
+ * the file) uses a lock file for safety.
  */
 import * as fs from "node:fs/promises";
 import * as fss from "node:fs";
@@ -93,6 +92,25 @@ export class HistoryFile {
       }
     }
     return results;
+  }
+
+  /**
+   * Find a single entry by sequence number. Returns null if not found.
+   * Searches from the end of the file (most recent first).
+   */
+  async findBySeq(seq: number): Promise<NuclearEntry | null> {
+    let content: string;
+    try {
+      content = await fs.readFile(this.filePath, "utf-8");
+    } catch {
+      return null;
+    }
+    const lines = content.trim().split("\n").filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const entry = deserializeEntry(lines[i]!);
+      if (entry && entry.seq === seq) return entry;
+    }
+    return null;
   }
 
   /**

@@ -217,7 +217,6 @@ export class AgentLoop implements AgentBackend {
     on("agent:compact-request", () => {
       // Force compaction: use target of 0 so every non-pinned turn is evicted
       const stats = this.conversation.compact(0, 10, true);
-      this.conversation.flush().catch(() => {});
       if (stats) {
         this.bus.emit("ui:info", {
           message: `(compacted: ~${stats.before.toLocaleString()} → ~${stats.after.toLocaleString()} tokens)`,
@@ -721,7 +720,6 @@ export class AgentLoop implements AgentBackend {
       const autoCompactThreshold = Math.floor(budgetTokens * getSettings().autoCompactThreshold);
       if (this.conversation.estimateTokens() > autoCompactThreshold) {
         const stats = this.conversation.compact(autoCompactThreshold);
-        await this.conversation.flush();
         if (stats) {
           this.bus.emit("ui:info", {
             message: `(compacted: ~${stats.before.toLocaleString()} → ~${stats.after.toLocaleString()} tokens)`,
@@ -749,7 +747,10 @@ export class AgentLoop implements AgentBackend {
       this.toolProtocol.recordAssistant(this.conversation, text, toolCalls);
 
       // No tool calls → agent is done
-      if (toolCalls.length === 0) break;
+      if (toolCalls.length === 0) {
+        this.conversation.eagerNucleateAgent(fullResponseText);
+        break;
+      }
 
       // Emit batch info so the TUI can render group headers upfront
       {
@@ -879,6 +880,17 @@ export class AgentLoop implements AgentBackend {
       // Record all tool results via protocol
       this.toolProtocol.recordResults(this.conversation, collectedResults);
 
+      // Eager nucleation: write tool results to history file
+      this.conversation.eagerNucleateTools(
+        collectedResults.map((r) => {
+          // Find the original args for this tool call
+          const tc = toolCalls.find(t => t.id === r.callId || t.name === r.toolName);
+          let args: Record<string, unknown> = {};
+          try { args = tc ? JSON.parse(tc.argumentsJson) : {}; } catch {}
+          return { toolName: r.toolName, args, content: r.content, isError: !!r.isError };
+        }),
+      );
+
       // Loop back — LLM sees tool results
     }
 
@@ -909,7 +921,6 @@ export class AgentLoop implements AgentBackend {
           // Use 60% of the budget to leave headroom
           const aggressiveBudget = Math.floor(this.tokenBudget.conversationBudgetTokens * 0.6);
           const stats = this.conversation.compact(aggressiveBudget, 6);
-          await this.conversation.flush();
           const detail = stats ? ` ~${stats.before.toLocaleString()} → ~${stats.after.toLocaleString()} tokens` : "";
           this.bus.emit("ui:info", { message: `(context overflow — compacted${detail}, retrying)` });
           continue;

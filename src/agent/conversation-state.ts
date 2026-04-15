@@ -2,6 +2,7 @@ import type { ChatCompletionMessageParam } from "../utils/llm-client.js";
 import { getSettings } from "../settings.js";
 import {
   type NuclearEntry,
+  nucleate,
   toNuclearEntries,
   formatNuclearLine,
   isReadOnly,
@@ -11,15 +12,16 @@ import {
 import type { HistoryFile } from "./history-file.js";
 
 /**
- * Three-tier conversation state — works like shell history.
+ * Conversation state with eager nucleation — works like shell history.
  *
- * Tier 1: Active context   — full content in LLM messages array
- * Tier 2: Nuclear memory   — one-liner summaries IN the conversation +
- *                            recall archive (in-memory) for full content
- * Tier 3: History file     — nuclear entries persisted to disk
+ * Three stores:
+ *   LLM context   — full messages + nuclear block (session-only)
+ *   In-session mem — full original messages in recallArchive (session-only)
+ *   History file   — nuclear entries (JSONL, persistent)
  *
- * Content flows downward as the context window fills:
- *   Tier 1 → compact → Tier 2 → flush → Tier 3
+ * Every message is nucleated eagerly on arrival → appended to disk.
+ * Compaction evicts from LLM context, replacing with pre-computed nuclear
+ * entries. Session end → nuclear entries survive on disk, memory is lost.
  */
 
 // ── Priority tiers (lower number = evicted first) ─────────────────
@@ -38,14 +40,18 @@ const enum Priority {
 }
 
 export class ConversationState {
-  // ── Tier 1: Active context ────────────────────────────────────
+  // ── LLM context ───────────────────────────────────────────────
   private messages: ChatCompletionMessageParam[] = [];
 
-  // ── Tier 2: Nuclear memory ────────────────────────────────────
+  // ── Nuclear entries (pre-computed, used by compact) ────────────
   private nuclearEntries: NuclearEntry[] = [];
+  /** Map from seq → nuclear entry for lookup during compact. */
+  private nuclearBySeq = new Map<number, NuclearEntry>();
+
+  // ── In-session memory (ephemeral) ─────────────────────────────
   private recallArchive = new Map<number, ChatCompletionMessageParam[]>();
 
-  // ── Tier 3 reference ──────────────────────────────────────────
+  // ── History file reference ────────────────────────────────────
   private historyFile: HistoryFile | null;
 
   // ── Shared state ──────────────────────────────────────────────
@@ -59,10 +65,11 @@ export class ConversationState {
     return this.historyFile?.instanceId ?? "0000";
   }
 
-  // ── Message API (unchanged) ───────────────────────────────────
+  // ── Message API (with eager nucleation) ───────────────────────
 
   addUserMessage(text: string): void {
     this.messages.push({ role: "user", content: text });
+    this.eagerNucleateUser(text);
   }
 
   addAssistantMessage(
@@ -108,18 +115,82 @@ export class ConversationState {
     return this.messages;
   }
 
+  // ── Eager nucleation ──────────────────────────────────────────
+
+  /** Nucleate a user query — called from addUserMessage. */
+  private eagerNucleateUser(text: string): void {
+    const seq = this.nextSeq++;
+    const entry = nucleate("user", text, this.instanceId, seq);
+    this.nuclearEntries.push(entry);
+    this.nuclearBySeq.set(seq, entry);
+    this.recallArchive.set(seq, [{ role: "user", content: text }]);
+    this.appendToFile([entry]);
+  }
+
+  /**
+   * Nucleate an agent text response. Called by agent-loop when the loop
+   * finishes without tool calls.
+   */
+  eagerNucleateAgent(text: string): void {
+    if (!text) return;
+    const seq = this.nextSeq++;
+    const entry = nucleate("agent", text, this.instanceId, seq);
+    this.nuclearEntries.push(entry);
+    this.nuclearBySeq.set(seq, entry);
+    this.recallArchive.set(seq, [{ role: "assistant", content: text }]);
+    this.appendToFile([entry]);
+  }
+
+  /**
+   * Nucleate tool call results. Called by agent-loop after all tool results
+   * are collected. One entry per tool call, enriched with result.
+   */
+  eagerNucleateTools(
+    results: Array<{ toolName: string; args: Record<string, unknown>; content: string; isError: boolean }>,
+  ): void {
+    const entries: NuclearEntry[] = [];
+    for (const r of results) {
+      const seq = this.nextSeq++;
+      const entry = nucleate(
+        r.isError ? "error" : "tool",
+        r.toolName,
+        r.args,
+        r.content,
+        r.isError,
+        this.instanceId,
+        seq,
+      );
+      entries.push(entry);
+      this.nuclearEntries.push(entry);
+      this.nuclearBySeq.set(seq, entry);
+      // Store minimal turn in recall archive
+      this.recallArchive.set(seq, [
+        { role: "assistant", content: null, tool_calls: [{ id: `seq_${seq}`, type: "function", function: { name: r.toolName, arguments: JSON.stringify(r.args) } }] },
+        { role: "tool", tool_call_id: `seq_${seq}`, content: r.content },
+      ]);
+    }
+    this.appendToFile(entries);
+  }
+
+  private appendToFile(entries: NuclearEntry[]): void {
+    if (this.historyFile && entries.length > 0) {
+      // Fire-and-forget — don't block the conversation flow
+      this.historyFile.append(entries).catch(() => {});
+    }
+  }
+
   // ── Token estimation ──────────────────────────────────────────
 
   estimateTokens(): number {
     return Math.ceil(JSON.stringify(this.messages).length / 4);
   }
 
-  // ── Tier 1 → Tier 2: Compaction ───────────────────────────────
+  // ── Compaction (uses pre-computed nuclear entries) ─────────────
 
   /**
    * Priority-based compaction. Evicts lowest-priority turns, replacing
-   * them with nuclear one-liner summaries that stay in the conversation.
-   * Read-only tool results are dropped entirely.
+   * them with their pre-computed nuclear one-liner summaries.
+   * Read-only tool results are dropped entirely from context.
    */
   compact(targetTokens: number, recentTurnsToKeep = 10, force = false): { before: number; after: number } | null {
     const before = this.estimateTokens();
@@ -128,23 +199,27 @@ export class ConversationState {
     const turns = this.parseTurns();
     if (turns.length <= 2) return null;
 
-    // Assign priorities
+    // Assign priorities with recency weighting
     const pinnedCount = Math.min(recentTurnsToKeep, turns.length - 1);
-    for (const turn of turns) {
-      turn.priority = this.inferPriority(turn.messages);
+    for (let i = 0; i < turns.length; i++) {
+      turns[i]!.priority = this.inferPriority(turns[i]!.messages);
     }
     turns[0]!.priority = Priority.PINNED;
     for (let i = turns.length - pinnedCount; i < turns.length; i++) {
       turns[i]!.priority = Priority.PINNED;
     }
 
-    // Sort candidates: lowest priority first, then oldest
+    // Sort candidates: lowest effective priority first (base * recency), then oldest
     const candidates = turns
       .map((t, idx) => ({ turn: t, idx }))
       .filter((c) => c.turn.priority !== Priority.PINNED)
-      .sort((a, b) => a.turn.priority - b.turn.priority || a.idx - b.idx);
+      .sort((a, b) => {
+        const effA = a.turn.priority * recencyWeight(a.idx, turns.length);
+        const effB = b.turn.priority * recencyWeight(b.idx, turns.length);
+        return effA - effB || a.idx - b.idx;
+      });
 
-    // Evict until under budget
+    // Evict until under budget — use pre-computed nuclear entries
     const evictedIndices = new Set<number>();
     let currentTokens = this.estimateTokens();
 
@@ -154,17 +229,20 @@ export class ConversationState {
       evictedIndices.add(c.idx);
       currentTokens -= turnTokens;
 
-      // Generate nuclear entries from this turn
-      const entries = toNuclearEntries(c.turn.messages, this.nextSeq, this.instanceId);
-      this.nextSeq += entries.length;
+      // Generate nuclear entries from this turn ONLY if not already nucleated.
+      // This handles the case where messages were added before eager nucleation
+      // was wired up (e.g. loadPriorHistory).
+      const turnEntries = toNuclearEntries(c.turn.messages, this.nextSeq, this.instanceId);
+      this.nextSeq += turnEntries.length;
 
-      for (const entry of entries) {
+      for (const entry of turnEntries) {
         if (isReadOnly(entry)) {
           // Read-only: archive only (dropped from conversation), agent can re-read
           this.recallArchive.set(entry.seq, c.turn.messages);
         } else {
           // State-changing: keep nuclear one-liner in conversation + archive
           this.nuclearEntries.push(entry);
+          this.nuclearBySeq.set(entry.seq, entry);
           this.recallArchive.set(entry.seq, c.turn.messages);
         }
       }
@@ -197,34 +275,6 @@ export class ConversationState {
     return { before, after: this.estimateTokens() };
   }
 
-  // ── Tier 2 → Tier 3: Flush ───────────────────────────────────
-
-  /**
-   * Flush oldest nuclear entries to the history file when the
-   * in-context nuclear block grows too large.
-   */
-  async flush(): Promise<void> {
-    const maxEntries = getSettings().nuclearMaxEntries;
-    if (this.nuclearEntries.length <= maxEntries) return;
-
-    const flushCount = this.nuclearEntries.length - maxEntries;
-    const toFlush = this.nuclearEntries.slice(0, flushCount);
-
-    // Write to history file
-    if (this.historyFile) {
-      await this.historyFile.append(toFlush);
-    }
-
-    // Remove flushed entries from memory
-    for (const entry of toFlush) {
-      this.recallArchive.delete(entry.seq);
-    }
-    this.nuclearEntries = this.nuclearEntries.slice(flushCount);
-
-    // Update the nuclear block in messages
-    this.updateNuclearBlockInMessages(this.messages);
-  }
-
   // ── Startup: Load prior history ───────────────────────────────
 
   /**
@@ -245,17 +295,17 @@ export class ConversationState {
 
   // ── Conversation recall ───────────────────────────────────────
 
-  /** Search Tier 2 archive + Tier 3 history file. */
+  /** Search in-memory archive + history file. */
   async search(query: string): Promise<string> {
     if (!query.trim()) return "No query provided.";
 
     const parts: string[] = [];
 
-    // Search Tier 2 (in-memory archive)
+    // Search in-memory archive
     const archiveResults = this.searchArchive(query);
     if (archiveResults) parts.push(archiveResults);
 
-    // Search Tier 3 (history file)
+    // Search history file
     if (this.historyFile) {
       const fileResults = await this.historyFile.search(query);
       if (fileResults.length > 0) {
@@ -272,18 +322,24 @@ export class ConversationState {
 
   /** Expand full content of a nuclear entry by seq number. */
   async expand(seq: number): Promise<string> {
-    // Check Tier 2 archive first
+    // Try in-session memory first (full content)
     const archived = this.recallArchive.get(seq);
     if (archived) {
-      const entry = this.nuclearEntries.find((e) => e.seq === seq);
+      const entry = this.nuclearBySeq.get(seq);
       const header = entry ? formatNuclearLine(entry) : `#${seq}`;
       return `${header}\n\n${this.turnToText(archived)}`;
     }
 
-    return `Entry #${seq}: not found in recall archive (may have been flushed to history file).`;
+    // Fall back to history file body field
+    if (this.historyFile) {
+      const entry = await this.historyFile.findBySeq(seq);
+      if (entry?.body) return `${formatNuclearLine(entry)}\n\n${entry.body}`;
+    }
+
+    return `Entry #${seq}: no expanded content available.`;
   }
 
-  /** Browse nuclear entries (Tier 2) + recent history (Tier 3). */
+  /** Browse nuclear entries (in-context) + recent history file. */
   async browse(): Promise<string> {
     const parts: string[] = [];
 
@@ -323,6 +379,7 @@ export class ConversationState {
   clear(): void {
     this.messages = [];
     this.nuclearEntries = [];
+    this.nuclearBySeq.clear();
     this.recallArchive.clear();
   }
 
@@ -431,7 +488,7 @@ export class ConversationState {
     for (const [seq, msgs] of this.recallArchive) {
       const text = this.turnToText(msgs);
       if (regex.test(text)) {
-        const entry = this.nuclearEntries.find((e) => e.seq === seq);
+        const entry = this.nuclearBySeq.get(seq);
         matches.push(entry ? formatNuclearLine(entry) : `#${seq}`);
       }
     }
@@ -463,4 +520,10 @@ export class ConversationState {
     }
     return lines.join("\n");
   }
+}
+
+// ── Recency weighting ────────────────────────────────────────────
+
+function recencyWeight(idx: number, total: number): number {
+  return Math.max(0.1, 1 - idx / total);
 }

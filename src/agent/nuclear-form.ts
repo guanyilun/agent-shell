@@ -22,8 +22,10 @@ export interface NuclearEntry {
   kind: "user" | "agent" | "tool" | "error";
   /** Tool name (for kind=tool or kind=error). */
   tool?: string;
-  /** The one-liner summary. */
+  /** The one-liner summary — injected in startup context. */
   sum: string;
+  /** Expanded content — on disk only, fetched by conversation_recall expand. */
+  body?: string;
 }
 
 // ── Tool classification ───────────────────────────────────────────
@@ -37,6 +39,107 @@ export const READ_ONLY_TOOLS = new Set([
 export const WRITE_TOOLS = new Set([
   "write_file", "edit_file", "write", "edit", "patch",
 ]);
+
+// ── Eager nucleation ──────────────────────────────────────────────
+
+/** Body caps by entry kind (in characters). 0 = no body stored. */
+const BODY_CAPS: Record<string, number> = {
+  user: 2000,
+  agent: 2000,
+  tool: 4000,
+  error: 2000,
+};
+
+/**
+ * Produce a nuclear entry eagerly — called at each hook point as messages
+ * arrive, not during compaction. Returns { sum, body }.
+ */
+export function nucleate(
+  kind: "user" | "agent",
+  text: string,
+  iid: string,
+  seq: number,
+): NuclearEntry;
+
+export function nucleate(
+  kind: "tool" | "error",
+  toolName: string,
+  args: Record<string, unknown>,
+  resultContent: string,
+  isError: boolean,
+  iid: string,
+  seq: number,
+): NuclearEntry;
+
+export function nucleate(
+  kindOrName: "user" | "agent" | "tool" | "error",
+  textOrTool: string,
+  arg2: string | Record<string, unknown>,
+  arg3?: string | number,
+  arg4?: boolean | string,
+  arg5?: number | string,
+  arg6?: number,
+): NuclearEntry {
+  if (kindOrName === "user" || kindOrName === "agent") {
+    // Simple overload: nucleate("user", text, iid, seq)
+    const text = textOrTool;
+    const iid = arg2 as string;
+    const seq = arg3 as number;
+    const maxSum = kindOrName === "user" ? 80 : 60;
+    const cap = BODY_CAPS[kindOrName]!;
+    return {
+      seq, ts: Date.now(), iid,
+      kind: kindOrName,
+      sum: `${kindOrName}: "${truncate(text, maxSum)}"`,
+      body: text.length > cap ? truncate(text, cap) : text,
+    };
+  } else {
+    // Tool/error overload: nucleate("tool", toolName, args, resultContent, isError, iid, seq)
+    const toolName = textOrTool;
+    const args = arg2 as Record<string, unknown>;
+    const resultContent = arg3 as string;
+    const isError = arg4 as boolean;
+    const iid = arg5 as string;
+    const seq = arg6 as number;
+    const kind = isError ? "error" : "tool";
+    const summary = summarizeToolCall(toolName, args);
+    const enriched = isError
+      ? `error: ${toolName} ${truncate(resultContent, 80)}`
+      : enrichWithResult(toolName, summary, resultContent);
+
+    let body: string | undefined;
+    if (READ_ONLY_TOOLS.has(toolName)) {
+      // Read-only tools: no body (agent can re-read the file)
+      body = undefined;
+    } else {
+      const cap = BODY_CAPS[kind]!;
+      const fullBody = buildToolBody(toolName, args, resultContent);
+      body = fullBody.length > cap ? truncate(fullBody, cap) : fullBody;
+    }
+
+    return {
+      seq, ts: Date.now(), iid,
+      kind,
+      tool: toolName,
+      sum: enriched,
+      body,
+    };
+  }
+}
+
+/** Build body text for a tool result — command + truncated output. */
+function buildToolBody(toolName: string, args: Record<string, unknown>, result: string): string {
+  const argStr = toolName === "bash" || toolName === "user_shell"
+    ? String(args.command ?? "")
+    : JSON.stringify(args);
+  const maxResult = 3000;
+  const truncated = result.length > maxResult
+    ? result.slice(0, Math.floor(maxResult * 0.6))
+      + `\n[… truncated …]\n`
+      + result.slice(result.length - Math.floor(maxResult * 0.4))
+    : result;
+  return `$ ${argStr}\n${truncated}`;
+}
 
 // ── Nuclear entry generation ──────────────────────────────────────
 
