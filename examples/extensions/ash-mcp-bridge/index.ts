@@ -95,6 +95,7 @@ async function connectServer(
     command: config.command,
     args: config.args,
     env: { ...process.env, ...config.env } as Record<string, string>,
+    stderr: "pipe",
   });
 
   const client = new Client({ name: `ash-${name}`, version: "0.1.0" });
@@ -157,9 +158,7 @@ async function connectServer(
     });
   }
 
-  ctx.bus.emit("ui:info", {
-    message: `mcp-bridge: "${name}" connected (${tools.length} tools)`,
-  });
+  // ui:info suppressed — connection is silent by default
 
   return { name, client, transport };
 }

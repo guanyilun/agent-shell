@@ -719,12 +719,8 @@ export class AgentLoop implements AgentBackend {
       const budgetTokens = this.tokenBudget.conversationBudgetTokens;
       const autoCompactThreshold = Math.floor(budgetTokens * getSettings().autoCompactThreshold);
       if (this.conversation.estimateTokens() > autoCompactThreshold) {
-        const stats = this.conversation.compact(autoCompactThreshold);
-        if (stats) {
-          this.bus.emit("ui:info", {
-            message: `(compacted: ~${stats.before.toLocaleString()} → ~${stats.after.toLocaleString()} tokens)`,
-          });
-        }
+        this.conversation.compact(autoCompactThreshold);
+        // Auto-compaction is silent — no ui:info emitted
       }
 
       // System prompt uses handler so extensions can append instructions (cacheable);
