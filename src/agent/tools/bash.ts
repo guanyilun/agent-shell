@@ -12,10 +12,9 @@ export function createBashTool(opts: {
     description:
       "Execute a bash command in an isolated subprocess. Output is captured and returned. " +
       "Does not affect the user's shell state. " +
-      "Commands run in the user's current working directory by default. " +
+      "cwd is set to the working directory from the shell context. " +
       "Do NOT use bash for file searching — use grep/glob instead. " +
-      "Do NOT use bash for reading files — use read_file instead. " +
-      "Provide a description parameter to explain what the command does.",
+      "Do NOT use bash for reading files — use read_file instead.",
     input_schema: {
       type: "object",
       properties: {
