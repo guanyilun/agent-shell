@@ -120,7 +120,7 @@ export class InputHandler {
     const dCursor = showBuffer ? this.editor.displayCursor : 0;
 
     if (!showBuffer || !display.includes("\n")) {
-      // Single-line: simple rendering
+      // Single-line rendering
       const bufferText = showBuffer ? p.accent + display + p.reset : "";
       process.stdout.write(promptPrefix + bufferText);
 
@@ -128,10 +128,24 @@ export class InputHandler {
       const totalVisLen = promptVisLen + bufferVisLen;
       this.promptWrappedLines = totalVisLen > 0 ? Math.floor((totalVisLen - 1) / termW) : 0;
 
-      // Position cursor within the buffer
-      if (showBuffer && dCursor < display.length) {
-        const charsAfterCursor = display.length - dCursor;
-        process.stdout.write(`\x1b[${charsAfterCursor}D`);
+      // Position cursor — must account for wrapping (same logic as multi-line branch)
+      if (showBuffer) {
+        const cursorColAbs = promptVisLen + dCursor;
+        const cursorTermRow = Math.floor(cursorColAbs / termW);
+        const cursorCol = cursorColAbs % termW;
+
+        // Total terminal rows occupied by the prompt
+        const totalRows = totalVisLen > 0 ? Math.ceil(totalVisLen / termW) : 1;
+        const rowsFromEnd = totalRows - 1 - cursorTermRow;
+
+        if (rowsFromEnd > 0) {
+          process.stdout.write(`\x1b[${rowsFromEnd}A`);
+        }
+        if (cursorCol > 0) {
+          process.stdout.write(`\r\x1b[${cursorCol}C`);
+        } else {
+          process.stdout.write(`\r`);
+        }
       }
     } else {
       // Multi-line: render each line with continuation indent
