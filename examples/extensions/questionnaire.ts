@@ -55,15 +55,26 @@ interface QuestionnaireResult {
 
 // ── Extension ────────────────────────────────────────────────────
 
-export default function activate({ registerTool }: ExtensionContext) {
+export default function activate({ registerTool, registerInstruction }: ExtensionContext) {
+  registerInstruction("questionnaire", [
+    "# When to use the questionnaire tool",
+    "ALWAYS use the `questionnaire` tool instead of asking the user a question in plain text when:",
+    "- You need the user to choose from specific options (e.g. frameworks, approaches, yes/no decisions)",
+    "- You are unsure about a preference and can enumerate reasonable choices",
+    "- The user's answer determines a significant branch in your behavior",
+    "",
+    "Do NOT just list options in your reply prose — call the questionnaire tool so the user can select interactively.",
+    "This applies to single questions too (yes/no, pick-one).",
+  ].join("\n"));
+
   registerTool({
     name: "questionnaire",
     displayName: "questionnaire",
     description:
-      "Ask the user one or more questions with selectable options. " +
-      "Use for clarifying requirements, getting preferences, or confirming decisions. " +
-      "For single questions, shows a simple option list. " +
-      "For multiple questions, shows a tab-based interface.",
+      "Present the user with one or more questions with selectable options and wait for their interactive response. " +
+      "PREFER THIS over asking questions in plain text — it gives the user an interactive picker (arrow keys + enter). " +
+      "Use for: clarifying requirements, getting preferences, confirming decisions, choosing between options. " +
+      "Single question → simple option list. Multiple questions → tab-based multi-page interface.",
     input_schema: {
       type: "object",
       properties: {
