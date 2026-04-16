@@ -87,7 +87,12 @@ export function nucleate(
     const text = textOrTool;
     const iid = arg2 as string;
     const seq = arg3 as number;
-    const maxSum = kindOrName === "user" ? 200 : 150;
+    // Adaptive summary length: longer agent messages get more space.
+    // Short acknowledgments ("done", "ok") stay compact; substantive
+    // reflections get enough room to preserve their reasoning.
+    const maxSum = kindOrName === "user"
+      ? 200
+      : text.length < 200 ? 150 : text.length < 1000 ? 400 : 600;
     const cap = BODY_CAPS[kindOrName]!;
     return {
       seq, ts: Date.now(), iid,
@@ -186,10 +191,12 @@ export function toNuclearEntries(
           });
         }
       } else if (typeof msg.content === "string" && msg.content) {
+        // Adaptive: substantive agent messages get more summary space
+        const maxSum = msg.content.length < 200 ? 60 : msg.content.length < 1000 ? 300 : 500;
         entries.push({
           seq: seq++, ts, iid: instanceId,
           kind: "agent",
-          sum: `agent: "${truncate(msg.content, 60)}"`,
+          sum: `agent: "${truncate(msg.content, maxSum)}"`,
         });
       }
     } else if (msg.role === "tool") {
