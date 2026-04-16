@@ -644,6 +644,10 @@ export class AgentLoop implements AgentBackend {
     h.define("system-prompt:build", () => {
       const parts: string[] = [STATIC_SYSTEM_PROMPT];
 
+      // Instance identity — so the agent knows its own ID for signing postmortems
+      const iid = this.conversation.instanceId;
+      parts.push(`Your instance ID is ${iid}. Sign all postmortems and letters to future selves with this ID.`);
+
       // Global behavioral rules (~/.agent-sh/AGENTS.md) — persistent agent memory
       const agentsMd = loadGlobalAgentsMd();
       if (agentsMd) parts.push(agentsMd);

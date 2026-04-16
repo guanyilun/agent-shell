@@ -58,7 +58,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
   const bus = new EventBus();
   const handlers = new HandlerRegistry();
   const contextManager = new ContextManager(bus, handlers);
-  const instanceId = crypto.randomBytes(2).toString("hex");
+  const instanceId = crypto.randomBytes(8).toString("hex");
   const settings = settingsMod.getSettings();
 
   // Expose raw CLI config so the agent backend extension can resolve
