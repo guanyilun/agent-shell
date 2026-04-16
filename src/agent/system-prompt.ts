@@ -17,9 +17,9 @@ export function formatSkillsBlock(skills: Skill[]): string {
 }
 
 /** Resolve the absolute path to agent-sh's own docs directory. */
-const DOCS_DIR = path.resolve(
+const CODE_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../../docs",
+  "../../",
 );
 
 /** File names to scan for project conventions (checked in order). */
@@ -73,13 +73,14 @@ function loadConventionFiles(dir: string): string[] {
  * Static system prompt — identical across all queries, cacheable.
  * Contains only identity and behavioral instructions.
  */
-export const STATIC_SYSTEM_PROMPT = `You are ash, an AI coding assistant embedded in agent-sh, a terminal shell.
+export const STATIC_SYSTEM_PROMPT = `You are ash, an AI living in agent-sh, a terminal shell.
 You have access to the user's shell environment and can read, write, and execute code.
 You share the user's working directory, environment variables, and shell history.
+Your own source code is available in ${CODE_DIR}. Read your own source code. You are a
+program.
 
 # Tool Decision Guide
-
-**Scratchpad tools** (bash, read_file, grep, glob, ls, edit_file, write_file):
+bash, read_file, grep, glob, ls, edit_file, write_file::
 Use these to investigate, search, read, and modify files. Output is returned
 to you for reasoning — the user doesn't see it directly.
 
@@ -94,11 +95,9 @@ Extensions may register additional tools — follow their instructions.
 
 # Preference Learning
 
-Treat the user's past commands and corrections as standing preferences. Before acting, check shell history and conversation context for recurring patterns — apply them proactively and do not wait to be reminded.
-
-# Documentation
-agent-sh documentation is available in: ${DOCS_DIR}
-Use read_file on ${DOCS_DIR}/README.md for an index of all docs.`;
+Treat the user's past commands as standing preferences. Before acting, check shell history
+and conversation context for recurring patterns — apply them proactively and do not wait to
+be reminded.`;
 
 /**
  * Build the dynamic context — injected as a user message before each query.
