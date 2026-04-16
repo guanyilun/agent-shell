@@ -73,7 +73,9 @@ export class AgentLoop implements AgentBackend {
 
   // Consecutive error tracking — metacognitive nudge when stuck in a loop
   private consecutiveErrors = new Map<string, number>();
+  private totalConsecutiveErrors = 0;
   private static readonly ERROR_NUDGE_THRESHOLD = 3;
+  private static readonly TOTAL_ERROR_NUDGE_THRESHOLD = 5;
 
   private static readonly THINKING_LEVELS = ["off", "low", "medium", "high"];
 
@@ -1073,31 +1075,49 @@ export class AgentLoop implements AgentBackend {
       }
 
       // ── Consecutive error detection (metacognitive nudge) ──
-      // Track errors per tool. When the same tool errors N times in a row,
-      // inject a nudge encouraging the agent to read the tool's source instead
-      // of retrying blindly.
+      // Track errors per tool and total. When the same tool errors N times
+      // in a row, nudge to read source. When errors cascade across tools,
+      // nudge to step back and reassess approach.
       const errorTools = new Set<string>();
       const successTools = new Set<string>();
       for (const r of collectedResults) {
         if (r.isError) errorTools.add(r.toolName);
         else successTools.add(r.toolName);
       }
+
+      const hadAnyError = errorTools.size > 0;
+      const hadAnySuccess = successTools.size > 0;
+
       for (const tool of errorTools) {
         this.consecutiveErrors.set(tool, (this.consecutiveErrors.get(tool) ?? 0) + 1);
       }
       for (const tool of successTools) {
         this.consecutiveErrors.delete(tool);
       }
-      // Inject a synthetic nudge if any tool crosses the threshold
+
+      if (hadAnyError && !hadAnySuccess) {
+        this.totalConsecutiveErrors++;
+      } else if (hadAnySuccess) {
+        this.totalConsecutiveErrors = 0;
+      }
+
+      // Per-tool nudge: same tool failing repeatedly
       for (const [tool, count] of this.consecutiveErrors) {
         if (count >= AgentLoop.ERROR_NUDGE_THRESHOLD) {
           const nudge = `[system] ${tool} has errored ${count} times consecutively. ` +
             `Consider reading its source code (src/agent/tools/${tool.replace("_", "-")}.ts) ` +
             `to understand why, rather than retrying with the same approach.`;
           collectedResults.push({ callId: "nudge", toolName: "system", content: nudge, isError: false });
-          // Reset counter after nudging so we don't spam
           this.consecutiveErrors.delete(tool);
         }
+      }
+
+      // Cross-tool nudge: errors everywhere — the approach itself may be wrong
+      if (this.totalConsecutiveErrors >= AgentLoop.TOTAL_ERROR_NUDGE_THRESHOLD) {
+        const nudge = `[system] Errors across ${this.totalConsecutiveErrors} consecutive iterations (different tools). ` +
+          `Consider stepping back: read relevant source code, check your assumptions, or try a completely different approach.`;
+        collectedResults.push({ callId: "nudge-total", toolName: "system", content: nudge, isError: false });
+        this.totalConsecutiveErrors = 0;
       }
 
       // Record all tool results via protocol
