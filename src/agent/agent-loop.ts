@@ -587,6 +587,32 @@ export class AgentLoop implements AgentBackend {
         }
         return { content, exitCode: 0, isError: false };
       },
+
+      formatResult: (args, result) => {
+        const action = args.action as string;
+        const text = result.content;
+        if (result.isError) return { summary: "error" };
+
+        if (action === "search") {
+          // Content starts with "Found N match(es)" or "No results found"
+          if (text.startsWith("No results")) return { summary: "0 matches" };
+          const m = text.match(/^Found (\d+)/);
+          return { summary: m ? `${m[1]} matches` : "search done" };
+        }
+
+        if (action === "browse") {
+          // Content starts with "Showing N entries" or "No conversation history."
+          if (text.startsWith("No conversation")) return { summary: "empty" };
+          const m = text.match(/^Showing (\d+)/);
+          return { summary: m ? `${m[1]} entries` : "browsed" };
+        }
+
+        // expand — just show it worked
+        if (text.includes("no expanded content")) return { summary: "not found" };
+        return { summary: "expanded" };
+      },
+
+      getDisplayInfo: () => ({ kind: "search", icon: "⟲" }),
     });
 
     // System instruction: proactively search history for prior preferences

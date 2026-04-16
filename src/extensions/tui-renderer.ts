@@ -471,9 +471,14 @@ export default function activate(ctx: ExtensionContext): void {
       const lines = ctx.call("tui:render-diff", e.title, e.metadata.diff as DiffResult, cappedW()) as string[];
       if (lines.length > 0) {
         if (!s.renderer) startAgentResponse();
+        contentGap("diff");
         for (const line of lines) s.renderer!.writeLine(line);
         drain();
       }
+      // The diff box IS the visual representation of the upcoming tool call.
+      // Mark lastContentKind as "tool" so the tool call line that follows
+      // doesn't inject an extra gap between the diff box and the checkmark.
+      s.lastContentKind = "tool";
     }
     // Don't endAgentResponse() here — permission requests that aren't
     // file-write diffs are handled inline (auto-approved or by extensions).

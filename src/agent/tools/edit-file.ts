@@ -120,9 +120,12 @@ export function createEditFileTool(getCwd: () => string): ToolDefinition {
         }
 
         const normalizedNew = newText.replace(/\r\n/g, "\n");
-        const newContent = replaceAll
-          ? normalized.split(normalizedOld).join(normalizedNew)
-          : normalized.replace(normalizedOld, normalizedNew);
+        // Use split/join for literal replacement everywhere. String.replace()
+        // treats dollar-sign patterns in the replacement as special substitution
+        // variables, which corrupts file content containing regex escape sequences.
+        const newContent = normalized.split(normalizedOld).join(normalizedNew);
+        // Note: when !replaceAll, we rely on the occurrence check above to ensure
+        // normalizedOld appears exactly once, so split/join replaces only that one.
 
         // Restore original line endings — only convert if the file was
         // predominantly CRLF (>50% of line endings), to avoid corrupting

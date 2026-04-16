@@ -11,6 +11,41 @@ import {
 } from "./nuclear-form.js";
 import type { HistoryFile } from "./history-file.js";
 
+// ── Search helpers (module-level) ─────────────────────────────
+
+/** Build a regex that requires ALL words in the query to match (AND logic). */
+function buildSearchRegex(query: string): RegExp {
+  // Try the raw query as-is first (supports exact phrases and advanced syntax)
+  try {
+    return new RegExp(query, "i");
+  } catch {
+    // Fallback: escape each word and require all to match via lookahead
+    const words = query.split(/\s+/).filter((w) => w.length > 0);
+    const escaped = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    // (?=.*word1)(?=.*word2)... matches lines containing all words
+    const lookaheads = escaped.map((w) => `(?=.*${w})`).join("");
+    return new RegExp(lookaheads, "i");
+  }
+}
+
+/** Extract first matching line with surrounding context (120 chars centered on match). */
+function firstMatchExcerpt(text: string, regex: RegExp): string | null {
+  const idx = text.search(regex);
+  if (idx === -1) return null;
+  // Find the start of the line containing the match
+  const lineStart = text.lastIndexOf("\n", idx) + 1;
+  const lineEnd = text.indexOf("\n", idx);
+  const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd).trim();
+  if (line.length > 120) {
+    const matchInLine = idx - lineStart;
+    const start = Math.max(0, matchInLine - 40);
+    const end = Math.min(line.length, matchInLine + 80);
+    return (start > 0 ? "\u2026" : "") + line.slice(start, end) + (end < line.length ? "\u2026" : "");
+  }
+  return line;
+}
+
+
 /**
  * Conversation state with eager nucleation — works like shell history.
  *
@@ -379,29 +414,44 @@ export class ConversationState {
 
   // ── Conversation recall ───────────────────────────────────────
 
-  /** Search in-memory archive + history file. */
+  /** Search in-memory archive + history file (deduplicated, with match context). */
   async search(query: string): Promise<string> {
     if (!query.trim()) return "No query provided.";
 
-    const parts: string[] = [];
+    const regex = buildSearchRegex(query);
+    const seenSeqs = new Set<number>();
+    const hits: string[] = [];
 
-    // Search in-memory archive
-    const archiveResults = this.searchArchive(query);
-    if (archiveResults) parts.push(archiveResults);
-
-    // Search history file
-    if (this.historyFile) {
-      const fileResults = await this.historyFile.search(query);
-      if (fileResults.length > 0) {
-        parts.push(`History file matches (${fileResults.length}):`);
-        for (const r of fileResults.slice(0, 20)) {
-          parts.push(`  ${r.line}`);
-        }
+    // Search in-memory archive (full content)
+    for (const [seq, msgs] of this.recallArchive) {
+      const text = this.turnToText(msgs);
+      const excerpt = firstMatchExcerpt(text, regex);
+      if (excerpt) {
+        seenSeqs.add(seq);
+        const entry = this.nuclearBySeq.get(seq);
+        const header = entry ? formatNuclearLine(entry) : `#${seq}`;
+        hits.push(`${header}\n  ${excerpt}`);
       }
     }
 
-    if (parts.length === 0) return `No results found for "${query}".`;
-    return parts.join("\n\n");
+    // Search history file (skip seqs already found in archive)
+    if (this.historyFile) {
+      const fileResults = await this.historyFile.search(query);
+      for (const r of fileResults) {
+        if (seenSeqs.has(r.entry.seq)) continue;
+        seenSeqs.add(r.entry.seq);
+        const excerpt = r.entry.body
+          ? firstMatchExcerpt(r.entry.body, regex)
+          : null;
+        hits.push(excerpt ? `${r.line}\n  ${excerpt}` : r.line);
+      }
+    }
+
+    if (hits.length === 0) return `No results found for "${query}".`;
+
+    const total = hits.length;
+    const summary = `Found ${total} match${total === 1 ? "" : "es"} for "${query}"`;
+    return `${summary}\n\n${hits.slice(0, 30).join("\n\n")}`;
   }
 
   /** Expand full content of a nuclear entry by seq number. */
@@ -620,30 +670,7 @@ export class ConversationState {
 
   // ── Internal: Search helpers ──────────────────────────────────
 
-  private searchArchive(query: string): string | null {
-    if (this.recallArchive.size === 0) return null;
-
-    let regex: RegExp;
-    try {
-      regex = new RegExp(query, "i");
-    } catch {
-      const words = query.split(/\s+/).filter((w) => w.length > 0);
-      const pattern = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-      regex = new RegExp(pattern, "i");
-    }
-
-    const matches: string[] = [];
-    for (const [seq, msgs] of this.recallArchive) {
-      const text = this.turnToText(msgs);
-      if (regex.test(text)) {
-        const entry = this.nuclearBySeq.get(seq);
-        matches.push(entry ? formatNuclearLine(entry) : `#${seq}`);
-      }
-    }
-
-    if (matches.length === 0) return null;
-    return `Recall archive matches (${matches.length}):\n${matches.map((m) => `  ${m}`).join("\n")}`;
-  }
+  // ── searchArchive removed — search() now directly iterates recallArchive ──
 
   private turnToText(messages: ChatCompletionMessageParam[]): string {
     const lines: string[] = [];
@@ -657,13 +684,13 @@ export class ConversationState {
         if ("tool_calls" in msg && msg.tool_calls) {
           for (const tc of msg.tool_calls) {
             if ("function" in tc) {
-              lines.push(`[tool_call] ${tc.function.name}(${tc.function.arguments.slice(0, 200)})`);
+              lines.push(`[tool_call] ${tc.function.name}(${tc.function.arguments})`);
             }
           }
         }
       } else if (msg.role === "tool") {
         const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
-        lines.push(`[tool_result] ${content.slice(0, 500)}`);
+        lines.push(`[tool_result] ${content}`);
       }
     }
     return lines.join("\n");

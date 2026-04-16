@@ -72,13 +72,15 @@ export class HistoryFile {
   async search(query: string): Promise<{ entry: NuclearEntry; line: string }[]> {
     if (!query.trim()) return [];
 
+    // Try raw query as regex; fallback to AND logic (all words must match)
     let regex: RegExp;
     try {
       regex = new RegExp(query, "i");
     } catch {
       const words = query.split(/\s+/).filter((w) => w.length > 0);
-      const pattern = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-      regex = new RegExp(pattern, "i");
+      const escaped = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      const lookaheads = escaped.map((w) => `(?=.*${w})`).join("");
+      regex = new RegExp(lookaheads, "i");
     }
 
     let content: string;
