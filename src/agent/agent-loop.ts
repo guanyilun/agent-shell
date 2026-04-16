@@ -706,7 +706,7 @@ export class AgentLoop implements AgentBackend {
             type: "number",
             description:
               "Target context usage as a percentage of the context window (e.g. 30 = compact until context is at 30%). " +
-              "Default: compact to 40% of the context window.",
+              "Default: compact to 35% of the context window.",
           },
           keep_recent: {
             type: "number",
@@ -719,7 +719,7 @@ export class AgentLoop implements AgentBackend {
 
       execute: async (args) => {
         const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-        const targetPercent = (args.target_percent as number) ?? 40;
+        const targetPercent = (args.target_percent as number) ?? 35;
         const keepRecent = (args.keep_recent as number) ?? 10;
         const reason = (args.reason as string) ?? "agent-initiated";
 
@@ -773,8 +773,8 @@ export class AgentLoop implements AgentBackend {
         const reason = args.reason as string | undefined;
         const pct = args.target_percent as number | undefined;
         return reason
-          ? `compact → ${pct ?? 40}% (${reason})`
-          : `compact → ${pct ?? 40}%`;
+          ? `compact → ${pct ?? 35}% (${reason})`
+          : `compact → ${pct ?? 35}%`;
       },
 
       formatResult: (_args, result) => {
