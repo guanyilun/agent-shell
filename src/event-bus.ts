@@ -245,12 +245,14 @@ export interface ShellEvents {
   };
 
   // Tool/instruction registration (extension → active agent backend)
-  "agent:register-tool": { tool: import("./agent/types.js").ToolDefinition };
+  "agent:register-tool": { tool: import("./agent/types.js").ToolDefinition; extensionName?: string };
   "agent:unregister-tool": { name: string };
   "agent:get-tools": { tools: import("./agent/types.js").ToolDefinition[] };
   "agent:get-nuclear-summary": { summary: string | null };
-  "agent:register-instruction": { name: string; text: string };
+  "agent:register-instruction": { name: string; text: string; extensionName: string };
   "agent:remove-instruction": { name: string };
+  "agent:register-skill": { name: string; description: string; filePath: string; extensionName: string };
+  "agent:remove-skill": { name: string };
 
   // Banner section collection (sync pipe: extensions contribute labeled items to startup banner)
   "banner:collect": {

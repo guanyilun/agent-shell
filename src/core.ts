@@ -184,7 +184,9 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
     },
 
     extensionContext(opts) {
-      return {
+      // Mutable extension name — set by extension-loader before activate()
+      let _extensionName = "";
+      const ctx: ExtensionContext = {
         bus,
         contextManager,
         instanceId,
@@ -196,16 +198,20 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
         getExtensionSettings: settingsMod.getExtensionSettings,
         registerCommand: (name, description, handler) =>
           bus.emit("command:register", { name, description, handler }),
-        registerTool: (tool) => bus.emit("agent:register-tool", { tool }),
+        registerTool: (tool) => bus.emit("agent:register-tool", { tool, extensionName: _extensionName }),
         unregisterTool: (name) => bus.emit("agent:unregister-tool", { name }),
         getTools: () => bus.emitPipe("agent:get-tools", { tools: [] }).tools,
-        registerInstruction: (name, text) => bus.emit("agent:register-instruction", { name, text }),
+        registerInstruction: (name, text) => bus.emit("agent:register-instruction", { name, text, extensionName: _extensionName }),
         removeInstruction: (name) => bus.emit("agent:remove-instruction", { name }),
+        registerSkill: (name, description, filePath) => bus.emit("agent:register-skill", { name, description, filePath, extensionName: _extensionName }),
+        removeSkill: (name) => bus.emit("agent:remove-skill", { name }),
         define: (name, fn) => handlers.define(name, fn),
         advise: (name, wrapper) => handlers.advise(name, wrapper),
         call: (name, ...args) => handlers.call(name, ...args),
         get terminalBuffer() { return getTerminalBuffer(); },
         compositor,
+        get _extensionName() { return _extensionName; },
+        set _extensionName(n: string) { _extensionName = n; }, // set by extension-loader before activate()
         createRemoteSession: (opts: RemoteSessionOptions): RemoteSession => {
           const { surface } = opts;
           const cleanups: (() => void)[] = [];
@@ -250,6 +256,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
           };
         },
       };
+      return ctx;
     },
 
     kill() {
