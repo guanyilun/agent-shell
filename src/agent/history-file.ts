@@ -21,6 +21,7 @@ import {
 const HISTORY_PATH = path.join(CONFIG_DIR, "history");
 const LOCK_PATH = HISTORY_PATH + ".lock";
 const LOCK_STALE_MS = 10_000; // consider lock stale after 10s
+const MAX_SEARCH_RESULTS = 200; // cap to avoid unbounded scans on broad queries
 
 export class HistoryFile {
   readonly instanceId: string;
@@ -95,6 +96,10 @@ export class HistoryFile {
 
   /**
    * Search history entries by regex/keyword.
+   *
+   * Uses chunked reading (96KB at a time) instead of loading the entire file.
+   * For a 3MB file, this means 32 small reads vs one massive allocation.
+   * Results are returned newest-first (backward scan order).
    */
   async search(query: string): Promise<{ entry: NuclearEntry; line: string }[]> {
     if (!query.trim()) return [];
@@ -110,24 +115,45 @@ export class HistoryFile {
       regex = new RegExp(lookaheads, "i");
     }
 
-    let content: string;
-    try {
-      content = await fs.readFile(this.filePath, "utf-8");
-    } catch {
-      return [];
+    const { size } = await fs.stat(this.filePath).catch(() => ({ size: 0 }));
+    if (size === 0) return [];
+
+    const CHUNK_SIZE = 96 * 1024;
+    const results: { entry: NuclearEntry; line: string }[] = [];
+
+    // Scan backward through the file in chunks — results come out newest-first.
+    let offset = size;
+    while (offset > 0 && results.length < MAX_SEARCH_RESULTS) {
+      const chunkStart = Math.max(0, offset - CHUNK_SIZE);
+      const readLen = offset - chunkStart;
+      const buf = Buffer.alloc(readLen);
+      const fd = await fs.open(this.filePath, "r");
+      try {
+        await fd.read(buf, 0, readLen, chunkStart);
+      } finally {
+        await fd.close();
+      }
+      const text = buf.toString("utf-8");
+      // If we didn't read from byte 0, skip the first line (may be partial at boundary)
+      const lines = text.split("\n");
+      const startIndex = chunkStart > 0 ? 1 : 0;
+
+      for (let i = lines.length - 1; i >= startIndex; i--) {
+        const line = lines[i];
+        if (!line) continue;
+        const entry = deserializeEntry(line);
+        if (!entry || isReadOnly(entry)) continue;
+        // Search both the summary and the body — the body can contain up to
+        // 4000 chars of the original content that the summary truncates away.
+        const searchText = [entry.sum, entry.body].filter(Boolean).join("\n");
+        if (regex.test(searchText)) {
+          results.push({ entry, line: formatNuclearLine(entry) });
+        }
+      }
+
+      offset = chunkStart;
     }
 
-    const results: { entry: NuclearEntry; line: string }[] = [];
-    for (const line of content.trim().split("\n")) {
-      const entry = deserializeEntry(line);
-      if (!entry || isReadOnly(entry)) continue;
-      // Search both the summary and the body — the body can contain up to
-      // 4000 chars of the original content that the summary truncates away.
-      const searchText = [entry.sum, entry.body].filter(Boolean).join("\n");
-      if (regex.test(searchText)) {
-        results.push({ entry, line: formatNuclearLine(entry) });
-      }
-    }
     return results;
   }
 
