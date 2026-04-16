@@ -107,9 +107,17 @@ be reminded.`;
  *
  * Runs through the "dynamic-context:build" handler so extensions can advise.
  */
+export interface TokenStatus {
+  /** Estimated prompt tokens (API-grounded when available, else chars/4). */
+  promptTokens: number;
+  /** Model's context window in tokens. */
+  contextWindow: number;
+}
+
 export function buildDynamicContext(
   contextManager: ContextManager,
   shellBudgetTokens?: number,
+  tokenStatus?: TokenStatus,
 ): string {
   const sections: string[] = [];
 
@@ -133,10 +141,15 @@ export function buildDynamicContext(
     sections.push(shellContext);
   }
 
-  // Metadata
-  sections.push(
-    `Current date: ${new Date().toISOString().split("T")[0]}\nWorking directory: ${contextManager.getCwd()}`,
-  );
+  // Metadata + token awareness
+  let metadata = `Current date: ${new Date().toISOString().split("T")[0]}\nWorking directory: ${contextManager.getCwd()}`;
+  if (tokenStatus) {
+    const usedK = (tokenStatus.promptTokens / 1000).toFixed(1);
+    const maxK = (tokenStatus.contextWindow / 1000).toFixed(0);
+    const pct = Math.min(100, Math.round((tokenStatus.promptTokens / tokenStatus.contextWindow) * 100));
+    metadata += `\nToken usage: ${usedK}k/${maxK}k (${pct}%)`;
+  }
+  sections.push(metadata);
 
   return sections.join("\n\n");
 }

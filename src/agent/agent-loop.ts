@@ -675,12 +675,15 @@ export class AgentLoop implements AgentBackend {
     });
 
     // Extensions compose additional context (git info, project rules, etc.)
-    h.define("dynamic-context:build", () =>
-      buildDynamicContext(
+    h.define("dynamic-context:build", () => {
+      const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+      const promptTokens = this.conversation.estimatePromptTokens();
+      return buildDynamicContext(
         this.contextManager,
         this.tokenBudget.shellBudgetTokens,
-      ),
-    );
+        { promptTokens, contextWindow },
+      );
+    });
 
     // Full control over what the LLM sees: takes messages[], returns messages[].
     // Default: pass through. Extensions can advise to compact, summarize,
