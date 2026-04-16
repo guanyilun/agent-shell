@@ -283,7 +283,7 @@ export class ContextManager {
       out += `- Your internal tools (bash, read, write, ls, etc.) run in an isolated subprocess. The user CANNOT see their output.\n`;
       out += `- Only use internal tools when YOU need to reason about content silently (e.g. reading a file to answer a question about it).\n`;
       out += `- You can browse or search shell history with shell_recall.\n`;
-      out += `- You can browse or search evicted conversation turns with conversation_recall.\n`;
+      out += `- You can browse or search evicted conversation turns with conversation_recall (search covers summaries and full body text).\n`;
       out += `\n`;
       this.firstPrompt = false;
     }

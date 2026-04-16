@@ -806,6 +806,12 @@ export class AgentLoop implements AgentBackend {
   private async executeLoop(signal: AbortSignal): Promise<string> {
     let fullResponseText = "";
 
+    // System prompt and dynamic context are constant within a single agent
+    // query — no new shell commands arrive between tool-call iterations, and
+    // extension instructions don't change mid-flight. Build once.
+    const systemPrompt = this.handlers.call("system-prompt:build") as string;
+    const dynamicContext = this.handlers.call("dynamic-context:build");
+
     while (!signal.aborted) {
       // Auto-compact when total context approaches the window limit.
       const totalEstimate = this.conversation.estimatePromptTokens();
@@ -817,11 +823,6 @@ export class AgentLoop implements AgentBackend {
         this.conversation.compact(threshold);
         // Auto-compaction is silent — no ui:info emitted
       }
-
-      // System prompt uses handler so extensions can append instructions (cacheable);
-      // dynamic context uses handler for per-query state via advise()
-      const systemPrompt = this.handlers.call("system-prompt:build") as string;
-      const dynamicContext = this.handlers.call("dynamic-context:build");
 
       // Stream LLM response with retry
       const result = await this.streamWithRetry(systemPrompt, dynamicContext, signal);

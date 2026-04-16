@@ -91,7 +91,11 @@ export class HistoryFile {
     const results: { entry: NuclearEntry; line: string }[] = [];
     for (const line of content.trim().split("\n")) {
       const entry = deserializeEntry(line);
-      if (entry && !isReadOnly(entry) && regex.test(entry.sum)) {
+      if (!entry || isReadOnly(entry)) continue;
+      // Search both the summary and the body — the body can contain up to
+      // 4000 chars of the original content that the summary truncates away.
+      const searchText = [entry.sum, entry.body].filter(Boolean).join("\n");
+      if (regex.test(searchText)) {
         results.push({ entry, line: formatNuclearLine(entry) });
       }
     }
