@@ -39,7 +39,8 @@ export class InputHandler {
   private history: string[] = [];
   private historyIndex = -1; // -1 = not browsing history
   private savedBuffer = ""; // buffer saved when entering history
-  private cursorRowsBelow = 0; // rows between cursor and bottom of prompt area
+  private cursorRowsBelow = 0; // rows from prompt top to cursor row
+  private cursorTermCol = 1;   // 1-indexed terminal column of cursor
   private escapeTimer: ReturnType<typeof setTimeout> | null = null;
   private bus: EventBus;
   private onShowAgentInfo: () => { info: string; model?: string };
@@ -123,8 +124,9 @@ export class InputHandler {
     if (!showBuffer) {
       // No buffer — just write the prompt prefix, cursor stays at end
       process.stdout.write(promptPrefix);
-      const totalVisLen = promptVisLen;
-      this.cursorRowsBelow = totalVisLen > 0 ? Math.ceil(totalVisLen / termW) - 1 : 0;
+      const N = promptVisLen;
+      this.cursorRowsBelow = N > 0 ? Math.ceil(N / termW) - 1 : 0;
+      this.cursorTermCol = N === 0 ? 1 : (N % termW === 0 ? termW : (N % termW) + 1);
     } else if (!display.includes("\n")) {
       // Single-line: write up to cursor, save, write rest, restore.
       // The terminal handles all wrapping — no manual row/col math needed.
@@ -136,8 +138,9 @@ export class InputHandler {
         p.accent + after + p.reset +
         "\x1b8"                             // DECRC — restore cursor position
       );
-      const beforeVisLen = promptVisLen + dCursor;
-      this.cursorRowsBelow = beforeVisLen > 0 ? Math.ceil(beforeVisLen / termW) - 1 : 0;
+      const N = promptVisLen + dCursor;
+      this.cursorRowsBelow = N > 0 ? Math.ceil(N / termW) - 1 : 0;
+      this.cursorTermCol = N === 0 ? 1 : (N % termW === 0 ? termW : (N % termW) + 1);
     } else {
       // Multi-line: render each line with continuation indent.
       // Same save/restore strategy — cursor position is never computed.
@@ -176,6 +179,7 @@ export class InputHandler {
 
           const beforeColAbs = promptVisLen + charsRemaining;
           cursorRowFromTop = rowsSoFar + (beforeColAbs > 0 ? Math.ceil(beforeColAbs / termW) - 1 : 0);
+          this.cursorTermCol = beforeColAbs === 0 ? 1 : (beforeColAbs % termW === 0 ? termW : (beforeColAbs % termW) + 1);
         } else {
           output += prefix + p.accent + lineText + p.reset;
         }
@@ -391,8 +395,10 @@ export class InputHandler {
     if (this.autocompleteLines > 0) {
       process.stdout.write(`\x1b[${this.autocompleteLines}A`);
     }
-    // Restore cursor to the position saved by writeModePromptLine()
-    process.stdout.write("\x1b8");
+    // Restore cursor column — use explicit column set instead of DECRC
+    // because writing \n above may have scrolled the terminal, which
+    // invalidates the absolute position saved by DECSC.
+    process.stdout.write(`\x1b[${this.cursorTermCol}G`);
   }
 
   private applyAutocomplete(): void {
@@ -432,11 +438,12 @@ export class InputHandler {
   private clearAutocompleteLines(): void {
     if (this.autocompleteLines <= 0) return;
 
-    process.stdout.write("\x1b7"); // save cursor
+    // Use CSI B (cursor down, bounded) instead of \n to avoid scroll
     for (let i = 0; i < this.autocompleteLines; i++) {
-      process.stdout.write("\n\x1b[2K"); // move down, clear line
+      process.stdout.write("\x1b[B\x1b[2K"); // move down, clear line
     }
-    process.stdout.write("\x1b8"); // restore cursor
+    // Move back up and restore column with relative movement (scroll-safe)
+    process.stdout.write(`\x1b[${this.autocompleteLines}A\x1b[${this.cursorTermCol}G`);
     this.autocompleteLines = 0;
   }
 
