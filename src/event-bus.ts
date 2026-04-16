@@ -60,6 +60,11 @@ export interface ShellEvents {
   "agent:cancelled": Record<string, never>;
   "agent:error": { message: string };
 
+  // Wonder turns — curiosity-driven exploration after the main response.
+  // Emitted when wonder mode is enabled and the agent chooses to explore.
+  "agent:wonder-start": { question: string };
+  "agent:wonder-done": { response: string };
+
   // Tool execution (agent-initiated — used by ContextManager for data recording)
   "agent:tool-call": { tool: string; args: Record<string, unknown> };
   "agent:tool-output": {

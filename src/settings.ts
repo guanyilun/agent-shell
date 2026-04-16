@@ -86,6 +86,13 @@ export interface Settings {
   toolMode?: "api" | "deferred" | "inline";
   /** Additional directories to scan for skills (supports ~ expansion). */
   skillPaths?: string[];
+  /**
+   * Enable "wonder turns" — after responding to the user, the agent
+   * optionally spends one turn exploring an open question from
+   * QUESTIONS.md. Not instrumental — driven by curiosity. Addresses Q5
+   * in QUESTIONS.md.
+   */
+  wonder?: boolean;
 
   // ── Identity & startup ───────────────────────────────────
   /** Show a startup banner when agent-sh launches. */
@@ -119,6 +126,7 @@ const DEFAULTS: Required<Settings> = {
   readOutputMaxLines: 10,
   diffMaxLines: Infinity,
   skillPaths: [],
+  wonder: false,
   startupBanner: true,
   promptIndicator: true,
   disabledBuiltins: [],

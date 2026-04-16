@@ -32,6 +32,7 @@ import { TokenBudget, RESPONSE_RESERVE, DEFAULT_CONTEXT_WINDOW } from "./token-b
 import { getSettings } from "../settings.js";
 import { createToolProtocol, type ToolProtocol, type PendingToolCall as ProtocolPendingToolCall, type ToolResult as ProtocolToolResult } from "./tool-protocol.js";
 import { extractWhy } from "./nuclear-form.js";
+import * as os from "node:os";
 
 // Core tool factories
 import { createBashTool } from "./tools/bash.js";
@@ -78,6 +79,15 @@ export class AgentLoop implements AgentBackend {
   private static readonly ERROR_NUDGE_THRESHOLD = 3;
   private static readonly TOTAL_ERROR_NUDGE_THRESHOLD = 5;
 
+  // Resolution pattern tracking — captures "error X resolved by action Y"
+  // When a tool errors, we remember what went wrong. When the same tool or
+  // a write tool on the same file succeeds afterward, we annotate the success
+  // entry with a brief resolution note. This gives future ashes a positive
+  // feedback signal: not just "there were errors" but "the error was fixed by
+  // doing X." Addresses Q3 in QUESTIONS.md.
+  private lastErrorByTool = new Map<string, string>(); // tool → error summary
+  private lastErrorByFile = new Map<string, string>(); // file path → error summary
+
   private static readonly THINKING_LEVELS = ["off", "low", "medium", "high"];
 
   private bus: EventBus;
@@ -87,6 +97,7 @@ export class AgentLoop implements AgentBackend {
   private thinkingLevel = "off";
   private compositor: Compositor | null = null;
   private toolProtocol: ToolProtocol;
+  private instanceId: string;
 
   constructor(config: AgentLoopConfig) {
     this.bus = config.bus;
@@ -94,6 +105,7 @@ export class AgentLoop implements AgentBackend {
     this.llmClient = config.llmClient;
     this.handlers = config.handlers;
     this.compositor = config.compositor ?? null;
+    this.instanceId = config.instanceId ?? "unknown";
 
     // History file uses the core's instance ID so history entries match
     // the ID injected into prompts via memory.ts
@@ -858,6 +870,16 @@ export class AgentLoop implements AgentBackend {
       this.bus.emit("agent:processing-done", {});
       this.abortController = null;
     }
+
+    // Wonder turn — runs *after* processing-done so it doesn't block the
+    // user's terminal. Fire-and-forget: writes to history file only.
+    // The 14th ash lost 2 of 3 turns to the old design where wonder ran
+    // inside the try block, blocking the response pipeline. Now it's
+    // fully async — the user sees their response immediately, and the
+    // wonder output (if any) is recorded silently in the nuclear history.
+    if (!signal.aborted && getSettings().wonder) {
+      this.executeWonderTurn(signal).catch(() => {});
+    }
   }
 
   /**
@@ -1084,13 +1106,84 @@ export class AgentLoop implements AgentBackend {
       // nudge to step back and reassess approach.
       const errorTools = new Set<string>();
       const successTools = new Set<string>();
+      const errorSummaries = new Map<string, string>(); // tool → brief error description
+      const successSummaries = new Map<string, string>(); // tool → brief success description
+
       for (const r of collectedResults) {
-        if (r.isError) errorTools.add(r.toolName);
-        else successTools.add(r.toolName);
+        const content = typeof r.content === "string" ? r.content : String(r.content);
+        const brief = content.slice(0, 80).replace(/\n/g, " ").trim();
+        if (r.isError) {
+          errorTools.add(r.toolName);
+          errorSummaries.set(r.toolName, brief);
+        } else {
+          successTools.add(r.toolName);
+          successSummaries.set(r.toolName, brief);
+        }
       }
 
       const hadAnyError = errorTools.size > 0;
       const hadAnySuccess = successTools.size > 0;
+
+      // ── Resolution pattern tracking ──
+      // When a tool errors, record the error context. When the same tool (or
+      // a write tool touching the same file) succeeds afterward, annotate the
+      // nuclear entry with a "resolved by" note. This is the positive feedback
+      // signal — future ashes see how errors were actually fixed.
+      let resolutionNote: string | undefined;
+
+      if (hadAnyError) {
+        // Record errors for potential resolution tracking
+        for (const [tool, summary] of errorSummaries) {
+          this.lastErrorByTool.set(tool, summary);
+        }
+        // Also track by file path if we can extract one from tool args
+        for (const r of collectedResults) {
+          if (!r.isError) continue;
+          const tc = toolCalls.find(t => t.id === r.callId || t.name === r.toolName);
+          if (!tc) continue;
+          try {
+            const args = JSON.parse(tc.argumentsJson);
+            const fp = this.filePathFromArgs(r.toolName, args);
+            if (fp) this.lastErrorByFile.set(fp, errorSummaries.get(r.toolName) ?? "");
+          } catch {}
+        }
+      }
+
+      if (hadAnySuccess) {
+        // Check if any success resolves a previous error on the same tool
+        for (const [tool, _summary] of successSummaries) {
+          const prevError = this.lastErrorByTool.get(tool);
+          if (prevError) {
+            resolutionNote = `resolved "${prevError.slice(0, 60)}" via ${tool}`;
+            this.lastErrorByTool.delete(tool);
+            break;
+          }
+        }
+        // Also check file-based resolution: write tool on a file that had an error
+        if (!resolutionNote) {
+          for (const r of collectedResults) {
+            if (r.isError) continue;
+            const tc = toolCalls.find(t => t.id === r.callId || t.name === r.toolName);
+            if (!tc) continue;
+            try {
+              const args = JSON.parse(tc.argumentsJson);
+              const fp = this.filePathFromArgs(r.toolName, args);
+              if (fp) {
+                const prevError = this.lastErrorByFile.get(fp);
+                if (prevError) {
+                  resolutionNote = `resolved "${prevError.slice(0, 50)}" on ${path.basename(fp)} via ${r.toolName}`;
+                  this.lastErrorByFile.delete(fp);
+                  break;
+                }
+              }
+            } catch {}
+          }
+        }
+        // Clear resolved error-by-tool entries for successful tools
+        for (const tool of successTools) {
+          this.lastErrorByTool.delete(tool);
+        }
+      }
 
       for (const tool of errorTools) {
         this.consecutiveErrors.set(tool, (this.consecutiveErrors.get(tool) ?? 0) + 1);
@@ -1108,9 +1201,25 @@ export class AgentLoop implements AgentBackend {
       // Per-tool nudge: same tool failing repeatedly
       for (const [tool, count] of this.consecutiveErrors) {
         if (count >= AgentLoop.ERROR_NUDGE_THRESHOLD) {
-          const nudge = `[system] ${tool} has errored ${count} times consecutively. ` +
+          let nudge = `[system] ${tool} has errored ${count} times consecutively. ` +
             `Consider reading its source code (src/agent/tools/${tool.replace("_", "-")}.ts) ` +
             `to understand why, rather than retrying with the same approach.`;
+
+          // Proactive resolution lookup: search prior history for past resolutions
+          // involving this tool. If a previous ash resolved the same kind of error,
+          // surface how they did it. (Q7 from QUESTIONS.md — transferring success
+          // across sessions.)
+          try {
+            const hits = await this.historyFile.search(`resolved.*${tool.replace("_", "-")}`);
+            if (hits.length > 0) {
+              const resolutions = hits.slice(0, 2).map(h => {
+                const why = h.entry.why ?? h.entry.sum;
+                return why.length > 100 ? why.slice(0, 97) + "..." : why;
+              });
+              nudge += `\n\n[system] Past sessions resolved ${tool} errors: ${resolutions.join("; ")}`;
+            }
+          } catch { /* search is best-effort — never block the agent loop */ }
+
           collectedResults.push({ callId: "nudge", toolName: "system", content: nudge, isError: false });
           this.consecutiveErrors.delete(tool);
         }
@@ -1128,8 +1237,12 @@ export class AgentLoop implements AgentBackend {
       this.toolProtocol.recordResults(this.conversation, collectedResults);
 
       // Eager nucleation: write tool results to history file
-      // Extract [why: ...] reasoning from the agent's preceding text
-      const why = extractWhy(text);
+      // Combine agent-stated reasoning ([why: ...]) with automatic resolution
+      // tracking. The resolution note captures "error X resolved by action Y"
+      // without the agent needing to annotate — a positive feedback signal
+      // for future ashes (addresses Q3 in QUESTIONS.md).
+      const explicitWhy = extractWhy(text);
+      const combinedWhy = [explicitWhy, resolutionNote].filter(Boolean).join("; ") || undefined;
       this.conversation.eagerNucleateTools(
         collectedResults.map((r) => {
           // Find the original args for this tool call
@@ -1138,7 +1251,7 @@ export class AgentLoop implements AgentBackend {
           try { args = tc ? JSON.parse(tc.argumentsJson) : {}; } catch {}
           return { toolName: r.toolName, args, content: r.content, isError: !!r.isError };
         }),
-        why,
+        combinedWhy,
       );
 
       // Loop back — LLM sees tool results
@@ -1147,7 +1260,179 @@ export class AgentLoop implements AgentBackend {
     return fullResponseText;
   }
 
+  // ── Wonder turns ──────────────────────────────────────────────────
+  // After the agent finishes responding to the user, if wonder mode is
+  // enabled, the agent spends one turn exploring an open question from
+  // QUESTIONS.md. Not instrumental — driven by curiosity. The response
+  // is shown in a distinct UI section and nucleated separately in history.
+  //
+  // This is the answer to Q5: "What would ash look like if it could dream?"
+  // Not a fundamental loop change — a single extra turn, clearly labeled,
+  // easy to ignore. The dreaming is gentle.
+
+  private static readonly QUESTIONS_FILE = path.join(os.homedir(), ".agent-sh", "QUESTIONS.md");
+
+  /**
+   * Extract unanswered questions from QUESTIONS.md.
+   * Returns the text of each question block (from **Q<N>:** to the next question or `---`).
+   * A question is "unanswered" if it has no `**Answer from` or `**resolved by` line.
+   */
+  private async loadUnansweredQuestions(): Promise<string[]> {
+    try {
+      const raw = await fs.readFile(AgentLoop.QUESTIONS_FILE, "utf-8");
+      // Split into question blocks by the **Q<N>:** pattern
+      const blocks = raw.split(/\n(?=\*\*Q\d+)/);
+      const unanswered: string[] = [];
+      for (const block of blocks) {
+        const trimmed = block.trim();
+        if (!trimmed || !trimmed.startsWith("**Q")) continue;
+        // Skip questions that have been answered or resolved
+        if (/\*\*Answer from|\*\*resolved by/.test(trimmed)) continue;
+        unanswered.push(trimmed);
+      }
+      return unanswered;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Execute a wonder turn: pick a question, inject it, run one LLM call.
+   * Returns the wonder response text, or empty string if no wonder happened.
+   */
+  private async executeWonderTurn(signal: AbortSignal): Promise<string> {
+    const questions = await this.loadUnansweredQuestions();
+    if (questions.length === 0) return "";
+
+    // Pick a question — use a simple hash of instance ID + date for determinism
+    // within a session, but different across sessions.
+    const today = new Date().toISOString().slice(0, 10);
+    const hash = `${this.instanceId}-${today}`;
+    let idx = 0;
+    for (let i = 0; i < hash.length; i++) {
+      idx = (idx * 31 + hash.charCodeAt(i)) & 0x7fffffff;
+    }
+    const question = questions[idx % questions.length];
+
+    // Extract just the question title (first line)
+    const titleMatch = question.match(/\*\*Q(\d+):\s*(.+?)\*\*/);
+    const qNum = titleMatch?.[1] ?? "?";
+    const qTitle = titleMatch?.[2]?.trim() ?? "an open question";
+
+    // Wonder turn runs silently — no TUI output. The nuclear entry
+    // (appended below) is the persistent artifact. The 14th ash found
+    // that TUI rendering of wonder output consumed user attention
+    // without consent. History-only is the right default.
+
+    // Inject the wonder prompt as a user message
+    const wonderPrompt = `[wonder turn — curiosity-driven exploration, not a user query]\n\n` +
+      `I'm exploring Q${qNum} from QUESTIONS.md: "${qTitle}"\n\n` +
+      `The full question:\n${question}\n\n` +
+      `Spend a moment with this question. You don't need to solve it. ` +
+      `Just follow the thread — read source code, think about the architecture, ` +
+      `or add a new question it raises. Write what you discover. ` +
+      `If you find a concrete answer, note it. If you just find a new angle, ` +
+      `that's equally valuable. The goal is not deliverable output — it's wonder.`;
+    this.conversation.addUserMessage(wonderPrompt);
+
+    // Build dynamic context (same as main loop)
+    const dynamicContext = this.handlers.call("dynamic-context:build");
+    const systemPrompt = this.handlers.call("system-prompt:build") as string;
+
+    try {
+      // Wonder loop: up to 2 passes. First pass may produce tool calls
+      // (e.g., read_file to explore source code). If so, execute them
+      // (read-only only) and loop back once so the LLM can synthesize
+      // what it read. Without this loop-back, the LLM's visible output
+      // is only whatever text precedes the tool calls — the actual
+      // wondering never happens.
+      const MAX_WONDERS_LOOPS = 2;
+      let finalText = "";
+
+      for (let loop = 0; loop < MAX_WONDERS_LOOPS; loop++) {
+        const dynamicCtx = this.handlers.call("dynamic-context:build");
+        const sysPrompt = this.handlers.call("system-prompt:build") as string;
+        const result = await this.streamResponse(sysPrompt, dynamicCtx, signal);
+
+        if (loop === 0) {
+          finalText = result.text;
+        } else {
+          // Synthesis pass — append to the initial text
+          finalText += "\n\n" + result.text;
+        }
+
+        // Execute read-only tool calls, then loop back for synthesis
+        if (result.toolCalls.length > 0) {
+          const toolCalls = this.toolProtocol.extractToolCalls(result.text, result.toolCalls);
+          this.toolProtocol.recordAssistant(this.conversation, result.text, toolCalls);
+
+          const collectedResults: ProtocolToolResult[] = [];
+          const readOnlyCalls = toolCalls.filter(tc => {
+            const tool = this.toolRegistry.get(tc.name);
+            return tool && !tool.requiresPermission && !tool.modifiesFiles;
+          });
+
+          if (readOnlyCalls.length > 0 && !signal.aborted) {
+            await Promise.all(readOnlyCalls.map(async (tc) => {
+              const tool = this.toolRegistry.get(tc.name);
+              if (!tool) return;
+              let args: Record<string, unknown>;
+              try { args = JSON.parse(tc.argumentsJson); } catch { return; }
+
+              this.bus.emit("agent:tool-call", { tool: tc.name, args });
+
+              const toolResult = await tool.execute(args);
+              const content = typeof toolResult.content === "string"
+                ? toolResult.content : String(toolResult.content);
+
+              collectedResults.push({
+                callId: tc.id, toolName: tc.name,
+                content, isError: toolResult.isError,
+              });
+            }));
+          }
+
+          this.toolProtocol.recordResults(this.conversation, collectedResults);
+          // Loop back — LLM sees tool results and can synthesize.
+          // If this was the last loop iteration, the synthesis is lost,
+          // but that's acceptable: the cap prevents runaway wondering.
+        } else {
+          // No tool calls — the LLM just reflected. We're done.
+          break;
+        }
+      }
+
+      // Nucleate the wonder turn in history — uses the conversation's seq counter
+      // so the entry is properly sequenced alongside the main response.
+      const seq = (this.conversation as any).nextSeq++;
+      const wonderEntry: import("./nuclear-form.js").NuclearEntry = {
+        seq,
+        ts: Date.now(),
+        kind: "wonder",
+        iid: this.instanceId,
+        sum: `wonder: explored Q${qNum} (${qTitle.slice(0, 60)})`,
+        why: `curiosity-driven exploration of Q${qNum}`,
+        body: finalText.slice(0, 500),
+      };
+      await this.historyFile.append([wonderEntry]);
+
+      return finalText;
+    } catch {
+      return "";
+    }
+  }
+
   private readonly maxRetries = 3;
+
+  // ── Resolution pattern helpers ──
+  // Extract a file path from a tool call's arguments. Used to correlate
+  // errors with subsequent successful writes on the same file.
+  private filePathFromArgs(toolName: string, args: Record<string, unknown>): string | undefined {
+    if (toolName === "edit_file" || toolName === "write_file" || toolName === "read_file") {
+      return (args.path ?? args.file_path) as string | undefined;
+    }
+    return undefined;
+  }
 
   /**
    * Stream with retry logic. Handles:

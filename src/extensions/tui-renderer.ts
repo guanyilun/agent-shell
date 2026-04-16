@@ -448,6 +448,38 @@ export default function activate(ctx: ExtensionContext): void {
     drain();
   });
 
+  // ── Wonder turn rendering ────────────────────────────────────────
+  // Curiosity-driven exploration shown in a distinct dimmed section.
+  // The agent follows an open question from QUESTIONS.md — clearly
+  // labeled so the user can distinguish it from the instrumental response.
+  bus.on("agent:wonder-start", (e) => {
+    if (!shouldRender()) return;
+    stopCurrentSpinner();
+    // Close the current response box before starting the wonder section
+    endAgentResponse();
+    out().write("\n");
+    const w = cappedW();
+    const border = `${p.dim}${p.muted}${"─".repeat(w)}${p.reset}`;
+    out().write(border + "\n");
+    out().write(`${p.dim}${p.muted}✦ wonder: ${e.question}${p.reset}\n`);
+    out().write(border + "\n");
+    // Start a new response renderer for the wonder output (dimmed)
+    s.renderer = new MarkdownRenderer(w);
+  });
+
+  bus.on("agent:wonder-done", () => {
+    if (!shouldRender()) return;
+    if (s.renderer) {
+      s.renderer.flush();
+      const w = cappedW();
+      const border = `${p.dim}${p.muted}${"─".repeat(w)}${p.reset}`;
+      out().write(border + "\n");
+      drain();
+      out().write("\n");
+      s.renderer = null;
+    }
+  });
+
   bus.on("permission:request", (e) => {
     if (!shouldRender()) return;
     stopCurrentSpinner();
