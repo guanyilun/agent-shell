@@ -24,6 +24,12 @@ npm install -g agent-sh
 agent-sh
 ```
 
+Tip: add an alias to your shell config for quick access:
+
+```bash
+alias ash="agent-sh"
+```
+
 Set `OPENAI_API_KEY` in your environment (or configure providers in `~/.agent-sh/settings.json`). Works with any OpenAI-compatible API — see the [Usage Guide](docs/usage.md) for provider examples (OpenAI, Ollama, OpenRouter, Together, Groq, LM Studio, vLLM).
 
 Requires Node.js 18+.
@@ -32,7 +38,7 @@ Requires Node.js 18+.
 
 **Real terminal, zero compromise.** Full PTY with your shell config, aliases, and environment. Shell starts instantly — the agent connects asynchronously in the background.
 
-**One entry point, three tool categories.** Type `>` and agent-sh figures out how to help. Scratchpad tools (`bash`, `read_file`, `grep`, `glob`) for investigation. `display` to show you output. `user_shell` for commands with lasting effects in your live shell. No modes to pick — the agent reasons about which tools to use based on your intent.
+**One entry point, smart tool selection.** Type `>` and agent-sh figures out how to help. Scratchpad tools (`bash`, `read_file`, `grep`, `glob`) for investigation. Extensions add capabilities like running commands in your live shell. No modes to pick — the agent reasons about which tools to use based on your intent.
 
 **Context that just works.** Every query includes your cwd, recent commands, and their output. Run a failing test, type `> fix this`, and agent-sh knows exactly what happened. Context management works like shell history — continuous, persistent across restarts, no sessions to manage. See [Context Management](docs/context-management.md).
 
@@ -41,17 +47,6 @@ Requires Node.js 18+.
 **Extensible by design.** The entire system is built on a typed event bus. Extensions can add custom input modes, content transforms (render LaTeX as images, Mermaid as diagrams), themes, slash commands, or replace the agent backend entirely. The built-in TUI renderer is itself just an extension.
 
 **Embeddable as a library.** The core is a headless kernel — `import { createCore } from "agent-sh"` to build WebSocket servers, REST APIs, Electron apps, or test harnesses. No terminal required.
-
-## Slash Commands
-
-| Command | Description |
-|---|---|
-| `/help` | Show available commands |
-| `/model [name]` | Cycle to the next model, or switch to a specific one |
-| `/backend [name]` | List backends, or switch to a named backend |
-| `/compact` | Compact conversation (free up context space) |
-| `/context` | Show context budget usage |
-| `/thinking [level]` | Set reasoning effort (off, low, medium, high) |
 
 ## Configuration
 

@@ -248,6 +248,7 @@ export interface ShellEvents {
   "agent:register-tool": { tool: import("./agent/types.js").ToolDefinition };
   "agent:unregister-tool": { name: string };
   "agent:get-tools": { tools: import("./agent/types.js").ToolDefinition[] };
+  "agent:get-nuclear-summary": { summary: string | null };
   "agent:register-instruction": { name: string; text: string };
   "agent:remove-instruction": { name: string };
 

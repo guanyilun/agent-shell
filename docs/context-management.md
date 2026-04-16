@@ -43,17 +43,20 @@ No duplication — agent tool outputs live only in the conversation stream.
 
 ## Token Budget
 
-Both streams share a budget derived from the model's context window:
+Shell context is sized using a rough budget derived from the model's context window:
 
 ```
 Model context window (e.g. 200,000 tokens)
-  - System prompt + tool defs + response reserve
+  - System prompt + tool defs + response reserve (estimated overhead)
   = Content budget
-    +-- Shell context (35% by default)
-    +-- Conversation  (65% by default)
+    +-- Shell context (35% by default, via shellContextRatio)
 ```
 
 Configurable via `shellContextRatio` in settings. Recalculates on model switch. Falls back to 60k tokens when `contextWindow` is not set.
+
+**Compaction uses API-grounded token counts.** The auto-compact threshold is based on real `prompt_tokens` from the LLM API response, not the chars/4 heuristic. After each API call, the reported `prompt_tokens` (total input including system prompt, tools, context, and conversation) is captured. On the next iteration, `estimatePromptTokens()` returns the last API value plus a rough estimate for any messages added since. This gives near-exact threshold checks without extra API calls.
+
+When compaction fires, the threshold is converted internally from total-prompt space to conversation-only space so the eviction loop can operate with its per-turn chars/4 estimates. After compaction, the API baseline resets — the next API call provides a fresh ground-truth measurement.
 
 ## Three-Tier Conversation History
 
@@ -75,7 +78,7 @@ Tier 3: History File            ~/.agent-sh/history, JSONL, append-only
 
 ### Tier 1: Active Context
 
-Full tool outputs, file contents, diffs — everything verbatim. This is what the LLM works with directly. Budget: `conversationBudgetTokens`.
+Full tool outputs, file contents, diffs — everything verbatim. This is what the LLM works with directly. Compacts when total prompt tokens approach the context window.
 
 ### Tier 2: Nuclear Memory
 
@@ -99,7 +102,7 @@ Key behaviors:
 
 When nuclear entries accumulate past `nuclearMaxEntries` (default 200), oldest entries flush to `~/.agent-sh/history` — a JSONL file that persists across restarts.
 
-On startup, the last `historyStartupEntries` (default 50) entries are loaded so the agent knows what happened in prior terminal sessions.
+On startup, the last `historyStartupEntries` (default 100) non-read-only entries are loaded so the agent knows what happened in prior terminal sessions. Read-only tools (`read_file`, `grep`, `glob`, `ls`) are filtered out at load time to maximize the number of meaningful entries.
 
 **Multi-shell**: Multiple agent-sh instances share the same history file. Each line is well under PIPE_BUF, so `O_APPEND` writes are atomic. Only file truncation (when exceeding `historyMaxBytes`) uses a lock file.
 
@@ -169,7 +172,7 @@ All settings in `~/.agent-sh/settings.json`:
 | `shellContextRatio` | 0.35 | Fraction of content budget for shell context |
 | `recallExpandMaxLines` | 100 | Max lines shell_recall returns without line ranges |
 | `historyMaxBytes` | 102400 | Max history file size (100KB) |
-| `historyStartupEntries` | 50 | Prior history entries loaded on startup |
+| `historyStartupEntries` | 100 | Prior history entries loaded on startup (read-only tools filtered) |
 | `nuclearMaxEntries` | 200 | Max nuclear entries in-context before flushing to disk |
 
 ## Key Files
@@ -177,9 +180,9 @@ All settings in `~/.agent-sh/settings.json`:
 | File | Role |
 |------|------|
 | `src/context-manager.ts` | Shell exchange storage, windowing, truncation, recall API |
-| `src/agent/conversation-state.ts` | Three-tier conversation: active + nuclear + history |
+| `src/agent/conversation-state.ts` | Three-tier conversation: active + nuclear + history. Token estimation (API-grounded + chars/4 fallback). |
 | `src/agent/nuclear-form.ts` | Nuclear one-liner generation, serialization, classification |
 | `src/agent/history-file.ts` | Persistent JSONL history with append, search, truncation |
-| `src/token-budget.ts` | Unified budget calculator |
-| `src/agent/agent-loop.ts` | Wires budget, history, compaction + flush |
+| `src/agent/token-budget.ts` | Shell context budget calculator. Exports `RESPONSE_RESERVE`, `DEFAULT_CONTEXT_WINDOW`. |
+| `src/agent/agent-loop.ts` | Wires budget, API token feedback, compaction + flush |
 | `src/extensions/slash-commands.ts` | /compact, /context commands |

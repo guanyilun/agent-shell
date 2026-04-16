@@ -230,6 +230,14 @@ export default function activate(ctx: ExtensionContext) {
   const timeout = config.timeout ?? 30000;
   const numResults = config.searchNumResults ?? 5;
 
+  // ── System instruction ────────────────────────────────────────────
+
+  ctx.registerInstruction(
+    "You have access to web search and fetching tools. " +
+    "Use `web_search` to find information on the web, then `web_fetch` to read specific pages. " +
+    "Use `web_fetch` with `raw: true` for JSON APIs or plain text files.",
+  );
+
   // ── Tool: web_search (Exa MCP, free) ────────────────────────────
 
   ctx.registerTool({

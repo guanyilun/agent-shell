@@ -81,8 +81,7 @@ export default function activate(ctx: ExtensionContext): void {
     description:
       "Send keystrokes directly into the user's live terminal PTY, as if the user typed them. " +
       "Use this to interact with programs already running in the terminal (vim, htop, less, ssh, REPLs, etc.) " +
-      "or to type commands at the shell prompt. Do NOT use user_shell for this — user_shell runs a new " +
-      "command in a subshell, while terminal_keys types into whatever is currently on screen.\n\n" +
+      "or to type commands at the shell prompt. This types directly into whatever is currently on screen.\n\n" +
       "Escape sequences for special keys:\n" +
       "  - Escape: \\x1b\n" +
       "  - Enter/Return: \\r\n" +

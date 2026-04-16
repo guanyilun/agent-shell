@@ -226,3 +226,16 @@ The agent automatically receives structured context about your shell session wit
 - **Full history access** — the agent can recall full output of truncated exchanges
 
 This means you can run a failing command, then type `> fix this` and the agent knows exactly what happened. Context size is tunable via settings.
+
+## Slash Commands
+
+| Command | Description |
+|---|---|
+| `/help` | Show available commands |
+| `/model [name]` | Cycle to the next model, or switch to a specific one |
+| `/backend [name]` | List backends, or switch to a named backend |
+| `/compact` | Compact conversation (free up context space) |
+| `/context` | Show context budget usage |
+| `/thinking [level]` | Set reasoning effort (off, low, medium, high) |
+
+See [Context Management](context-management.md) for how `/compact` and `/context` work, and [Extensions: Custom Agent Backends](extensions.md#custom-agent-backends) for `/backend`.

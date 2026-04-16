@@ -23,8 +23,8 @@ import {
   SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import type { ExtensionContext } from "../../src/types.js";
-import type { EventBus } from "../../src/event-bus.js";
+import type { ExtensionContext } from "agent-sh/types";
+import type { EventBus } from "agent-sh/event-bus";
 
 // ── Helpers ──────────────────────────────────────────────────────
 function interpretEscapes(str: string): string {

@@ -8,14 +8,20 @@
  * Usage:
  *   agent-sh -e ./examples/extensions/subagents.ts
  */
-import type { ExtensionContext } from "../../src/types.js";
-import { runSubagent } from "../../src/agent/subagent.js";
+import type { ExtensionContext } from "agent-sh/types";
+import { runSubagent } from "agent-sh/agent/subagent";
 
 export default function activate(ctx: ExtensionContext): void {
   const { bus, llmClient, contextManager } = ctx;
   if (!llmClient) return;
 
   const allToolNames = () => ctx.getTools().map(t => t.name);
+
+  ctx.registerInstruction("subagent-guide", [
+    "You have a spawn_agent tool for delegating work to a subagent with its own context.",
+    "The subagent inherits your session history, so write a short directive (what to do), not a briefing (what happened).",
+    "Use it for tasks that need multiple tool calls you don't need to see — research, exploration, independent implementation.",
+  ].join("\n"));
 
   ctx.registerTool({
     name: "spawn_agent",
@@ -44,7 +50,14 @@ export default function activate(ctx: ExtensionContext): void {
 
     getDisplayInfo: () => ({
       kind: "execute",
+      icon: "⤵",
     }),
+
+    formatCall: (args) => {
+      const task = String(args.task ?? "");
+      const max = 80;
+      return task.length > max ? task.slice(0, max - 1) + "…" : task;
+    },
 
     async execute(args) {
       const task = args.task as string;
@@ -56,9 +69,12 @@ export default function activate(ctx: ExtensionContext): void {
         ? allTools.filter(t => toolNames.includes(t.name))
         : allTools.filter(t => t.name !== "spawn_agent");
 
+      const nuclearSummary = bus.emitPipe("agent:get-nuclear-summary", { summary: null }).summary;
+
       const systemPrompt =
         `You are a focused subagent. Complete the task and return a clear, concise result.\n` +
-        `Working directory: ${contextManager.getCwd()}`;
+        `Working directory: ${contextManager.getCwd()}` +
+        (nuclearSummary ? `\n\n[Parent session history]\n${nuclearSummary}` : "");
 
       try {
         const result = await runSubagent({
@@ -66,7 +82,6 @@ export default function activate(ctx: ExtensionContext): void {
           tools,
           systemPrompt,
           task,
-          bus,
           maxIterations: 25,
         });
 

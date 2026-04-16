@@ -127,6 +127,10 @@ export default function activate(ctx: ExtensionContext): void {
   const { bus, define, compositor } = ctx;
   const s = createRenderState();
 
+  /** Track the shell's cwd so path shortening is relative to where the user actually is. */
+  let shellCwd = process.cwd();
+  bus.on("shell:cwd-change", (e) => { shellCwd = e.cwd; });
+
   /** Shorthand — get the current agent surface. */
   function out(): RenderSurface { return compositor.surface("agent"); }
 
@@ -452,14 +456,29 @@ export default function activate(ctx: ExtensionContext): void {
       s.renderer.flush();
       drain();
     }
+    // Diff rendering is handled in the async pipe below so it can yield
+    // to the event loop between hunks (keeping the spinner responsive).
+  });
+
+  // Async pipe: render diffs via the tui:render-diff handler (extensions can
+  // advise to customize).  Runs after the sync `on` handler above (which
+  // flushes state) and before shell.ts's pipe (which pauses stdout).
+  bus.onPipeAsync("permission:request", async (e) => {
+    if (!shouldRender()) return e;
 
     if (e.kind === "file-write" && e.metadata?.diff) {
       showCollapsedThinking();
-      showFileDiff(e.title, e.metadata.diff as DiffResult);
+      const lines = ctx.call("tui:render-diff", e.title, e.metadata.diff as DiffResult, cappedW()) as string[];
+      if (lines.length > 0) {
+        if (!s.renderer) startAgentResponse();
+        for (const line of lines) s.renderer!.writeLine(line);
+        drain();
+      }
     }
     // Don't endAgentResponse() here — permission requests that aren't
     // file-write diffs are handled inline (auto-approved or by extensions).
     // Closing the response prematurely causes double separator borders.
+    return e;
   });
 
   bus.on("input:keypress", (e) => {
@@ -592,9 +611,21 @@ export default function activate(ctx: ExtensionContext): void {
     }
     let highlighted: string;
     try {
-      highlighted = language
-        ? highlight(code, { language })
-        : highlight(code);  // auto-detect
+      // highlight.js warns to console.error for unsupported languages (elisp, org, etc).
+      // Suppress so it doesn't leak into the terminal.
+      const origError = console.error;
+      console.error = (...args: unknown[]) => {
+        const msg = args.join(" ");
+        if (msg.includes("Could not find the language")) return;
+        origError.apply(console, args);
+      };
+      try {
+        highlighted = language
+          ? highlight(code, { language })
+          : highlight(code);  // auto-detect
+      } finally {
+        console.error = origError;
+      }
     } catch {
       highlighted = code;
     }
@@ -652,6 +683,18 @@ export default function activate(ctx: ExtensionContext): void {
     return [];
   });
 
+  /**
+   * Default renderer for standalone diffs (e.g. permission prompts).
+   * Extensions can advise this to customize diff rendering:
+   *
+   *   ctx.advise("tui:render-diff", (next, filePath, diff, width) => {
+   *     return myCustomDiffBox(filePath, diff, width);
+   *   });
+   */
+  define("tui:render-diff", (filePath: string, diff: DiffResult, width: number): string[] => {
+    return renderDiffBody(diff, filePath, width);
+  });
+
   /** Render a diff as framed box lines (pure — no TUI state side effects). */
   function renderDiffBody(diff: DiffResult, filePath: string, width: number): string[] {
     if (diff.isIdentical) return [];
@@ -697,10 +740,9 @@ export default function activate(ctx: ExtensionContext): void {
   function extractDetail(extra: { rawInput?: unknown; locations?: { path: string; line?: number | null }[] }): string {
     if (extra.locations && extra.locations.length > 0) {
       const loc = extra.locations[0]!;
-      const cwd = process.cwd();
       const home = process.env.HOME;
       let fp = loc.path;
-      if (fp.startsWith(cwd + "/")) fp = fp.slice(cwd.length + 1);
+      if (fp.startsWith(shellCwd + "/")) fp = fp.slice(shellCwd.length + 1);
       else if (home && fp.startsWith(home + "/")) fp = "~/" + fp.slice(home.length + 1);
       return loc.line ? `${fp}:${loc.line}` : fp;
     }
@@ -709,10 +751,9 @@ export default function activate(ctx: ExtensionContext): void {
     if (typeof raw.command === "string") return `$ ${raw.command}`;
     if (typeof raw.pattern === "string") return raw.pattern;
     if (typeof raw.path === "string") {
-      const cwd = process.cwd();
       const home = process.env.HOME;
       let fp = raw.path as string;
-      if (fp.startsWith(cwd + "/")) fp = fp.slice(cwd.length + 1);
+      if (fp.startsWith(shellCwd + "/")) fp = fp.slice(shellCwd.length + 1);
       else if (home && fp.startsWith(home + "/")) fp = "~/" + fp.slice(home.length + 1);
       return fp;
     }
@@ -750,7 +791,7 @@ export default function activate(ctx: ExtensionContext): void {
       locations: extra?.locations,
       rawInput: extra?.rawInput,
       displayDetail: extra?.displayDetail,
-    }, cappedW());
+    }, cappedW(), shellCwd);
 
     if (extra?.groupContinuation && lines.length > 0) {
       // Swap the colored kind icon for a muted tree connector,
@@ -964,23 +1005,6 @@ export default function activate(ctx: ExtensionContext): void {
       ? `${p.success}+${diff.added}${p.reset}`
       : `${p.success}+${diff.added}${p.reset} ${p.error}-${diff.removed}${p.reset}`;
     return `${p.dim}${filePath}${p.reset}  ${stats}`;
-  }
-
-  function showFileDiff(filePath: string, diff: DiffResult): void {
-    if (diff.isIdentical) return;
-    contentGap("diff");
-
-    const lines: string[] = ctx.call(
-      "render:result-body",
-      { kind: "diff", diff, filePath } satisfies ToolResultBody,
-      cappedW(),
-    ) ?? [];
-
-    if (!s.renderer) startAgentResponse();
-    for (const line of lines) {
-      s.renderer!.writeLine(line);
-    }
-    drain();
   }
 
   function toggleThinkingDisplay(): void {

@@ -15,6 +15,7 @@ import {
   serializeEntry,
   deserializeEntry,
   formatNuclearLine,
+  isReadOnly,
 } from "./nuclear-form.js";
 
 const HISTORY_PATH = path.join(CONFIG_DIR, "history");
@@ -42,7 +43,9 @@ export class HistoryFile {
   }
 
   /**
-   * Read the most recent N entries from the history file.
+   * Read the most recent N entries from the history file, filtered.
+   * Read-only tool calls (read_file, grep, glob, ls) are excluded so
+   * the returned entries are all meaningful conversation turns.
    */
   async readRecent(maxEntries?: number): Promise<NuclearEntry[]> {
     maxEntries ??= getSettings().historyStartupEntries;
@@ -53,13 +56,14 @@ export class HistoryFile {
       return [];
     }
     const lines = content.trim().split("\n").filter(Boolean);
-    const recent = lines.slice(-maxEntries);
+    // Read more than needed so we still get maxEntries after filtering
+    const oversample = lines.slice(-(maxEntries * 3));
     const entries: NuclearEntry[] = [];
-    for (const line of recent) {
+    for (const line of oversample) {
       const entry = deserializeEntry(line);
-      if (entry) entries.push(entry);
+      if (entry && !isReadOnly(entry)) entries.push(entry);
     }
-    return entries;
+    return entries.slice(-maxEntries);
   }
 
   /**
@@ -87,7 +91,7 @@ export class HistoryFile {
     const results: { entry: NuclearEntry; line: string }[] = [];
     for (const line of content.trim().split("\n")) {
       const entry = deserializeEntry(line);
-      if (entry && regex.test(entry.sum)) {
+      if (entry && !isReadOnly(entry) && regex.test(entry.sum)) {
         results.push({ entry, line: formatNuclearLine(entry) });
       }
     }

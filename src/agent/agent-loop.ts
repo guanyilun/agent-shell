@@ -20,7 +20,7 @@ import type { HandlerFunctions } from "../utils/handler-registry.js";
 import { setMaxListeners } from "node:events";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { computeDiff } from "../utils/diff.js";
+import { computeDiff, computeInputDiff } from "../utils/diff.js";
 import type { AgentBackend, ToolDefinition } from "./types.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { ConversationState } from "./conversation-state.js";
@@ -28,7 +28,7 @@ import { HistoryFile } from "./history-file.js";
 import { STATIC_SYSTEM_PROMPT, buildDynamicContext } from "./system-prompt.js";
 import type { Compositor } from "../utils/compositor.js";
 import { createToolUI } from "../utils/tool-interactive.js";
-import { TokenBudget } from "./token-budget.js";
+import { TokenBudget, RESPONSE_RESERVE, DEFAULT_CONTEXT_WINDOW } from "./token-budget.js";
 import { getSettings } from "../settings.js";
 import { createToolProtocol, type ToolProtocol, type PendingToolCall as ProtocolPendingToolCall, type ToolResult as ProtocolToolResult } from "./tool-protocol.js";
 
@@ -40,8 +40,6 @@ import { createEditFileTool } from "./tools/edit-file.js";
 import { createGrepTool } from "./tools/grep.js";
 import { createGlobTool } from "./tools/glob.js";
 import { createLsTool } from "./tools/ls.js";
-import { createUserShellTool } from "./tools/user-shell.js";
-import { createDisplayTool } from "./tools/display.js";
 import { createListSkillsTool } from "./tools/list-skills.js";
 import { discoverProjectSkills } from "./skills.js";
 
@@ -122,6 +120,9 @@ export class AgentLoop implements AgentBackend {
     const getToolsPipe = () => ({ tools: this.getTools() });
     this.bus.onPipe("agent:get-tools", getToolsPipe);
     this.ctorPipeListeners.push({ event: "agent:get-tools", fn: getToolsPipe });
+    const getNuclearPipe = () => ({ summary: this.conversation.getNuclearSummary() });
+    this.bus.onPipe("agent:get-nuclear-summary", getNuclearPipe);
+    this.ctorPipeListeners.push({ event: "agent:get-nuclear-summary", fn: getNuclearPipe });
   }
 
   /** Subscribe to bus events — activates this backend. */
@@ -228,9 +229,10 @@ export class AgentLoop implements AgentBackend {
     this.bus.onPipe("context:get-stats", () => {
       return {
         activeTokens: this.conversation.estimateTokens(),
+        totalTokens: this.conversation.estimatePromptTokens(),
         nuclearEntries: this.conversation.getNuclearEntryCount(),
         recallArchiveSize: this.conversation.getRecallArchiveSize(),
-        budgetTokens: this.tokenBudget.conversationBudgetTokens,
+        budgetTokens: this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
       };
     });
 
@@ -467,12 +469,6 @@ export class AgentLoop implements AgentBackend {
     this.toolRegistry.register(createGrepTool(getCwd));
     this.toolRegistry.register(createGlobTool(getCwd));
     this.toolRegistry.register(createLsTool(getCwd));
-    this.toolRegistry.register(
-      createUserShellTool({ getCwd, bus: this.bus }),
-    );
-    this.toolRegistry.register(
-      createDisplayTool({ getCwd, bus: this.bus }),
-    );
     this.toolRegistry.register(createListSkillsTool(getCwd));
 
     // conversation_recall — search/expand evicted conversation turns
@@ -514,6 +510,14 @@ export class AgentLoop implements AgentBackend {
         return { content, exitCode: 0, isError: false };
       },
     });
+
+    // System instruction: proactively search history for prior preferences
+    this.registerInstruction(
+      "recall-guidance",
+      "When starting a task that may have been discussed before (conventions, preferences, corrections), " +
+      "use conversation_recall to search history for relevant prior entries. " +
+      "Treat recurring user guidance as standing preferences.",
+    );
   }
 
   /**
@@ -573,35 +577,33 @@ export class AgentLoop implements AgentBackend {
         if (tool.modifiesFiles && typeof args.path === "string") {
           try {
             const absPath = path.resolve(process.cwd(), args.path as string);
-            let oldContent: string | null = null;
-            try { oldContent = await fs.readFile(absPath, "utf-8"); } catch { /* new file */ }
+            let diff: ReturnType<typeof computeDiff> | undefined;
 
-            let newContent: string | undefined;
-            if (typeof args.content === "string") {
-              // write_file
-              newContent = args.content;
-            } else if (typeof args.old_text === "string" && typeof args.new_text === "string" && oldContent !== null) {
-              // edit_file
-              newContent = oldContent.replace(
-                (args.old_text as string).replace(/\r\n/g, "\n"),
-                (args.new_text as string).replace(/\r\n/g, "\n"),
-              );
+            if (typeof args.old_text === "string" && typeof args.new_text === "string") {
+              // edit_file — diff the edit inputs directly, no file read needed
+              const normalizedOld = (args.old_text as string).replace(/\r\n/g, "\n");
+              const normalizedNew = (args.new_text as string).replace(/\r\n/g, "\n");
+              diff = computeInputDiff(normalizedOld, normalizedNew);
+            } else if (typeof args.content === "string") {
+              // write_file — still need to read the old file for comparison
+              let oldContent: string | null = null;
+              try { oldContent = await fs.readFile(absPath, "utf-8"); } catch { /* new file */ }
+              if (oldContent !== null) {
+                diff = computeDiff(oldContent, args.content as string);
+              }
             }
 
-            if (newContent !== undefined) {
-              const diff = computeDiff(oldContent, newContent);
-              if (!diff.isIdentical) {
-                permKind = "file-write";
-                // Shorten path for display
-                const cwd = process.cwd();
-                const home = process.env.HOME;
-                let displayPath = absPath;
-                if (absPath.startsWith(cwd + "/")) displayPath = absPath.slice(cwd.length + 1);
-                else if (home && absPath.startsWith(home + "/")) displayPath = "~/" + absPath.slice(home.length + 1);
-                permTitle = displayPath;
-                metadata = { args, diff };
-                diffShown = true;
-              }
+            if (diff && !diff.isIdentical) {
+              permKind = "file-write";
+              // Shorten path for display
+              const cwd = process.cwd();
+              const home = process.env.HOME;
+              let displayPath = absPath;
+              if (absPath.startsWith(cwd + "/")) displayPath = absPath.slice(cwd.length + 1);
+              else if (home && absPath.startsWith(home + "/")) displayPath = "~/" + absPath.slice(home.length + 1);
+              permTitle = displayPath;
+              metadata = { args, diff };
+              diffShown = true;
             }
           } catch { /* fall back to generic permission */ }
         }
@@ -715,11 +717,14 @@ export class AgentLoop implements AgentBackend {
     let fullResponseText = "";
 
     while (!signal.aborted) {
-      // Auto-compact when conversation exceeds threshold fraction of budget
-      const budgetTokens = this.tokenBudget.conversationBudgetTokens;
-      const autoCompactThreshold = Math.floor(budgetTokens * getSettings().autoCompactThreshold);
-      if (this.conversation.estimateTokens() > autoCompactThreshold) {
-        this.conversation.compact(autoCompactThreshold);
+      // Auto-compact when total context approaches the window limit.
+      const totalEstimate = this.conversation.estimatePromptTokens();
+      const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+      const threshold = Math.floor(
+        (contextWindow - RESPONSE_RESERVE) * getSettings().autoCompactThreshold,
+      );
+      if (totalEstimate > threshold) {
+        this.conversation.compact(threshold);
         // Auto-compaction is silent — no ui:info emitted
       }
 
@@ -956,9 +961,9 @@ export class AgentLoop implements AgentBackend {
 
         // Context overflow — aggressively compact and retry
         if (this.isContextOverflow(e)) {
-          // Use 60% of the budget to leave headroom
-          const aggressiveBudget = Math.floor(this.tokenBudget.conversationBudgetTokens * 0.6);
-          const stats = this.conversation.compact(aggressiveBudget, 6);
+          const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+          const target = Math.floor((contextWindow - RESPONSE_RESERVE) * 0.6);
+          const stats = this.conversation.compact(target, 6);
           const detail = stats ? ` ~${stats.before.toLocaleString()} → ~${stats.after.toLocaleString()} tokens` : "";
           this.bus.emit("ui:info", { message: `(context overflow — compacted${detail}, retrying)` });
           continue;
@@ -1043,11 +1048,16 @@ export class AgentLoop implements AgentBackend {
       // Token usage (may arrive in a chunk with empty choices)
       if ((chunk as any).usage) {
         const u = (chunk as any).usage;
+        const promptTokens = u.prompt_tokens ?? 0;
         this.bus.emit("agent:usage", {
-          prompt_tokens: u.prompt_tokens ?? 0,
+          prompt_tokens: promptTokens,
           completion_tokens: u.completion_tokens ?? 0,
           total_tokens: u.total_tokens ?? 0,
         });
+        // Feed accurate token count back to conversation state
+        if (promptTokens > 0) {
+          this.conversation.updateApiTokenCount(promptTokens);
+        }
       }
 
       const choice = chunk.choices[0];

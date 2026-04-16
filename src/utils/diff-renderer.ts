@@ -298,14 +298,18 @@ function renderSummary(diff: DiffResult): string[] {
 
 // ── Unified mode ─────────────────────────────────────────────────
 
-function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
-  const useTrueColor = opts.trueColor !== false;
-  const useSyntax = opts.syntaxHighlight !== false;
-  const lang = useSyntax ? detectLanguage(opts.filePath) : undefined;
-  const textWidth = opts.width;
-  const output: string[] = [];
+interface UnifiedLayout {
+  noW: number;
+  lineTextW: number;
+  textWidth: number;
+  useTrueColor: boolean;
+  lang: string | undefined;
+  removedPalette: InlinePalette;
+  addedPalette: InlinePalette;
+}
 
-  // Compute max line number width across all hunks
+function unifiedLayout(diff: DiffResult, opts: DiffRenderOptions): UnifiedLayout {
+  const textWidth = opts.width;
   let maxNo = 0;
   for (const hunk of diff.hunks) {
     for (const line of hunk.lines) {
@@ -314,107 +318,111 @@ function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
     }
   }
   const noW = Math.max(String(maxNo).length, 1);
-  // sign(1) + space(1) + lineNo(noW) + space(1) + bar(1) + space(1) = noW + 5
-  const gutterW = noW + 5;
-  const lineTextW = Math.max(1, textWidth - gutterW);
+  return {
+    noW,
+    lineTextW: Math.max(1, textWidth - noW - 5),
+    textWidth,
+    useTrueColor: opts.trueColor !== false,
+    lang: opts.syntaxHighlight !== false ? detectLanguage(opts.filePath) : undefined,
+    removedPalette: { rowBg: p.errorBg, emphBg: p.errorBgEmph },
+    addedPalette: { rowBg: p.successBg, emphBg: p.successBgEmph },
+  };
+}
 
-  const removedPalette: InlinePalette = { rowBg: p.errorBg, emphBg: p.errorBgEmph };
-  const addedPalette: InlinePalette = { rowBg: p.successBg, emphBg: p.successBgEmph };
+function renderUnifiedHunk(hunk: DiffHunk, layout: UnifiedLayout): string[] {
+  const { noW, lineTextW, textWidth, useTrueColor, lang, removedPalette, addedPalette } = layout;
+  const out: string[] = [];
 
-  for (let hunkIdx = 0; hunkIdx < diff.hunks.length; hunkIdx++) {
-    const hunk = diff.hunks[hunkIdx];
-    if (hunkIdx > 0) {
-      output.push(`  ${p.dim}⋯${p.reset}`);
+  const pairs = findChangePairs(hunk);
+  const renderedAsPartOfPair = new Set<number>();
+
+  for (let i = 0; i < hunk.lines.length; i++) {
+    const line = hunk.lines[i];
+    const no = String(
+      line.type === "removed" ? (line.oldNo ?? "") : (line.newNo ?? line.oldNo ?? ""),
+    ).padStart(noW);
+
+    if (line.type === "context") {
+      const raw = truncateText(line.text, lineTextW);
+      const text = lang ? highlightLine(raw, lang) : raw;
+      out.push(`  ${p.dim}${no} │${p.reset} ${p.dim}${text}${p.reset}`);
+      continue;
     }
 
-    const pairs = findChangePairs(hunk);
-    const renderedAsPartOfPair = new Set<number>();
+    if (line.type === "removed") {
+      const pair = pairs.get(i);
+      let removedText: string;
+      let addedText: string | null = null;
+      let addedNo: string | null = null;
 
-    for (let i = 0; i < hunk.lines.length; i++) {
-      const line = hunk.lines[i];
-      const no = String(
-        line.type === "removed" ? (line.oldNo ?? "") : (line.newNo ?? line.oldNo ?? ""),
-      ).padStart(noW);
-
-      if (line.type === "context") {
+      if (pair && pair.removedIdx === i) {
+        const highlighted = highlightInlineChanges(
+          line.text, pair.added.text, removedPalette, addedPalette, useTrueColor, lang,
+        );
+        removedText = truncateText(highlighted.old, lineTextW);
+        addedText = truncateText(highlighted.new, lineTextW);
+        addedNo = String(pair.added.newNo ?? "").padStart(noW);
+        renderedAsPartOfPair.add(pair.addedIdx);
+      } else {
         const raw = truncateText(line.text, lineTextW);
-        const text = lang ? highlightLine(raw, lang) : raw;
-        output.push(`  ${p.dim}${no} │${p.reset} ${p.dim}${text}${p.reset}`);
-        continue;
+        removedText = lang ? highlightLine(raw, lang) : raw;
       }
 
-      if (line.type === "removed") {
-        const pair = pairs.get(i);
-        let removedText: string;
-        let addedText: string | null = null;
-        let addedNo: string | null = null;
-
-        if (pair && pair.removedIdx === i) {
-          const highlighted = highlightInlineChanges(
-            line.text,
-            pair.added.text,
-            removedPalette,
-            addedPalette,
-            useTrueColor,
-            lang,
-          );
-          removedText = truncateText(highlighted.old, lineTextW);
-          addedText = truncateText(highlighted.new, lineTextW);
-          addedNo = String(pair.added.newNo ?? "").padStart(noW);
-          renderedAsPartOfPair.add(pair.addedIdx);
-        } else {
-          // Unpaired removed line — syntax highlight the whole line
-          const raw = truncateText(line.text, lineTextW);
-          removedText = lang ? highlightLine(raw, lang) : raw;
-        }
-
-        if (useTrueColor) {
-          const rowContent = `${p.errorBg}${p.error}- ${no} │ ${preserveBg(removedText, p.errorBg)}${p.reset}`;
-          output.push(padToWidth(rowContent, textWidth));
-        } else {
-          output.push(`${p.error}- ${no} │ ${removedText}${p.reset}`);
-        }
-
-        if (addedText !== null && addedNo !== null) {
-          if (useTrueColor) {
-            const rowContent = `${p.successBg}${p.success}+ ${addedNo} │ ${preserveBg(addedText, p.successBg)}${p.reset}`;
-            output.push(padToWidth(rowContent, textWidth));
-          } else {
-            output.push(`${p.success}+ ${addedNo} │ ${addedText}${p.reset}`);
-          }
-        }
-        continue;
+      if (useTrueColor) {
+        out.push(padToWidth(`${p.errorBg}${p.error}- ${no} │ ${preserveBg(removedText, p.errorBg)}${p.reset}`, textWidth));
+      } else {
+        out.push(`${p.error}- ${no} │ ${removedText}${p.reset}`);
       }
 
-      if (line.type === "added") {
-        if (renderedAsPartOfPair.has(i)) continue;
-
-        const raw = truncateText(line.text, lineTextW);
-        const text = lang ? highlightLine(raw, lang) : raw;
+      if (addedText !== null && addedNo !== null) {
         if (useTrueColor) {
-          const rowContent = `${p.successBg}${p.success}+ ${no} │ ${preserveBg(text, p.successBg)}${p.reset}`;
-          output.push(padToWidth(rowContent, textWidth));
+          out.push(padToWidth(`${p.successBg}${p.success}+ ${addedNo} │ ${preserveBg(addedText, p.successBg)}${p.reset}`, textWidth));
         } else {
-          output.push(`${p.success}+ ${no} │ ${text}${p.reset}`);
+          out.push(`${p.success}+ ${addedNo} │ ${addedText}${p.reset}`);
         }
+      }
+      continue;
+    }
+
+    if (line.type === "added") {
+      if (renderedAsPartOfPair.has(i)) continue;
+      const raw = truncateText(line.text, lineTextW);
+      const text = lang ? highlightLine(raw, lang) : raw;
+      if (useTrueColor) {
+        out.push(padToWidth(`${p.successBg}${p.success}+ ${no} │ ${preserveBg(text, p.successBg)}${p.reset}`, textWidth));
+      } else {
+        out.push(`${p.success}+ ${no} │ ${text}${p.reset}`);
       }
     }
   }
+  return out;
+}
 
+function renderUnified(diff: DiffResult, opts: DiffRenderOptions): string[] {
+  const layout = unifiedLayout(diff, opts);
+  const output: string[] = [];
+  for (let hunkIdx = 0; hunkIdx < diff.hunks.length; hunkIdx++) {
+    if (hunkIdx > 0) output.push(`  ${p.dim}⋯${p.reset}`);
+    output.push(...renderUnifiedHunk(diff.hunks[hunkIdx], layout));
+  }
   return output;
 }
 
 // ── Split (side-by-side) mode ────────────────────────────────────
 
-function renderSplit(diff: DiffResult, opts: DiffRenderOptions): string[] {
-  const useTrueColor = opts.trueColor !== false;
-  const useSyntax = opts.syntaxHighlight !== false;
-  const lang = useSyntax ? detectLanguage(opts.filePath) : undefined;
-  const totalWidth = opts.width;
-  // 3 chars for " │ " separator
-  const colWidth = Math.max(1, Math.floor((totalWidth - 3) / 2));
+interface SplitLayout {
+  colWidth: number;
+  noW: number;
+  textW: number;
+  useTrueColor: boolean;
+  lang: string | undefined;
+  removedPalette: InlinePalette;
+  addedPalette: InlinePalette;
+}
 
-  // Compute max line number width
+function splitLayout(diff: DiffResult, opts: DiffRenderOptions): SplitLayout {
+  const totalWidth = opts.width;
+  const colWidth = Math.max(1, Math.floor((totalWidth - 3) / 2));
   let maxNo = 0;
   for (const hunk of diff.hunks) {
     for (const line of hunk.lines) {
@@ -423,95 +431,96 @@ function renderSplit(diff: DiffResult, opts: DiffRenderOptions): string[] {
     }
   }
   const noW = Math.max(String(maxNo).length, 1);
-  // lineNo(noW) + space(1) + bar(1) + space(1) = noW + 3
-  const textW = Math.max(1, colWidth - noW - 3);
+  return {
+    colWidth,
+    noW,
+    textW: Math.max(1, colWidth - noW - 3),
+    useTrueColor: opts.trueColor !== false,
+    lang: opts.syntaxHighlight !== false ? detectLanguage(opts.filePath) : undefined,
+    removedPalette: { rowBg: p.errorBg, emphBg: p.errorBgEmph },
+    addedPalette: { rowBg: p.successBg, emphBg: p.successBgEmph },
+  };
+}
 
-  const removedPalette: InlinePalette = { rowBg: p.errorBg, emphBg: p.errorBgEmph };
-  const addedPalette: InlinePalette = { rowBg: p.successBg, emphBg: p.successBgEmph };
+function renderSplitHunk(hunk: DiffHunk, layout: SplitLayout): string[] {
+  const { colWidth, noW, textW, useTrueColor, lang, removedPalette, addedPalette } = layout;
+  const out: string[] = [];
+  const rows = buildSplitRows(hunk);
+
+  for (const row of rows) {
+    const leftNo = row.left
+      ? String(row.left.oldNo ?? row.left.newNo ?? "").padStart(noW)
+      : " ".repeat(noW);
+    const rightNo = row.right
+      ? String(row.right.newNo ?? row.right.oldNo ?? "").padStart(noW)
+      : " ".repeat(noW);
+
+    let leftText = row.left ? truncateText(row.left.text, textW) : "";
+    let rightText = row.right ? truncateText(row.right.text, textW) : "";
+
+    if (row.left && row.right && row.left.type === "removed" && row.right.type === "added") {
+      const highlighted = highlightInlineChanges(
+        row.left.text, row.right.text, removedPalette, addedPalette, useTrueColor, lang,
+      );
+      leftText = truncateText(highlighted.old, textW);
+      rightText = truncateText(highlighted.new, textW);
+    } else if (lang) {
+      if (leftText) leftText = highlightLine(leftText, lang);
+      if (rightText) rightText = highlightLine(rightText, lang);
+    }
+
+    let leftCol: string;
+    let rightCol: string;
+
+    if (!row.left || row.left.type === "context") {
+      leftCol = padToWidth(`${p.dim}${leftNo} │${p.reset} ${p.dim}${leftText}${p.reset}`, colWidth);
+    } else if (row.left.type === "removed") {
+      if (useTrueColor) {
+        leftCol = padToWidth(
+          `${p.errorBg}${p.error}${leftNo} │ ${preserveBg(leftText, p.errorBg)}${p.reset}`, colWidth,
+        );
+      } else {
+        leftCol = padToWidth(`${p.error}${leftNo} │ ${leftText}${p.reset}`, colWidth);
+      }
+    } else {
+      leftCol = padToWidth(`${p.dim}${leftNo} │${p.reset} ${leftText}`, colWidth);
+    }
+
+    if (!row.right || row.right.type === "context") {
+      rightCol = padToWidth(`${p.dim}${rightNo} │${p.reset} ${p.dim}${rightText}${p.reset}`, colWidth);
+    } else if (row.right.type === "added") {
+      if (useTrueColor) {
+        rightCol = padToWidth(
+          `${p.successBg}${p.success}${rightNo} │ ${preserveBg(rightText, p.successBg)}${p.reset}`, colWidth,
+        );
+      } else {
+        rightCol = padToWidth(`${p.success}${rightNo} │ ${rightText}${p.reset}`, colWidth);
+      }
+    } else {
+      rightCol = padToWidth(`${p.dim}${rightNo} │${p.reset} ${rightText}`, colWidth);
+    }
+
+    out.push(`${leftCol} ${p.dim}│${p.reset} ${rightCol}`);
+  }
+  return out;
+}
+
+function renderSplit(diff: DiffResult, opts: DiffRenderOptions): string[] {
+  const layout = splitLayout(diff, opts);
   const output: string[] = [];
 
   // Column header
-  const leftHeader = padToWidth(`${p.dim}${"─".repeat(colWidth)}${p.reset}`, colWidth);
-  const rightHeader = padToWidth(`${p.dim}${"─".repeat(colWidth)}${p.reset}`, colWidth);
+  const leftHeader = padToWidth(`${p.dim}${"─".repeat(layout.colWidth)}${p.reset}`, layout.colWidth);
+  const rightHeader = padToWidth(`${p.dim}${"─".repeat(layout.colWidth)}${p.reset}`, layout.colWidth);
   output.push(`${leftHeader} ${p.dim}│${p.reset} ${rightHeader}`);
 
   for (let hunkIdx = 0; hunkIdx < diff.hunks.length; hunkIdx++) {
-    const hunk = diff.hunks[hunkIdx];
     if (hunkIdx > 0) {
-      output.push(`${p.dim}${" ".repeat(colWidth)} │ ${" ".repeat(colWidth)}${p.reset}`);
-      output.push(`${p.dim}${"·".repeat(colWidth)} │ ${"·".repeat(colWidth)}${p.reset}`);
+      output.push(`${p.dim}${" ".repeat(layout.colWidth)} │ ${" ".repeat(layout.colWidth)}${p.reset}`);
+      output.push(`${p.dim}${"·".repeat(layout.colWidth)} │ ${"·".repeat(layout.colWidth)}${p.reset}`);
     }
-
-    const rows = buildSplitRows(hunk);
-
-    for (const row of rows) {
-      const leftNo = row.left
-        ? String(row.left.oldNo ?? row.left.newNo ?? "").padStart(noW)
-        : " ".repeat(noW);
-      const rightNo = row.right
-        ? String(row.right.newNo ?? row.right.oldNo ?? "").padStart(noW)
-        : " ".repeat(noW);
-
-      let leftText = row.left ? truncateText(row.left.text, textW) : "";
-      let rightText = row.right ? truncateText(row.right.text, textW) : "";
-
-      // Apply inline highlighting for change pairs
-      if (row.left && row.right && row.left.type === "removed" && row.right.type === "added") {
-        const highlighted = highlightInlineChanges(
-          row.left.text,
-          row.right.text,
-          removedPalette,
-          addedPalette,
-          useTrueColor,
-          lang,
-        );
-        leftText = truncateText(highlighted.old, textW);
-        rightText = truncateText(highlighted.new, textW);
-      } else {
-        // Non-pair lines: apply syntax highlighting
-        if (lang) {
-          if (leftText) leftText = highlightLine(leftText, lang);
-          if (rightText) rightText = highlightLine(rightText, lang);
-        }
-      }
-
-      let leftCol: string;
-      let rightCol: string;
-
-      if (!row.left || row.left.type === "context") {
-        leftCol = padToWidth(`${p.dim}${leftNo} │${p.reset} ${p.dim}${leftText}${p.reset}`, colWidth);
-      } else if (row.left.type === "removed") {
-        if (useTrueColor) {
-          leftCol = padToWidth(
-            `${p.errorBg}${p.error}${leftNo} │ ${preserveBg(leftText, p.errorBg)}${p.reset}`,
-            colWidth,
-          );
-        } else {
-          leftCol = padToWidth(`${p.error}${leftNo} │ ${leftText}${p.reset}`, colWidth);
-        }
-      } else {
-        leftCol = padToWidth(`${p.dim}${leftNo} │${p.reset} ${leftText}`, colWidth);
-      }
-
-      if (!row.right || row.right.type === "context") {
-        rightCol = padToWidth(`${p.dim}${rightNo} │${p.reset} ${p.dim}${rightText}${p.reset}`, colWidth);
-      } else if (row.right.type === "added") {
-        if (useTrueColor) {
-          rightCol = padToWidth(
-            `${p.successBg}${p.success}${rightNo} │ ${preserveBg(rightText, p.successBg)}${p.reset}`,
-            colWidth,
-          );
-        } else {
-          rightCol = padToWidth(`${p.success}${rightNo} │ ${rightText}${p.reset}`, colWidth);
-        }
-      } else {
-        rightCol = padToWidth(`${p.dim}${rightNo} │${p.reset} ${rightText}`, colWidth);
-      }
-
-      output.push(`${leftCol} ${p.dim}│${p.reset} ${rightCol}`);
-    }
+    output.push(...renderSplitHunk(diff.hunks[hunkIdx], layout));
   }
-
   return output;
 }
 
@@ -557,6 +566,49 @@ function buildSplitRows(hunk: DiffHunk): SplitRow[] {
   }
 
   return rows;
+}
+
+// ── Async variants (yield between hunks) ──────────────────────────
+
+/** Optional hook called between hunks to yield to the event loop. */
+type YieldFn = () => Promise<void>;
+
+async function renderUnifiedAsync(
+  diff: DiffResult,
+  opts: DiffRenderOptions,
+  yieldFn: YieldFn,
+): Promise<string[]> {
+  const layout = unifiedLayout(diff, opts);
+  const output: string[] = [];
+  for (let hunkIdx = 0; hunkIdx < diff.hunks.length; hunkIdx++) {
+    if (hunkIdx > 0) await yieldFn();
+    if (hunkIdx > 0) output.push(`  ${p.dim}⋯${p.reset}`);
+    output.push(...renderUnifiedHunk(diff.hunks[hunkIdx], layout));
+  }
+  return output;
+}
+
+async function renderSplitAsync(
+  diff: DiffResult,
+  opts: DiffRenderOptions,
+  yieldFn: YieldFn,
+): Promise<string[]> {
+  const layout = splitLayout(diff, opts);
+  const output: string[] = [];
+
+  const leftHeader = padToWidth(`${p.dim}${"─".repeat(layout.colWidth)}${p.reset}`, layout.colWidth);
+  const rightHeader = padToWidth(`${p.dim}${"─".repeat(layout.colWidth)}${p.reset}`, layout.colWidth);
+  output.push(`${leftHeader} ${p.dim}│${p.reset} ${rightHeader}`);
+
+  for (let hunkIdx = 0; hunkIdx < diff.hunks.length; hunkIdx++) {
+    if (hunkIdx > 0) await yieldFn();
+    if (hunkIdx > 0) {
+      output.push(`${p.dim}${" ".repeat(layout.colWidth)} │ ${" ".repeat(layout.colWidth)}${p.reset}`);
+      output.push(`${p.dim}${"·".repeat(layout.colWidth)} │ ${"·".repeat(layout.colWidth)}${p.reset}`);
+    }
+    output.push(...renderSplitHunk(diff.hunks[hunkIdx], layout));
+  }
+  return output;
 }
 
 // ── Utilities ────────────────────────────────────────────────────
@@ -721,4 +773,57 @@ export function renderDiff(diff: DiffResult, opts: DiffRenderOptions): string[] 
   }
 
   return [header, ...bodyLines];
+}
+
+/**
+ * Async variant of renderDiff that yields to the event loop between hunks.
+ * Use when rendering in a context where a spinner or other UI needs to stay
+ * responsive (e.g. showing a large diff during a permission prompt).
+ *
+ * @param onLines - Callback invoked with each batch of rendered lines as they
+ *                  are produced. Allows progressive/streaming display.
+ */
+export async function renderDiffAsync(
+  diff: DiffResult,
+  opts: DiffRenderOptions,
+  onLines: (lines: string[]) => void,
+): Promise<void> {
+  if (diff.isIdentical) {
+    onLines([`${p.dim}(no changes)${p.reset}`]);
+    return;
+  }
+
+  const mode = opts.mode ?? selectMode(opts.width);
+  const maxLines = opts.maxLines ?? 50;
+
+  const header = buildHeader(diff, opts.filePath);
+
+  if (mode === "summary") {
+    onLines([header, ...renderSummary(diff)]);
+    return;
+  }
+
+  // Trim context lines from hunks if the diff would exceed the budget
+  const trimmed: DiffResult = { ...diff, hunks: trimHunksToFit(diff.hunks, maxLines) };
+
+  const yieldFn: YieldFn = () => new Promise<void>(r => setImmediate(r));
+
+  let bodyLines: string[];
+  switch (mode) {
+    case "split":
+      bodyLines = await renderSplitAsync(trimmed, opts, yieldFn);
+      break;
+    case "unified":
+      bodyLines = await renderUnifiedAsync(trimmed, opts, yieldFn);
+      break;
+  }
+
+  // Final safety net — if still over budget, simple tail truncation.
+  if (bodyLines.length > maxLines) {
+    const overflow = bodyLines.length - maxLines;
+    bodyLines = bodyLines.slice(0, maxLines);
+    bodyLines.push(`${p.dim}… ${overflow} more lines${p.reset}`);
+  }
+
+  onLines([header, ...bodyLines]);
 }

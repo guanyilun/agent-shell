@@ -115,7 +115,7 @@ const DEFAULTS: Required<Settings> = {
   recallExpandMaxLines: 100,
   shellContextRatio: 0.35,
   historyMaxBytes: 102400,
-  historyStartupEntries: 50,
+  historyStartupEntries: 100,
   nuclearMaxEntries: 200,
   autoCompactThreshold: 0.5,
   maxCommandOutputLines: 3,

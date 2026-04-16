@@ -16,9 +16,9 @@
  *
  * Requires: npm install @xterm/headless@5.5.0 @xterm/addon-serialize@0.13.0
  */
-import type { ExtensionContext, RemoteSession } from "../../src/types.js";
-import type { RenderSurface } from "../../src/utils/compositor.js";
-import { FloatingPanel } from "../../src/utils/floating-panel.js";
+import type { ExtensionContext, RemoteSession } from "agent-sh/types";
+import type { RenderSurface } from "agent-sh/utils/compositor";
+import { FloatingPanel } from "agent-sh/utils/floating-panel";
 
 /** Adapt a FloatingPanel to the RenderSurface interface. */
 function createPanelSurface(panel: FloatingPanel): RenderSurface {

@@ -280,11 +280,8 @@ export class ContextManager {
       out += `The user interacts with a real shell (PTY) and sends you queries inline. You are there to help them with their tasks.\n`;
       out += `\n`;
       out += `IMPORTANT tool usage rules:\n`;
-      out += `- user_shell runs commands in the user's live shell (PTY). The user sees output directly — no summary needed.\n`;
       out += `- Your internal tools (bash, read, write, ls, etc.) run in an isolated subprocess. The user CANNOT see their output.\n`;
-      out += `- When the user asks to see, list, view, or display anything, ALWAYS use user_shell. NEVER use internal tools like ls/read/bash for display — the user won't see it.\n`;
       out += `- Only use internal tools when YOU need to reason about content silently (e.g. reading a file to answer a question about it).\n`;
-      out += `- After a user_shell command, the user already saw the output. Do NOT repeat or summarize it.\n`;
       out += `- You can browse or search shell history with shell_recall.\n`;
       out += `- You can browse or search evicted conversation turns with conversation_recall.\n`;
       out += `\n`;

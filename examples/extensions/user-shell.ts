@@ -1,16 +1,46 @@
-import type { EventBus } from "../../event-bus.js";
-import type { ToolDefinition } from "../types.js";
-
 /**
- * user_shell — runs commands in the user's live PTY shell.
+ * User shell extension.
  *
- * Unlike bash, this affects the user's shell state (cd, export, source).
- * Output is shown directly in the terminal. By default, the agent doesn't
- * see the output (return_output=false) to save tokens.
+ * Registers the user_shell tool, which runs commands in the user's live PTY
+ * shell — affecting real shell state (cd, export, source). Also registers
+ * system prompt guidance so the agent knows when to use it.
+ *
+ * Without this extension, the agent only has the isolated bash tool.
+ *
+ * Usage:
+ *   agent-sh -e ./examples/extensions/user-shell.ts
+ *
+ *   # Or copy to ~/.agent-sh/extensions/ for permanent use:
+ *   cp examples/extensions/user-shell.ts ~/.agent-sh/extensions/
  */
-export function createUserShellTool(opts: {
+import type { ExtensionContext } from "agent-sh/types";
+import type { ToolDefinition } from "agent-sh/agent/types";
+
+export default function activate(ctx: ExtensionContext): void {
+  const { bus, registerTool, registerInstruction } = ctx;
+  const getCwd = () => ctx.contextManager.getCwd();
+
+  // ── Tool ───────────────────────────────────────────────────────
+
+  registerTool(createUserShellTool({ getCwd, bus }));
+
+  // ── System prompt guidance ─────────────────────────────────────
+
+  registerInstruction("user-shell-guide", `# user_shell Tool Guide
+
+You have access to user_shell, which runs commands in the user's live shell (PTY).
+- user_shell affects real shell state (cd, export, source).
+- The user sees output directly — do not repeat or summarize it.
+- Use it for: cd, export, source, installing packages, starting servers, git commands.
+- Set return_output=true only if you need to inspect the result.
+- When the user asks to see, list, view, or display anything, use user_shell.
+  Internal tools (bash, read, ls, etc.) run in an isolated subprocess — the user cannot see their output.
+- Only use internal tools when you need to reason about content silently.`);
+}
+
+function createUserShellTool(opts: {
   getCwd: () => string;
-  bus: EventBus;
+  bus: ExtensionContext["bus"];
 }): ToolDefinition {
   return {
     name: "user_shell",

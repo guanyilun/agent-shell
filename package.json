@@ -41,6 +41,26 @@
     "./utils/terminal-buffer": {
       "types": "./dist/utils/terminal-buffer.d.ts",
       "default": "./dist/utils/terminal-buffer.js"
+    },
+    "./agent/types": {
+      "types": "./dist/agent/types.d.ts",
+      "default": "./dist/agent/types.js"
+    },
+    "./agent/subagent": {
+      "types": "./dist/agent/subagent.d.ts",
+      "default": "./dist/agent/subagent.js"
+    },
+    "./event-bus": {
+      "types": "./dist/event-bus.d.ts",
+      "default": "./dist/event-bus.js"
+    },
+    "./utils/compositor": {
+      "types": "./dist/utils/compositor.d.ts",
+      "default": "./dist/utils/compositor.js"
+    },
+    "./utils/floating-panel": {
+      "types": "./dist/utils/floating-panel.d.ts",
+      "default": "./dist/utils/floating-panel.js"
     }
   },
   "files": [

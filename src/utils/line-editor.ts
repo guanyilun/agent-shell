@@ -297,12 +297,12 @@ export class LineEditor {
     "tab":           () => ({ action: "tab" }),
     "backspace":     () => this.deleteBackward(),
     "ctrl+d":        () => this._buf.length === 0 ? { action: "delete-empty" } : this.deleteForward(),
-    "ctrl+a":        () => this.moveTo(0),
-    "ctrl+e":        () => this.moveTo(this._buf.length),
+    "ctrl+a":        () => this.moveToLineStart(),
+    "ctrl+e":        () => this.moveToLineEnd(),
     "ctrl+b":        () => this.moveTo(this.cursor - 1),
     "ctrl+f":        () => this.moveTo(this.cursor + 1),
-    "ctrl+u":        () => this.deleteRange(0, this.cursor),
-    "ctrl+k":        () => this.deleteRange(this.cursor, this._buf.length),
+    "ctrl+u":        () => this.deleteLineStart(),
+    "ctrl+k":        () => this.deleteLineEnd(),
     "ctrl+w":        () => this.deleteWordBackward() ? { action: "changed" } : null,
     "alt+f":         () => this.wordForward() ? { action: "changed" } : null,
     "alt+b":         () => this.wordBackward() ? { action: "changed" } : null,
@@ -371,6 +371,32 @@ export class LineEditor {
     if (clamped === this.cursor) return null;
     this.cursor = clamped;
     return { action: "changed" };
+  }
+
+  /** Move cursor to start of the current logical line. */
+  private moveToLineStart(): LineEditAction | null {
+    const lineStart = this._buf.lastIndexOf("\n", this.cursor - 1) + 1;
+    return this.moveTo(lineStart);
+  }
+
+  /** Move cursor to end of the current logical line. */
+  private moveToLineEnd(): LineEditAction | null {
+    const nextNewline = this._buf.indexOf("\n", this.cursor);
+    const lineEnd = nextNewline === -1 ? this._buf.length : nextNewline;
+    return this.moveTo(lineEnd);
+  }
+
+  /** Delete from start of current logical line to cursor (Ctrl+U). */
+  private deleteLineStart(): LineEditAction | null {
+    const lineStart = this._buf.lastIndexOf("\n", this.cursor - 1) + 1;
+    return this.deleteRange(lineStart, this.cursor);
+  }
+
+  /** Delete from cursor to end of current logical line (Ctrl+K). */
+  private deleteLineEnd(): LineEditAction | null {
+    const nextNewline = this._buf.indexOf("\n", this.cursor);
+    const lineEnd = nextNewline === -1 ? this._buf.length : nextNewline;
+    return this.deleteRange(this.cursor, lineEnd);
   }
 
   private deleteBackward(): LineEditAction | null {

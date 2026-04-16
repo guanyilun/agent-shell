@@ -394,7 +394,12 @@ export class Shell implements InputContext {
         this.bus.on("shell:command-done", handler);
 
         this.outputParser.onCommandEntered(payload.command, this.outputParser.getCwd());
-        this.ptyProcess.write(payload.command + "\r");
+        // Collapse literal newlines to spaces so the PTY receives a single-line
+        // command. Multi-line commands (e.g. git commit -m "...\n...") would
+        // cause the shell to execute prematurely, producing garbled output from
+        // syntax highlighting plugins (zsh syntax highlighting, etc).
+        const oneLine = payload.command.replace(/\n/g, " ");
+        this.ptyProcess.write(oneLine + "\r");
       });
 
       this.paused = true;

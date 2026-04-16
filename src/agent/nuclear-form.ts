@@ -280,8 +280,6 @@ function summarizeToolCall(name: string, args: Record<string, unknown>): string 
       return `glob ${args.pattern ?? ""}`;
     case "ls":
       return `ls ${args.path ?? "."}`;
-    case "display":
-      return `display: ${truncate(String(args.command ?? ""), 60)}`;
     default:
       return `${name}`;
   }
