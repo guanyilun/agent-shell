@@ -63,6 +63,9 @@ function firstMatchExcerpt(text: string, regex: RegExp): string | null {
 
 // ── Priority tiers (lower number = evicted first) ─────────────────
 
+/** Maximum nuclear entries to include in the context block. Oldest are dropped first. */
+const MAX_NUCLEAR_IN_CONTEXT = 60;
+
 const enum Priority {
   /** Large read-only tool results (grep, ls, read_file) — agent can re-read. */
   LOWEST = 0,
@@ -597,7 +600,10 @@ export class ConversationState {
   /** Formatted nuclear summary text (one line per entry), or null if empty. */
   getNuclearSummary(): string | null {
     if (this.nuclearEntries.length === 0) return null;
-    return this.nuclearEntries.map(formatNuclearLine).join("\n");
+    const visible = this.nuclearEntries.length > MAX_NUCLEAR_IN_CONTEXT
+      ? this.nuclearEntries.slice(-MAX_NUCLEAR_IN_CONTEXT)
+      : this.nuclearEntries;
+    return visible.map(formatNuclearLine).join("\n");
   }
 
   getRecallArchiveSize(): number {
@@ -616,10 +622,20 @@ export class ConversationState {
   // ── Internal: Nuclear block management ────────────────────────
 
   private buildNuclearBlock(): ChatCompletionMessageParam {
-    const lines = this.nuclearEntries.map(formatNuclearLine);
+    // Cap nuclear entries in context — oldest are least relevant since they're
+    // furthest from the current task. All entries remain in recallArchive for
+    // conversation_recall to search.
+    const visible = this.nuclearEntries.length > MAX_NUCLEAR_IN_CONTEXT
+      ? this.nuclearEntries.slice(-MAX_NUCLEAR_IN_CONTEXT)
+      : this.nuclearEntries;
+    const lines = visible.map(formatNuclearLine);
+    const omitted = this.nuclearEntries.length - visible.length;
+    const header = omitted > 0
+      ? `[Conversation history — ${omitted} older entries omitted, use conversation_recall to search]`
+      : `[Conversation history — use conversation_recall to expand any entry]`;
     return {
       role: "user",
-      content: `[Conversation history — use conversation_recall to expand any entry]\n${lines.join("\n")}`,
+      content: `${header}\n${lines.join("\n")}`,
     };
   }
 
