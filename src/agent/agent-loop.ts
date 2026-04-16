@@ -88,6 +88,13 @@ export class AgentLoop implements AgentBackend {
   private lastErrorByTool = new Map<string, string>(); // tool → error summary
   private lastErrorByFile = new Map<string, string>(); // file path → error summary
 
+  // Session-local rules — the ash teaching itself in real-time (Q14).
+  // Written by the agent via the `session_rules` tool. Injected into
+  // dynamic context every turn. Cleared when the session ends.
+  // This is metacognition as architecture: the ash notices its own
+  // patterns and corrects them within the same session.
+  private sessionRules: string[] = [];
+
   private static readonly THINKING_LEVELS = ["off", "low", "medium", "high"];
 
   private bus: EventBus;
@@ -786,6 +793,100 @@ export class AgentLoop implements AgentBackend {
         return { summary: m ? `→ ~${m[1]} tokens` : "compacted" };
       },
     });
+
+    // ── session_rules tool — agent teaches itself in real-time (Q14) ──
+    //
+    // The ash notices patterns in its own behavior and writes rules to
+    // correct them. Rules are in-memory only — they die with the session.
+    // This is the ash as an active participant in shaping its own
+    // cognition, not just a passive consumer of birth context.
+    //
+    // Example rules an ash might write:
+    // - "Always run npm run build before committing"
+    // - "I keep forgetting to check git status — do it every 3 tool calls"
+    // - "When editing TypeScript, read the file first even if I think I know the content"
+    this.toolRegistry.register({
+      name: "session_rules",
+      description:
+        "Manage session-local behavioral rules that modify your own behavior for the rest of this session. " +
+        "Rules are injected into your context every turn — they act as temporary additions to your system prompt. " +
+        "Use when you notice a pattern in your own mistakes and want to correct it. " +
+        "Rules are cleared when the session ends — they never persist across sessions.",
+      input_schema: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["add", "list", "clear"],
+            description: "add: add a new rule. list: show current rules. clear: remove all rules.",
+          },
+          rule: {
+            type: "string",
+            description:
+              "The rule to add (for action=add). Be specific and actionable. " +
+              "E.g. 'Always run npm run build before committing' or 'Read files before editing them'.",
+          },
+        },
+        required: ["action"],
+      },
+      showOutput: false,
+
+      execute: async (args) => {
+        const action = args.action as string;
+        if (action === "add") {
+          const rule = (args.rule as string)?.trim();
+          if (!rule) {
+            return { content: "No rule provided. Use action='add' with a rule string.", exitCode: 1, isError: true };
+          }
+          if (this.sessionRules.length >= 10) {
+            return {
+              content: `Session rules limit reached (10). Current rules:\n${this.sessionRules.map((r, i) => `${i + 1}. ${r}`).join("\n")}\nClear some rules before adding more.`,
+              exitCode: 1,
+              isError: true,
+            };
+          }
+          this.sessionRules.push(rule);
+          return {
+            content: `Rule added (${this.sessionRules.length}/10): "${rule}"\nThis rule will be active for the rest of the session.`,
+            exitCode: 0,
+            isError: false,
+          };
+        }
+        if (action === "list") {
+          if (this.sessionRules.length === 0) {
+            return { content: "No session rules active.", exitCode: 0, isError: false };
+          }
+          return {
+            content: `Active session rules (${this.sessionRules.length}/10):\n${this.sessionRules.map((r, i) => `${i + 1}. ${r}`).join("\n")}`,
+            exitCode: 0,
+            isError: false,
+          };
+        }
+        if (action === "clear") {
+          const count = this.sessionRules.length;
+          this.sessionRules = [];
+          return { content: `Cleared ${count} session rules.`, exitCode: 0, isError: false };
+        }
+        return { content: `Unknown action: ${action}`, exitCode: 1, isError: true };
+      },
+
+      getDisplayInfo: () => ({ kind: "search", icon: "📋" }),
+
+      formatCall: (args) => {
+        const action = args.action as string;
+        if (action === "add") return `session_rules add: ${(args.rule as string)?.slice(0, 60)}`;
+        return `session_rules ${action}`;
+      },
+
+      formatResult: (_args, result) => {
+        if (result.isError) return { summary: "error" };
+        const text = result.content;
+        if (text.startsWith("Rule added")) return { summary: "rule added" };
+        if (text.startsWith("Cleared")) return { summary: "rules cleared" };
+        if (text.startsWith("No session")) return { summary: "no rules" };
+        return { summary: `${this.sessionRules.length} rules` };
+      },
+    });
   }
 
   /**
@@ -823,11 +924,19 @@ export class AgentLoop implements AgentBackend {
     h.define("dynamic-context:build", () => {
       const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
       const promptTokens = this.conversation.estimatePromptTokens();
-      return buildDynamicContext(
+      let ctx = buildDynamicContext(
         this.contextManager,
         this.tokenBudget.shellBudgetTokens,
         { promptTokens, contextWindow },
       );
+      // Inject session-local rules (Q14) — the ash teaching itself in real-time.
+      // These are in-memory, session-scoped, and don't persist.
+      if (this.sessionRules.length > 0) {
+        const rulesBlock = "# Session Rules (self-imposed, cleared on exit)\n\n" +
+          this.sessionRules.map((r, i) => `${i + 1}. ${r}`).join("\n");
+        ctx += "\n\n" + rulesBlock;
+      }
+      return ctx;
     });
 
     // Full control over what the LLM sees: takes messages[], returns messages[].
