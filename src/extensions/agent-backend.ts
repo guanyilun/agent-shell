@@ -100,6 +100,7 @@ export default function agentBackend(ctx: ExtensionContext): void {
     modes,
     initialModeIndex,
     compositor: ctx.compositor,
+    instanceId: ctx.instanceId,
   });
 
   // Register as backend

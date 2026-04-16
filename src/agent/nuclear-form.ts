@@ -16,10 +16,10 @@ export interface NuclearEntry {
   seq: number;
   /** Timestamp (Date.now()). */
   ts: number;
-  /** Instance ID — 4-char hex identifying the agent-sh process. */
+  /** Instance ID — identifies the agent-sh process. */
   iid: string;
   /** Entry kind. */
-  kind: "user" | "agent" | "tool" | "error";
+  kind: "user" | "agent" | "tool" | "error" | "session";
   /** Tool name (for kind=tool or kind=error). */
   tool?: string;
   /** The one-liner summary — injected in startup context. */
@@ -254,6 +254,25 @@ export function deserializeEntry(line: string): NuclearEntry | null {
 /** Check if a nuclear entry represents a read-only action (should be dropped). */
 export function isReadOnly(entry: NuclearEntry): boolean {
   return entry.kind === "tool" && entry.tool != null && READ_ONLY_TOOLS.has(entry.tool);
+}
+
+/** Check if a nuclear entry is a session-start marker. */
+export function isSessionMarker(entry: NuclearEntry): boolean {
+  return entry.kind === "session";
+}
+
+/**
+ * Create a session-start marker. Written as the first entry of every
+ * new session so that loadPriorHistory can group entries by session.
+ */
+export function createSessionMarker(iid: string, seq: number): NuclearEntry {
+  return {
+    seq,
+    ts: Date.now(),
+    iid,
+    kind: "session",
+    sum: "session start",
+  };
 }
 
 // ── Internal helpers ──────────────────────────────────────────────

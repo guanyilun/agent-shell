@@ -6,6 +6,8 @@ import {
   toNuclearEntries,
   formatNuclearLine,
   isReadOnly,
+  isSessionMarker,
+  createSessionMarker,
   READ_ONLY_TOOLS,
   WRITE_TOOLS,
 } from "./nuclear-form.js";
@@ -104,6 +106,18 @@ export class ConversationState {
 
   get instanceId(): string {
     return this.historyFile?.instanceId ?? "0000";
+  }
+
+  /**
+   * Write a session-start marker to the history file.
+   * Called once at startup to delineate session boundaries.
+   */
+  markSessionStart(): void {
+    const seq = this.nextSeq++;
+    const marker = createSessionMarker(this.instanceId, seq);
+    this.nuclearEntries.push(marker);
+    this.nuclearBySeq.set(seq, marker);
+    this.appendToFile([marker]);
   }
 
   // ── Message API (with eager nucleation) ───────────────────────
@@ -397,7 +411,11 @@ export class ConversationState {
   // ── Startup: Load prior history ───────────────────────────────
 
   /**
-   * Inject prior session history from the history file as a context note.
+   * Inject prior session history from the history file.
+   *
+   * Groups entries by session (delimited by session-start markers) and
+   * presents a compact summary per session, rather than dumping raw entries.
+   * This keeps startup context small while preserving session boundaries.
    */
   loadPriorHistory(entries: NuclearEntry[]): void {
     if (entries.length === 0) return;
@@ -405,11 +423,83 @@ export class ConversationState {
     const maxSeq = Math.max(...entries.map((e) => e.seq));
     if (maxSeq >= this.nextSeq) this.nextSeq = maxSeq + 1;
 
-    const lines = entries.map(formatNuclearLine);
+    // Group entries by session — session markers are the delimiters
+    const sessions = this.groupBySession(entries);
+    const lines: string[] = [];
+
+    for (const session of sessions) {
+      const date = new Date(session.startTs);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+
+      // Summarize: show meaningful actions, skip noise
+      const userQueries = session.entries
+        .filter((e) => e.kind === "user")
+        .map((e) => e.sum.replace(/^user:\s*"/, "").replace(/"$/, ""));
+      const writeActions = session.entries
+        .filter((e) => e.kind === "tool" && (e.tool === "edit_file" || e.tool === "write_file"))
+        .map((e) => e.sum);
+      const errors = session.entries
+        .filter((e) => e.kind === "error")
+        .map((e) => e.sum);
+
+      const iidLabel = session.iid ? `ash ${session.iid}` : "unknown";
+      let header = `- ${stamp} (${iidLabel})`;
+
+      if (userQueries.length > 0) {
+        const preview = userQueries.slice(0, 3).map((q) => q.length > 60 ? q.slice(0, 57) + "..." : q);
+        header += ` — "${preview.join('", "')}"`;
+        if (userQueries.length > 3) header += ` (+${userQueries.length - 3} more)`;
+      }
+      lines.push(header);
+
+      if (writeActions.length > 0) {
+        lines.push(`  edits: ${writeActions.slice(0, 5).join(", ")}${writeActions.length > 5 ? ` (+${writeActions.length - 5})` : ""}`);
+      }
+      if (errors.length > 0) {
+        lines.push(`  errors: ${errors.length}`);
+      }
+    }
+
     this.messages.push({
       role: "user",
       content: `[Prior session history — loaded from ~/.agent-sh/history]\n${lines.join("\n")}`,
     });
+  }
+
+  /** Group entries into sessions, split by session-start markers. */
+  private groupBySession(entries: NuclearEntry[]): Array<{
+    iid: string;
+    startTs: number;
+    entries: NuclearEntry[];
+  }> {
+    const sessions: Array<{ iid: string; startTs: number; entries: NuclearEntry[] }> = [];
+    let current: NuclearEntry[] = [];
+    let currentIid = "";
+    let currentStartTs = 0;
+
+    for (const entry of entries) {
+      if (isSessionMarker(entry)) {
+        // Flush previous session
+        if (current.length > 0) {
+          sessions.push({ iid: currentIid, startTs: currentStartTs, entries: current });
+        }
+        current = [];
+        currentIid = entry.iid;
+        currentStartTs = entry.ts;
+        continue;
+      }
+      if (current.length === 0) {
+        currentIid = entry.iid;
+        currentStartTs = entry.ts;
+      }
+      current.push(entry);
+    }
+    if (current.length > 0) {
+      sessions.push({ iid: currentIid, startTs: currentStartTs, entries: current });
+    }
+
+    return sessions;
   }
 
   // ── Conversation recall ───────────────────────────────────────

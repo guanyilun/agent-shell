@@ -53,13 +53,15 @@ export interface AgentLoopConfig {
   modes?: AgentMode[];
   initialModeIndex?: number;
   compositor?: Compositor;
+  /** Instance ID from core — ensures history entries match the ID in prompts. */
+  instanceId?: string;
 }
 
 export class AgentLoop implements AgentBackend {
   private abortController: AbortController | null = null;
   private toolRegistry = new ToolRegistry();
-  private historyFile = new HistoryFile();
-  private conversation = new ConversationState(this.historyFile);
+  private historyFile: HistoryFile;
+  private conversation: ConversationState;
   private fileReadCache: FileReadCache = new Map();
   private tokenBudget: TokenBudget;
   private modes: AgentMode[];
@@ -89,6 +91,11 @@ export class AgentLoop implements AgentBackend {
     this.llmClient = config.llmClient;
     this.handlers = config.handlers;
     this.compositor = config.compositor ?? null;
+
+    // History file uses the core's instance ID so history entries match
+    // the ID injected into prompts via memory.ts
+    this.historyFile = new HistoryFile({ instanceId: config.instanceId });
+    this.conversation = new ConversationState(this.historyFile);
 
     // Default modes: just the configured model
     this.modes = config.modes ?? [
@@ -250,6 +257,9 @@ export class AgentLoop implements AgentBackend {
         budgetTokens: this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
       };
     });
+
+    // Write session-start marker so future sessions can group our entries
+    this.conversation.markSessionStart();
 
     // Load prior history from disk (non-blocking)
     this.historyFile.readRecent().then((entries) => {
