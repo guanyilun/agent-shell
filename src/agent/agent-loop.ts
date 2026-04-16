@@ -28,7 +28,7 @@ import { HistoryFile } from "./history-file.js";
 import { STATIC_SYSTEM_PROMPT, buildDynamicContext } from "./system-prompt.js";
 import type { Compositor } from "../utils/compositor.js";
 import { createToolUI } from "../utils/tool-interactive.js";
-import { TokenBudget } from "./token-budget.js";
+import { TokenBudget, RESPONSE_RESERVE, DEFAULT_CONTEXT_WINDOW } from "./token-budget.js";
 import { getSettings } from "../settings.js";
 import { createToolProtocol, type ToolProtocol, type PendingToolCall as ProtocolPendingToolCall, type ToolResult as ProtocolToolResult } from "./tool-protocol.js";
 
@@ -229,9 +229,10 @@ export class AgentLoop implements AgentBackend {
     this.bus.onPipe("context:get-stats", () => {
       return {
         activeTokens: this.conversation.estimateTokens(),
+        totalTokens: this.conversation.estimatePromptTokens(),
         nuclearEntries: this.conversation.getNuclearEntryCount(),
         recallArchiveSize: this.conversation.getRecallArchiveSize(),
-        budgetTokens: this.tokenBudget.conversationBudgetTokens,
+        budgetTokens: this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
       };
     });
 
@@ -716,11 +717,14 @@ export class AgentLoop implements AgentBackend {
     let fullResponseText = "";
 
     while (!signal.aborted) {
-      // Auto-compact when conversation exceeds threshold fraction of budget
-      const budgetTokens = this.tokenBudget.conversationBudgetTokens;
-      const autoCompactThreshold = Math.floor(budgetTokens * getSettings().autoCompactThreshold);
-      if (this.conversation.estimateTokens() > autoCompactThreshold) {
-        this.conversation.compact(autoCompactThreshold);
+      // Auto-compact when total context approaches the window limit.
+      const totalEstimate = this.conversation.estimatePromptTokens();
+      const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+      const threshold = Math.floor(
+        (contextWindow - RESPONSE_RESERVE) * getSettings().autoCompactThreshold,
+      );
+      if (totalEstimate > threshold) {
+        this.conversation.compact(threshold);
         // Auto-compaction is silent — no ui:info emitted
       }
 
@@ -957,9 +961,9 @@ export class AgentLoop implements AgentBackend {
 
         // Context overflow — aggressively compact and retry
         if (this.isContextOverflow(e)) {
-          // Use 60% of the budget to leave headroom
-          const aggressiveBudget = Math.floor(this.tokenBudget.conversationBudgetTokens * 0.6);
-          const stats = this.conversation.compact(aggressiveBudget, 6);
+          const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+          const target = Math.floor((contextWindow - RESPONSE_RESERVE) * 0.6);
+          const stats = this.conversation.compact(target, 6);
           const detail = stats ? ` ~${stats.before.toLocaleString()} → ~${stats.after.toLocaleString()} tokens` : "";
           this.bus.emit("ui:info", { message: `(context overflow — compacted${detail}, retrying)` });
           continue;
@@ -1044,11 +1048,16 @@ export class AgentLoop implements AgentBackend {
       // Token usage (may arrive in a chunk with empty choices)
       if ((chunk as any).usage) {
         const u = (chunk as any).usage;
+        const promptTokens = u.prompt_tokens ?? 0;
         this.bus.emit("agent:usage", {
-          prompt_tokens: u.prompt_tokens ?? 0,
+          prompt_tokens: promptTokens,
           completion_tokens: u.completion_tokens ?? 0,
           total_tokens: u.total_tokens ?? 0,
         });
+        // Feed accurate token count back to conversation state
+        if (promptTokens > 0) {
+          this.conversation.updateApiTokenCount(promptTokens);
+        }
       }
 
       const choice = chunk.choices[0];

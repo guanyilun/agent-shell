@@ -57,6 +57,12 @@ export class ConversationState {
   // ── Shared state ──────────────────────────────────────────────
   private nextSeq = 1;
 
+  // ── Token tracking ────────────────────────────────────────────
+  /** Last known token count from the API (prompt_tokens). null until first response. */
+  private lastApiTokenCount: number | null = null;
+  /** Number of messages in the array when lastApiTokenCount was recorded. */
+  private lastApiMessageCount: number = 0;
+
   constructor(historyFile?: HistoryFile) {
     this.historyFile = historyFile ?? null;
   }
@@ -181,6 +187,43 @@ export class ConversationState {
 
   // ── Token estimation ──────────────────────────────────────────
 
+  /**
+   * Update the token count baseline from an API response.
+   * `promptTokens` is the total input tokens (system prompt + context + messages).
+   */
+  updateApiTokenCount(promptTokens: number): void {
+    this.lastApiTokenCount = promptTokens;
+    this.lastApiMessageCount = this.messages.length;
+  }
+
+  /**
+   * Estimate total tokens the next API call will consume.
+   *
+   * This includes everything: system prompt, dynamic context, tool definitions,
+   * and conversation messages. When API usage data is available, it uses the
+   * real prompt_tokens as a baseline and only estimates the delta for messages
+   * added since. Falls back to chars/4 if no API data yet.
+   *
+   * Should be compared against the model's context window.
+   */
+  estimatePromptTokens(): number {
+    if (this.lastApiTokenCount === null) {
+      return this.estimateTokens();
+    }
+
+    const trailing = this.messages.length - this.lastApiMessageCount;
+    if (trailing <= 0) {
+      return this.lastApiTokenCount;
+    }
+
+    const trailingMessages = this.messages.slice(this.lastApiMessageCount);
+    return this.lastApiTokenCount + Math.ceil(JSON.stringify(trailingMessages).length / 4);
+  }
+
+  /**
+   * Rough conversation-only token estimate (chars/4 heuristic).
+   * Used internally by compact() for eviction bookkeeping, and for stats.
+   */
   estimateTokens(): number {
     return Math.ceil(JSON.stringify(this.messages).length / 4);
   }
@@ -191,10 +234,22 @@ export class ConversationState {
    * Priority-based compaction. Evicts lowest-priority turns, replacing
    * them with their pre-computed nuclear one-liner summaries.
    * Read-only tool results are dropped entirely from context.
+   *
+   * @param maxPromptTokens  Target ceiling for total prompt tokens
+   *                         (system + context + conversation). Internally
+   *                         converted to a conversation-only target.
    */
-  compact(targetTokens: number, recentTurnsToKeep = 10, force = false): { before: number; after: number } | null {
-    const before = this.estimateTokens();
-    if (!force && before <= targetTokens) return null;
+  compact(maxPromptTokens: number, recentTurnsToKeep = 10, force = false): { before: number; after: number } | null {
+    // Convert total-prompt target to conversation-only target.
+    // overhead = prompt total - conversation estimate (both approximate,
+    // but the ratio is stable since both share the same messages array).
+    const promptEstimate = this.estimatePromptTokens();
+    const convEstimate = this.estimateTokens();
+    const overhead = promptEstimate - convEstimate;
+    const convTarget = Math.max(0, maxPromptTokens - overhead);
+
+    const before = convEstimate;
+    if (!force && before <= convTarget) return null;
 
     const turns = this.parseTurns();
     if (turns.length <= 2) return null;
@@ -238,7 +293,7 @@ export class ConversationState {
     let currentTokens = this.estimateTokens();
 
     for (const c of candidates) {
-      if (currentTokens <= targetTokens) break;
+      if (currentTokens <= convTarget) break;
       const turnTokens = Math.ceil(JSON.stringify(c.turn.messages).length / 4);
       evictedIndices.add(c.idx);
       currentTokens -= turnTokens;
@@ -288,6 +343,10 @@ export class ConversationState {
     }
 
     this.messages = rebuilt;
+    // Reset API token baseline — messages changed, old count is stale.
+    // The next API response will provide a fresh baseline.
+    this.lastApiTokenCount = null;
+    this.lastApiMessageCount = 0;
     return { before, after: this.estimateTokens() };
   }
 
