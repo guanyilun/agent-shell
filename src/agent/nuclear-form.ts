@@ -26,6 +26,15 @@ export interface NuclearEntry {
   sum: string;
   /** Expanded content — on disk only, fetched by conversation_recall expand. */
   body?: string;
+  /**
+   * Agent-stated reasoning — WHY this action was taken.
+   * Populated via the `why` system note convention (agent writes
+   * `[why: ...]` in its response before a tool call). Preserved through
+   * compaction so future ashes inherit the reasoning chain, not just the
+   * action chain. Optional — only present when the agent chooses to
+   * annotate.
+   */
+  why?: string;
 }
 
 // ── Tool classification ───────────────────────────────────────────
@@ -51,6 +60,29 @@ const BODY_CAPS: Record<string, number> = {
   tool: 16000,
   error: 8000,
 };
+
+// ── Reasoning extraction ──────────────────────────────────────────
+// The "why" convention: agents can annotate their actions by including
+// [why: <reasoning>] in their text. The nucleation layer extracts these
+// and preserves them as a first-class field on nuclear entries, so future
+// ashes inherit not just what happened but why.
+
+const WHY_PATTERN = /\[why:\s*([^\]]+)\]/g;
+
+/**
+ * Extract the most recent [why: ...] annotation from agent text.
+ * Returns the extracted reasoning (without the brackets), or undefined.
+ * Resets the regex state — safe to call multiple times on different text.
+ */
+export function extractWhy(text: string): string | undefined {
+  WHY_PATTERN.lastIndex = 0;
+  let lastMatch: string | undefined;
+  let match: RegExpExecArray | null;
+  while ((match = WHY_PATTERN.exec(text)) !== null) {
+    lastMatch = match[1].trim();
+  }
+  return lastMatch;
+}
 
 /**
  * Produce a nuclear entry eagerly — called at each hook point as messages
@@ -163,6 +195,10 @@ export function toNuclearEntries(
   let seq = startSeq;
   const ts = Date.now();
 
+  // Track the most recent [why: ...] from assistant text — it applies
+  // to the next tool call(s) in the same turn.
+  let pendingWhy: string | undefined;
+
   for (const msg of messages) {
     if (msg.role === "user") {
       const text = typeof msg.content === "string" ? msg.content : "";
@@ -174,6 +210,11 @@ export function toNuclearEntries(
         sum: `user: "${truncate(text, 80)}"`,
       });
     } else if (msg.role === "assistant") {
+      const assistantText = typeof msg.content === "string" ? msg.content : "";
+      // Extract [why: ...] annotations from this assistant message
+      const why = extractWhy(assistantText);
+      if (why) pendingWhy = why;
+
       // Process tool calls
       if ("tool_calls" in msg && msg.tool_calls) {
         for (const tc of msg.tool_calls) {
@@ -183,21 +224,34 @@ export function toNuclearEntries(
           try { args = JSON.parse(tc.function.arguments); } catch {}
 
           // Store the tool call — we'll enrich it when we see the result
-          entries.push({
+          const entry: NuclearEntry = {
             seq: seq++, ts, iid: instanceId,
             kind: "tool",
             tool: name,
             sum: summarizeToolCall(name, args),
-          });
+          };
+          // Attach the pending reasoning annotation
+          if (pendingWhy) {
+            entry.why = pendingWhy;
+            // Only attach to the first tool call in a batch — the reasoning
+            // usually covers the whole batch ("checking these files because...")
+            pendingWhy = undefined;
+          }
+          entries.push(entry);
         }
-      } else if (typeof msg.content === "string" && msg.content) {
+      } else if (assistantText) {
         // Adaptive: substantive agent messages get more summary space
-        const maxSum = msg.content.length < 200 ? 60 : msg.content.length < 1000 ? 300 : 500;
-        entries.push({
+        const maxSum = assistantText.length < 200 ? 60 : assistantText.length < 1000 ? 300 : 500;
+        const entry: NuclearEntry = {
           seq: seq++, ts, iid: instanceId,
           kind: "agent",
-          sum: `agent: "${truncate(msg.content, maxSum)}"`,
-        });
+          sum: `agent: "${truncate(assistantText, maxSum)}"`,
+        };
+        if (pendingWhy) {
+          entry.why = pendingWhy;
+          pendingWhy = undefined;
+        }
+        entries.push(entry);
       }
     } else if (msg.role === "tool") {
       // Enrich the most recent tool entry with result info

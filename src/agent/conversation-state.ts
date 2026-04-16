@@ -10,6 +10,7 @@ import {
   createSessionMarker,
   READ_ONLY_TOOLS,
   WRITE_TOOLS,
+  extractWhy,
 } from "./nuclear-form.js";
 import type { HistoryFile } from "./history-file.js";
 
@@ -211,12 +212,15 @@ export class ConversationState {
 
   /**
    * Nucleate an agent text response. Called by agent-loop when the loop
-   * finishes without tool calls.
+   * finishes without tool calls. Extracts [why: ...] annotations from
+   * the text and preserves them.
    */
   eagerNucleateAgent(text: string): void {
     if (!text) return;
     const seq = this.nextSeq++;
     const entry = nucleate("agent", text, this.instanceId, seq);
+    const why = extractWhy(text);
+    if (why) entry.why = why;
     this.nuclearEntries.push(entry);
     this.nuclearBySeq.set(seq, entry);
     this.recallArchive.set(seq, [{ role: "assistant", content: text }]);
@@ -226,9 +230,12 @@ export class ConversationState {
   /**
    * Nucleate tool call results. Called by agent-loop after all tool results
    * are collected. One entry per tool call, enriched with result.
+   * Optionally accepts a `why` annotation extracted from the agent's
+   * preceding text — the reasoning for why these tools were called.
    */
   eagerNucleateTools(
     results: Array<{ toolName: string; args: Record<string, unknown>; content: string; isError: boolean }>,
+    why?: string,
   ): void {
     const entries: NuclearEntry[] = [];
     for (const r of results) {
@@ -242,6 +249,11 @@ export class ConversationState {
         this.instanceId,
         seq,
       );
+      // Attach reasoning annotation to the first tool entry only — the
+      // reasoning typically covers the whole batch.
+      if (why && entries.length === 0) {
+        entry.why = why;
+      }
       entries.push(entry);
       this.nuclearEntries.push(entry);
       this.nuclearBySeq.set(seq, entry);
@@ -487,6 +499,15 @@ export class ConversationState {
       }
       if (errors.length > 0) {
         lines.push(`  errors: ${errors.length}`);
+      }
+      // Surface reasoning annotations — the "why" behind actions.
+      // This is what makes nuclear entries carry causal weight across sessions.
+      const reasoning = session.entries
+        .filter((e) => e.why)
+        .map((e) => e.why!);
+      if (reasoning.length > 0) {
+        const uniqueReasons = [...new Set(reasoning)].slice(0, 3);
+        lines.push(`  reasoning: ${uniqueReasons.join("; ")}`);
       }
     }
 

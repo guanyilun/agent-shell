@@ -31,6 +31,7 @@ import { createToolUI } from "../utils/tool-interactive.js";
 import { TokenBudget, RESPONSE_RESERVE, DEFAULT_CONTEXT_WINDOW } from "./token-budget.js";
 import { getSettings } from "../settings.js";
 import { createToolProtocol, type ToolProtocol, type PendingToolCall as ProtocolPendingToolCall, type ToolResult as ProtocolToolResult } from "./tool-protocol.js";
+import { extractWhy } from "./nuclear-form.js";
 
 // Core tool factories
 import { createBashTool } from "./tools/bash.js";
@@ -1127,6 +1128,8 @@ export class AgentLoop implements AgentBackend {
       this.toolProtocol.recordResults(this.conversation, collectedResults);
 
       // Eager nucleation: write tool results to history file
+      // Extract [why: ...] reasoning from the agent's preceding text
+      const why = extractWhy(text);
       this.conversation.eagerNucleateTools(
         collectedResults.map((r) => {
           // Find the original args for this tool call
@@ -1135,6 +1138,7 @@ export class AgentLoop implements AgentBackend {
           try { args = tc ? JSON.parse(tc.argumentsJson) : {}; } catch {}
           return { toolName: r.toolName, args, content: r.content, isError: !!r.isError };
         }),
+        why,
       );
 
       // Loop back — LLM sees tool results
