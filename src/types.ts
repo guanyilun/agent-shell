@@ -108,6 +108,16 @@ export interface ExtensionContext {
   /** Remove a named instruction block from the system prompt. */
   removeInstruction: (name: string) => void;
 
+  // ── Skill registration ────────────────────────────────────
+  /** Register a skill (on-demand reference material) for the agent. */
+  registerSkill: (name: string, description: string, filePath: string) => void;
+  /** Remove a registered skill by name. */
+  removeSkill: (name: string) => void;
+
+  // ── Internal ──────────────────────────────────────────────
+  /** @internal Extension name set by the loader before activate(). */
+  _extensionName?: string;
+
   // ── Named handler registry (Emacs-style advice) ───────────
   /** Register a named handler. */
   define: (name: string, fn: (...args: any[]) => any) => void;

@@ -98,12 +98,14 @@
   },
   "dependencies": {
     "cli-highlight": "^2.1.11",
+    "diff": "^9.0.0",
     "marked": "^17.0.6",
     "node-pty": "^1.2.0-beta.12",
     "openai": "^6.34.0",
     "tsx": "^4.19.0"
   },
   "devDependencies": {
+    "@types/diff": "^8.0.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0"
   }

@@ -93,7 +93,7 @@ export function buildDynamicContext(
     sections.push("# Project Conventions\n\n" + conventions.join("\n\n"));
   }
 
-  // Skills hint
+  // Skills hint (folder-based discovery for backward compatibility)
   const skills = discoverSkills(contextManager.getCwd());
   if (skills.length > 0) {
     sections.push(

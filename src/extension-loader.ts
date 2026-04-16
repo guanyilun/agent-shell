@@ -62,6 +62,12 @@ function createScopedContext(ctx: ExtensionContext): { scoped: ExtensionContext;
     cleanups.push(() => ctx.removeInstruction(name));
   };
 
+  // Track skill registrations
+  const scopedRegisterSkill: typeof ctx.registerSkill = (name, description, filePath) => {
+    ctx.registerSkill(name, description, filePath);
+    cleanups.push(() => ctx.removeSkill(name));
+  };
+
   // Track tool registrations
   const scopedRegisterTool: typeof ctx.registerTool = (tool) => {
     ctx.registerTool(tool);
@@ -74,6 +80,8 @@ function createScopedContext(ctx: ExtensionContext): { scoped: ExtensionContext;
     advise: scopedAdvise,
     registerInstruction: scopedRegisterInstruction,
     removeInstruction: ctx.removeInstruction,
+    registerSkill: scopedRegisterSkill,
+    removeSkill: ctx.removeSkill,
     registerTool: scopedRegisterTool,
     unregisterTool: ctx.unregisterTool,
   };
@@ -198,9 +206,11 @@ async function loadSpecifiers(
           extensionDisposers.get(name)?.();
 
           const { scoped, dispose } = createScopedContext(ctx);
+          scoped._extensionName = name;
           activate(scoped);
           extensionDisposers.set(name, dispose);
         } else {
+          ctx._extensionName = name;
           activate(ctx);
         }
         loaded.push(name);

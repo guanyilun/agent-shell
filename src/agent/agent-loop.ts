@@ -20,7 +20,7 @@ import type { HandlerFunctions } from "../utils/handler-registry.js";
 import { setMaxListeners } from "node:events";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { computeDiff, computeInputDiff } from "../utils/diff.js";
+import { computeDiff, computeEditDiff, computeInputDiff } from "../utils/diff.js";
 import type { AgentBackend, ToolDefinition } from "./types.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { ConversationState } from "./conversation-state.js";
@@ -68,6 +68,7 @@ export class AgentLoop implements AgentBackend {
   private ctorListeners: Array<{ event: string; fn: (...args: any[]) => void }> = [];
   private ctorPipeListeners: Array<{ event: string; fn: (...args: any[]) => any }> = [];
   private lastProjectSkillNames = new Set<string>();
+
   private static readonly THINKING_LEVELS = ["off", "low", "medium", "high"];
 
   private bus: EventBus;
@@ -113,10 +114,18 @@ export class AgentLoop implements AgentBackend {
       this.bus.on(event, fn);
       this.ctorListeners.push({ event, fn });
     };
-    onCtor("agent:register-tool", ({ tool }) => this.registerTool(tool));
-    onCtor("agent:unregister-tool", ({ name }) => this.unregisterTool(name));
-    onCtor("agent:register-instruction", ({ name, text }) => this.registerInstruction(name, text));
+    onCtor("agent:register-tool", ({ tool, extensionName }) => {
+      this.registerTool(tool);
+      if (extensionName) this.toolExtensions.set(tool.name, extensionName);
+    });
+    onCtor("agent:unregister-tool", ({ name }) => {
+      this.unregisterTool(name);
+      this.toolExtensions.delete(name);
+    });
+    onCtor("agent:register-instruction", ({ name, text, extensionName }) => this.registerInstruction(name, text, extensionName));
     onCtor("agent:remove-instruction", ({ name }) => this.removeInstruction(name));
+    onCtor("agent:register-skill", ({ name, description, filePath, extensionName }) => this.registerSkill(name, description, filePath, extensionName));
+    onCtor("agent:remove-skill", ({ name }) => this.removeSkill(name));
     const getToolsPipe = () => ({ tools: this.getTools() });
     this.bus.onPipe("agent:get-tools", getToolsPipe);
     this.ctorPipeListeners.push({ event: "agent:get-tools", fn: getToolsPipe });
@@ -216,8 +225,10 @@ export class AgentLoop implements AgentBackend {
       this.lastProjectSkillNames.clear();
     });
     on("agent:compact-request", () => {
-      // Force compaction: use target of 0 so every non-pinned turn is evicted
-      const stats = this.conversation.compact(0, 10, true);
+      // Force compaction: nucleate everything. No recent window preservation —
+      // conversation_recall can recover any evicted content, so there's no reason
+      // to keep verbatim turns when the user explicitly requests compaction.
+      const stats = this.conversation.compact(0, 0, true);
       if (stats) {
         this.bus.emit("ui:info", {
           message: `(compacted: ~${stats.before.toLocaleString()} → ~${stats.after.toLocaleString()} tokens)`,
@@ -286,13 +297,20 @@ export class AgentLoop implements AgentBackend {
     return this.toolRegistry.all();
   }
 
-  // ── Extension instructions & tool tracking ──────────────────────
+  // ── Extension instructions, skills & tool tracking ──────────────────
 
-  private instructions = new Map<string, string>();
+  /** Instructions keyed by name, with extension attribution. */
+  private instructions = new Map<string, { text: string; extensionName: string }>();
+
+  /** Skills keyed by name, with extension attribution. */
+  private skills = new Map<string, { description: string; filePath: string; extensionName: string }>();
+
+  /** Tool → extension name attribution. */
+  private toolExtensions = new Map<string, string>();
 
   /** Register a named instruction block for the system prompt. */
-  registerInstruction(name: string, text: string): void {
-    this.instructions.set(name, text);
+  registerInstruction(name: string, text: string, extensionName: string): void {
+    this.instructions.set(name, { text, extensionName });
   }
 
   /** Remove a named instruction block. */
@@ -300,13 +318,71 @@ export class AgentLoop implements AgentBackend {
     this.instructions.delete(name);
   }
 
-  /** Get instruction blocks registered by extensions. */
-  getInstructionSections(): string[] {
-    const sections: string[] = [];
-    for (const [name, text] of this.instructions) {
-      sections.push(`## ${name}\n${text}`);
+  /** Register a named skill (on-demand reference material). */
+  registerSkill(name: string, description: string, filePath: string, extensionName: string): void {
+    this.skills.set(name, { description, filePath, extensionName });
+  }
+
+  /** Remove a registered skill. */
+  removeSkill(name: string): void {
+    this.skills.delete(name);
+  }
+
+  /**
+   * Build the system prompt grouped by extension.
+   *
+   * Each extension gets a unified block:
+   *   ## extension-name
+   *   ### Tools
+   *   ### Skills
+   *   ### Instructions
+   */
+  buildExtensionSections(): string[] {
+    interface ExtensionGroup {
+      tools: Array<{ name: string; description: string }>;
+      skills: Array<{ name: string; description: string; filePath: string }>;
+      instructions: Array<{ text: string }>;
     }
-    return sections;
+
+    const groups = new Map<string, ExtensionGroup>();
+    const ensure = (name: string): ExtensionGroup =>
+      groups.get(name) ?? (groups.set(name, { tools: [], skills: [], instructions: [] }).get(name)!);
+
+    // Attribute instructions
+    for (const { text, extensionName } of this.instructions.values()) {
+      ensure(extensionName).instructions.push({ text });
+    }
+
+    // Attribute skills
+    for (const [skillName, { description, filePath, extensionName }] of this.skills) {
+      ensure(extensionName).skills.push({ name: skillName, description, filePath });
+    }
+
+    // Attribute tools (skip built-in scratchpad tools)
+    const builtinTools = new Set([
+      "bash", "read_file", "write_file", "edit_file", "grep", "glob", "ls",
+      "list_skills", "conversation_recall",
+    ]);
+    for (const tool of this.toolRegistry.all()) {
+      if (builtinTools.has(tool.name)) continue;
+      const extName = this.toolExtensions.get(tool.name);
+      if (!extName) continue;
+      ensure(extName).tools.push({ name: tool.name, description: tool.description.split("\n")[0] });
+    }
+
+    // Render
+    return [...groups.entries()]
+      .filter(([, g]) => g.tools.length + g.skills.length + g.instructions.length > 0)
+      .map(([name, g]) => {
+        const parts: string[] = [];
+        if (g.tools.length > 0)
+          parts.push("### Tools\n" + g.tools.map(t => `${t.name} — ${t.description}`).join("\n"));
+        if (g.skills.length > 0)
+          parts.push("### Skills\n" + g.skills.map(s => `${s.name}: ${s.description}\n  → ${s.filePath}`).join("\n\n"));
+        if (g.instructions.length > 0)
+          parts.push("### Instructions\n" + g.instructions.map(i => i.text).join("\n\n"));
+        return `## ${name}\n${parts.join("\n\n")}`;
+      });
   }
 
   kill(): void {
@@ -477,7 +553,9 @@ export class AgentLoop implements AgentBackend {
       displayName: "recall",
       description:
         "Browse, search, or expand evicted conversation turns. " +
-        "Use when you need context from earlier in the conversation that was compacted away.",
+        "Use when you need context from earlier in the conversation that was compacted away. " +
+        "Search is regex-based and covers both summaries and full body text. " +
+        "If search doesn't find what you expect, try broader/shorter terms or browse to scan the timeline.",
       input_schema: {
         type: "object",
         properties: {
@@ -514,9 +592,12 @@ export class AgentLoop implements AgentBackend {
     // System instruction: proactively search history for prior preferences
     this.registerInstruction(
       "recall-guidance",
-      "When starting a task that may have been discussed before (conventions, preferences, corrections), " +
+      "When starting a task that may have been discussed before (conventions, preferences, corrections, prior examples), " +
       "use conversation_recall to search history for relevant prior entries. " +
-      "Treat recurring user guidance as standing preferences.",
+      "Treat recurring user guidance as standing preferences. " +
+      "If a search returns nothing useful, try: shorter queries, alternate terms, or browse to scan the full timeline. " +
+      "Recall only covers this and recent sessions — for older context, also search the filesystem (grep, glob).",
+      "core",
     );
   }
 
@@ -531,9 +612,9 @@ export class AgentLoop implements AgentBackend {
     // Extensions can use registerInstruction() for a managed section,
     // or advise this handler directly for full control.
     h.define("system-prompt:build", () => {
-      const instructions = this.getInstructionSections();
-      if (instructions.length === 0) return STATIC_SYSTEM_PROMPT;
-      return STATIC_SYSTEM_PROMPT + "\n\n# Extension Instructions\n\n" + instructions.join("\n\n");
+      const sections = this.buildExtensionSections();
+      if (sections.length === 0) return STATIC_SYSTEM_PROMPT;
+      return STATIC_SYSTEM_PROMPT + "\n\n# Extension Instructions\n\n" + sections.join("\n\n");
     });
 
     // Extensions compose additional context (git info, project rules, etc.)
@@ -580,10 +661,19 @@ export class AgentLoop implements AgentBackend {
             let diff: ReturnType<typeof computeDiff> | undefined;
 
             if (typeof args.old_text === "string" && typeof args.new_text === "string") {
-              // edit_file — diff the edit inputs directly, no file read needed
+              // edit_file — read the file so line numbers are real (not relative to the edit region)
               const normalizedOld = (args.old_text as string).replace(/\r\n/g, "\n");
               const normalizedNew = (args.new_text as string).replace(/\r\n/g, "\n");
-              diff = computeInputDiff(normalizedOld, normalizedNew);
+              try {
+                const oldFileContent = await fs.readFile(absPath, "utf-8");
+                diff = computeEditDiff(
+                  oldFileContent, normalizedOld, normalizedNew,
+                  args.replace_all === true,
+                );
+              } catch {
+                // File doesn't exist yet — fall back to input-only diff
+                diff = computeInputDiff(normalizedOld, normalizedNew);
+              }
             } else if (typeof args.content === "string") {
               // write_file — still need to read the old file for comparison
               let oldContent: string | null = null;
@@ -716,6 +806,12 @@ export class AgentLoop implements AgentBackend {
   private async executeLoop(signal: AbortSignal): Promise<string> {
     let fullResponseText = "";
 
+    // System prompt and dynamic context are constant within a single agent
+    // query — no new shell commands arrive between tool-call iterations, and
+    // extension instructions don't change mid-flight. Build once.
+    const systemPrompt = this.handlers.call("system-prompt:build") as string;
+    const dynamicContext = this.handlers.call("dynamic-context:build");
+
     while (!signal.aborted) {
       // Auto-compact when total context approaches the window limit.
       const totalEstimate = this.conversation.estimatePromptTokens();
@@ -727,11 +823,6 @@ export class AgentLoop implements AgentBackend {
         this.conversation.compact(threshold);
         // Auto-compaction is silent — no ui:info emitted
       }
-
-      // System prompt uses handler so extensions can append instructions (cacheable);
-      // dynamic context uses handler for per-query state via advise()
-      const systemPrompt = this.handlers.call("system-prompt:build") as string;
-      const dynamicContext = this.handlers.call("dynamic-context:build");
 
       // Stream LLM response with retry
       const result = await this.streamWithRetry(systemPrompt, dynamicContext, signal);

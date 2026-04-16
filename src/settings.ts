@@ -70,8 +70,6 @@ export interface Settings {
   historyMaxBytes?: number;
   /** Number of prior history entries to load on startup (default: 50). */
   historyStartupEntries?: number;
-  /** Max nuclear entries kept in-context before flushing to history file (default: 200). */
-  nuclearMaxEntries?: number;
   /** Auto-compact threshold as fraction of conversation budget (0-1, default 0.5). */
   autoCompactThreshold?: number;
 
@@ -108,15 +106,14 @@ const DEFAULTS: Required<Settings> = {
   defaultBackend: "ash",
   toolMode: "api" as "api" | "deferred" | "inline",
   contextWindowSize: 20,
-  contextBudget: 16384,
-  shellTruncateThreshold: 10,
-  shellHeadLines: 5,
-  shellTailLines: 5,
-  recallExpandMaxLines: 100,
+  contextBudget: 32768,
+  shellTruncateThreshold: 20,
+  shellHeadLines: 10,
+  shellTailLines: 10,
+  recallExpandMaxLines: 500,
   shellContextRatio: 0.35,
-  historyMaxBytes: 102400,
+  historyMaxBytes: 104857600, // 100MB — history is only accessed via search/expand, never loaded wholesale
   historyStartupEntries: 100,
-  nuclearMaxEntries: 200,
   autoCompactThreshold: 0.5,
   maxCommandOutputLines: 3,
   readOutputMaxLines: 10,

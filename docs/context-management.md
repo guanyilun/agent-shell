@@ -100,7 +100,7 @@ Key behaviors:
 
 ### Tier 3: History File
 
-When nuclear entries accumulate past `nuclearMaxEntries` (default 200), oldest entries flush to `~/.agent-sh/history` — a JSONL file that persists across restarts.
+Nuclear entries are eagerly written to `~/.agent-sh/history` — a JSONL file that persists across restarts — as they arrive. They also stay in memory for the nuclear block injected into context.
 
 On startup, the last `historyStartupEntries` (default 100) non-read-only entries are loaded so the agent knows what happened in prior terminal sessions. Read-only tools (`read_file`, `grep`, `glob`, `ls`) are filtered out at load time to maximize the number of meaningful entries.
 
@@ -165,15 +165,14 @@ All settings in `~/.agent-sh/settings.json`:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `contextWindowSize` | 20 | Max recent shell exchanges in context |
-| `contextBudget` | 16384 | Byte budget for shell context |
-| `shellTruncateThreshold` | 10 | Shell output lines before truncation |
-| `shellHeadLines` | 5 | Lines kept from start of truncated output |
-| `shellTailLines` | 5 | Lines kept from end |
+| `contextBudget` | 32768 | Byte budget for shell context |
+| `shellTruncateThreshold` | 20 | Shell output lines before truncation |
+| `shellHeadLines` | 10 | Lines kept from start of truncated output |
+| `shellTailLines` | 10 | Lines kept from end |
 | `shellContextRatio` | 0.35 | Fraction of content budget for shell context |
-| `recallExpandMaxLines` | 100 | Max lines shell_recall returns without line ranges |
-| `historyMaxBytes` | 102400 | Max history file size (100KB) |
+| `recallExpandMaxLines` | 500 | Max lines recall expand returns without line ranges |
+| `historyMaxBytes` | 104857600 | Max history file size (100MB) |
 | `historyStartupEntries` | 100 | Prior history entries loaded on startup (read-only tools filtered) |
-| `nuclearMaxEntries` | 200 | Max nuclear entries in-context before flushing to disk |
 
 ## Key Files
 

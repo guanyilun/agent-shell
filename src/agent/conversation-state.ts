@@ -179,9 +179,13 @@ export class ConversationState {
   }
 
   private appendToFile(entries: NuclearEntry[]): void {
-    if (this.historyFile && entries.length > 0) {
+    if (!this.historyFile || entries.length === 0) return;
+    // Skip read-only tools (read_file, grep, glob, ls) — they bloat the
+    // file without adding searchable value since the agent can re-run them.
+    const writable = entries.filter((e) => !isReadOnly(e));
+    if (writable.length > 0) {
       // Fire-and-forget — don't block the conversation flow
-      this.historyFile.append(entries).catch(() => {});
+      this.historyFile.append(writable).catch(() => {});
     }
   }
 
@@ -254,8 +258,13 @@ export class ConversationState {
     const turns = this.parseTurns();
     if (turns.length <= 2) return null;
 
-    // Assign priorities with recency weighting
-    const pinnedCount = Math.min(recentTurnsToKeep, turns.length - 1);
+    // Cap the pinned window so at least ~40% of turns are evictable.
+    // Without this, sessions with few turns but large tool outputs would have
+    // everything pinned and nothing to compact — the user sees high usage but
+    // gets "nothing to compact". When force=true, be more aggressive (60% evictable).
+    const maxPinnedFraction = force ? 0.4 : 0.6;
+    const maxPinned = Math.max(2, Math.floor(turns.length * maxPinnedFraction));
+    const pinnedCount = Math.min(recentTurnsToKeep, turns.length - 1, maxPinned);
     for (let i = 0; i < turns.length; i++) {
       turns[i]!.priority = this.inferPriority(turns[i]!.messages);
     }
@@ -505,7 +514,7 @@ export class ConversationState {
    * - Keeps user/assistant messages intact
    */
   private slimTurn(messages: ChatCompletionMessageParam[]): ChatCompletionMessageParam[] {
-    const MAX_RESULT_LEN = 500;
+    const MAX_RESULT_LEN = 1500;
     const result: ChatCompletionMessageParam[] = [];
 
     // Collect tool_call ids that are read-only so we can skip their results

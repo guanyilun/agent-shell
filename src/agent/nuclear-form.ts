@@ -42,12 +42,14 @@ export const WRITE_TOOLS = new Set([
 
 // ── Eager nucleation ──────────────────────────────────────────────
 
-/** Body caps by entry kind (in characters). 0 = no body stored. */
+/** Body caps by entry kind (in characters). 0 = no body stored.
+ *  These are only recovered via conversation_recall expand — they
+ *  never enter the context window automatically, so be generous. */
 const BODY_CAPS: Record<string, number> = {
-  user: 2000,
-  agent: 2000,
-  tool: 4000,
-  error: 2000,
+  user: 8000,
+  agent: 8000,
+  tool: 16000,
+  error: 8000,
 };
 
 /**
@@ -85,7 +87,7 @@ export function nucleate(
     const text = textOrTool;
     const iid = arg2 as string;
     const seq = arg3 as number;
-    const maxSum = kindOrName === "user" ? 80 : 60;
+    const maxSum = kindOrName === "user" ? 200 : 150;
     const cap = BODY_CAPS[kindOrName]!;
     return {
       seq, ts: Date.now(), iid,
@@ -132,7 +134,7 @@ function buildToolBody(toolName: string, args: Record<string, unknown>, result: 
   const argStr = toolName === "bash" || toolName === "user_shell"
     ? String(args.command ?? "")
     : JSON.stringify(args);
-  const maxResult = 3000;
+  const maxResult = 12000;
   const truncated = result.length > maxResult
     ? result.slice(0, Math.floor(maxResult * 0.6))
       + `\n[… truncated …]\n`
