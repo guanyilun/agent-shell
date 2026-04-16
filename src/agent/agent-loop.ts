@@ -25,7 +25,7 @@ import type { AgentBackend, ToolDefinition } from "./types.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { ConversationState } from "./conversation-state.js";
 import { HistoryFile } from "./history-file.js";
-import { STATIC_SYSTEM_PROMPT, buildDynamicContext, formatSkillsBlock } from "./system-prompt.js";
+import { STATIC_SYSTEM_PROMPT, buildDynamicContext, formatSkillsBlock, loadGlobalAgentsMd } from "./system-prompt.js";
 import type { Compositor } from "../utils/compositor.js";
 import { createToolUI } from "../utils/tool-interactive.js";
 import { TokenBudget, RESPONSE_RESERVE, DEFAULT_CONTEXT_WINDOW } from "./token-budget.js";
@@ -639,6 +639,10 @@ export class AgentLoop implements AgentBackend {
     // or advise this handler directly for full control.
     h.define("system-prompt:build", () => {
       const parts: string[] = [STATIC_SYSTEM_PROMPT];
+
+      // Global behavioral rules (~/.agent-sh/AGENTS.md) — persistent agent memory
+      const agentsMd = loadGlobalAgentsMd();
+      if (agentsMd) parts.push(agentsMd);
 
       // Global skills — stable across cwd changes, cacheable with the system prompt
       const globalSkills = discoverGlobalSkills();

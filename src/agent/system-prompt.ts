@@ -25,6 +25,19 @@ const DOCS_DIR = path.resolve(
 /** File names to scan for project conventions (checked in order). */
 const CONVENTION_FILES = ["CLAUDE.md", "AGENT.md"];
 
+// Resolve to the user's home-based config dir for global behavioral rules
+import * as os from "node:os";
+const GLOBAL_AGENTS_MD = path.join(os.homedir(), ".agent-sh", "AGENTS.md");
+
+export function loadGlobalAgentsMd(): string | null {
+  try {
+    const content = fs.readFileSync(GLOBAL_AGENTS_MD, "utf-8").trim();
+    return content || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Scan from `dir` upward for project convention files.
  * Returns contents ordered root-first (general → specific).
