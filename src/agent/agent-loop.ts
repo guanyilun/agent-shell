@@ -20,7 +20,7 @@ import type { HandlerFunctions } from "../utils/handler-registry.js";
 import { setMaxListeners } from "node:events";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { computeDiff } from "../utils/diff.js";
+import { computeDiff, computeEditDiff } from "../utils/diff.js";
 import type { AgentBackend, ToolDefinition } from "./types.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { ConversationState } from "./conversation-state.js";
@@ -580,31 +580,36 @@ export class AgentLoop implements AgentBackend {
             try { oldContent = await fs.readFile(absPath, "utf-8"); } catch { /* new file */ }
 
             let newContent: string | undefined;
+            let diff: ReturnType<typeof computeDiff> | undefined;
             if (typeof args.content === "string") {
               // write_file
               newContent = args.content;
             } else if (typeof args.old_text === "string" && typeof args.new_text === "string" && oldContent !== null) {
-              // edit_file
-              newContent = oldContent.replace(
-                (args.old_text as string).replace(/\r\n/g, "\n"),
-                (args.new_text as string).replace(/\r\n/g, "\n"),
-              );
+              // edit_file — use windowed diff
+              const normalizedOld = (args.old_text as string).replace(/\r\n/g, "\n");
+              const normalizedNew = (args.new_text as string).replace(/\r\n/g, "\n");
+              const replaceAll = (args.replace_all as boolean) ?? false;
+              const normalizedFile = oldContent.replace(/\r\n/g, "\n");
+              diff = computeEditDiff(normalizedFile, normalizedOld, normalizedNew, replaceAll);
+              // Still need newContent for permission metadata fallback
+              newContent = normalizedFile.replace(normalizedOld, normalizedNew);
             }
 
-            if (newContent !== undefined) {
-              const diff = computeDiff(oldContent, newContent);
-              if (!diff.isIdentical) {
-                permKind = "file-write";
-                // Shorten path for display
-                const cwd = process.cwd();
-                const home = process.env.HOME;
-                let displayPath = absPath;
-                if (absPath.startsWith(cwd + "/")) displayPath = absPath.slice(cwd.length + 1);
-                else if (home && absPath.startsWith(home + "/")) displayPath = "~/" + absPath.slice(home.length + 1);
-                permTitle = displayPath;
-                metadata = { args, diff };
-                diffShown = true;
-              }
+            if (diff === undefined && newContent !== undefined) {
+              diff = computeDiff(oldContent, newContent);
+            }
+
+            if (diff && !diff.isIdentical) {
+              permKind = "file-write";
+              // Shorten path for display
+              const cwd = process.cwd();
+              const home = process.env.HOME;
+              let displayPath = absPath;
+              if (absPath.startsWith(cwd + "/")) displayPath = absPath.slice(cwd.length + 1);
+              else if (home && absPath.startsWith(home + "/")) displayPath = "~/" + absPath.slice(home.length + 1);
+              permTitle = displayPath;
+              metadata = { args, diff };
+              diffShown = true;
             }
           } catch { /* fall back to generic permission */ }
         }

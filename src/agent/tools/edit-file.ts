@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ToolDefinition } from "../types.js";
-import { computeDiff } from "../../utils/diff.js";
+import { computeDiff, computeEditDiff } from "../../utils/diff.js";
 
 /**
  * Find the closest matching region in the file content to help diagnose
@@ -136,8 +136,8 @@ export function createEditFileTool(getCwd: () => string): ToolDefinition {
 
         await fs.writeFile(absPath, finalContent);
 
-        // Compute and stream diff for display
-        const diff = computeDiff(normalized, newContent);
+        // Compute and stream diff for display (windowed — only diffs the edit region)
+        const diff = computeEditDiff(normalized, normalizedOld, normalizedNew, replaceAll);
         if (onChunk && diff.hunks.length > 0) {
           for (const hunk of diff.hunks) {
             for (const line of hunk.lines) {
