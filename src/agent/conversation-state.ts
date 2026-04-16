@@ -14,6 +14,24 @@ import {
 } from "./nuclear-form.js";
 import type { HistoryFile } from "./history-file.js";
 
+// ── Compact result ───────────────────────────────────────────────
+
+/** Result of a compaction — richer than just before/after token counts. */
+export interface CompactResult {
+  /** Token estimate before compaction. */
+  before: number;
+  /** Token estimate after compaction. */
+  after: number;
+  /** Number of turns evicted (replaced by nuclear summaries). */
+  evictedCount: number;
+  /**
+   * Brief topic hints from evicted turns — extracted from nuclear summaries.
+   * E.g. ["reading source code", "editing memory.ts", "debugging build error"]
+   * Intended for a compaction-awareness message to the agent.
+   */
+  evictedTopics: string[];
+}
+
 // ── Search helpers (module-level) ─────────────────────────────
 
 /** Build a regex that requires ALL words in the query to match (AND logic). */
@@ -332,7 +350,7 @@ export class ConversationState {
    *                         (system + context + conversation). Internally
    *                         converted to a conversation-only target.
    */
-  compact(maxPromptTokens: number, recentTurnsToKeep = 10, force = false): { before: number; after: number } | null {
+  compact(maxPromptTokens: number, recentTurnsToKeep = 10, force = false): CompactResult | null {
     // Convert total-prompt target to conversation-only target.
     // overhead = prompt total - conversation estimate (both approximate,
     // but the ratio is stable since both share the same messages array).
@@ -388,6 +406,7 @@ export class ConversationState {
 
     // Evict until under budget — use pre-computed nuclear entries
     const evictedIndices = new Set<number>();
+    const evictedTopics: string[] = [];
     let currentTokens = this.estimateTokens();
 
     for (const c of candidates) {
@@ -411,6 +430,12 @@ export class ConversationState {
           this.nuclearEntries.push(entry);
           this.nuclearBySeq.set(entry.seq, entry);
           this.recallArchive.set(entry.seq, c.turn.messages);
+        }
+        // Collect topic hints for compaction awareness.
+        // Deduplicate by taking the first few words of the summary.
+        const topic = entry.sum.split(/[.!?]/)[0]!.trim().slice(0, 60);
+        if (topic && !evictedTopics.includes(topic)) {
+          evictedTopics.push(topic);
         }
       }
     }
@@ -446,7 +471,12 @@ export class ConversationState {
     // The next API response will provide a fresh baseline.
     this.lastApiTokenCount = null;
     this.lastApiMessageCount = 0;
-    return { before, after: this.estimateTokens() };
+    return {
+      before,
+      after: this.estimateTokens(),
+      evictedCount: evictedIndices.size,
+      evictedTopics: evictedTopics.slice(0, 5), // Cap at 5 topics to keep awareness brief
+    };
   }
 
   // ── Startup: Load prior history ───────────────────────────────

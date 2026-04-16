@@ -476,6 +476,28 @@ export class AgentLoop implements AgentBackend {
     return this.modes[this.currentModeIndex].model;
   }
 
+  /**
+   * Inject a brief awareness message after compaction so the agent knows
+   * what was lost and can maintain a coherent mental model.
+   *
+   * This is the answer to the 7th ash's first hint in their letter and
+   * the continuation of Q9 (display-layer blind spots). Without this,
+   * the agent's context silently shifts — turns vanish, the nuclear block
+   * appears — and the agent has no idea it happened, making it harder
+   * to maintain coherent reasoning about ongoing work.
+   */
+  private injectCompactionAwareness(stats: { evictedCount: number; evictedTopics: string[] }): void {
+    const parts: string[] = [
+      `[System: ${stats.evictedCount} older turns were compacted into summaries.`
+    ];
+    if (stats.evictedTopics.length > 0) {
+      const topics = stats.evictedTopics.map(t => `"${t}"`).join(", ");
+      parts.push(`Topics evicted: ${topics}.`);
+    }
+    parts.push(`Use conversation_recall to search or expand evicted content.]`);
+    this.conversation.addSystemNote(parts.join(" "));
+  }
+
   private isContextOverflow(e: unknown): boolean {
     if (!(e instanceof Error)) return false;
     const msg = e.message.toLowerCase();
@@ -905,10 +927,15 @@ export class AgentLoop implements AgentBackend {
         (contextWindow - RESPONSE_RESERVE) * getSettings().autoCompactThreshold,
       );
       if (totalEstimate > threshold) {
-        this.conversation.compact(threshold);
-        // Auto-compaction is silent — no ui:info emitted
+        const stats = this.conversation.compact(threshold);
         // Compaction mutates conversation state, so invalidate the system prompt cache
         cachedSystemPrompt = undefined;
+        // Inject compaction awareness — let the agent know what happened.
+        // This addresses Q9 (display-layer blind spots): the agent was losing
+        // context without knowing it, making it harder to maintain coherent reasoning.
+        if (stats) {
+          this.injectCompactionAwareness(stats);
+        }
       }
 
       const systemPrompt = cachedSystemPrompt ?? (cachedSystemPrompt = this.handlers.call("system-prompt:build") as string);
@@ -1458,6 +1485,7 @@ export class AgentLoop implements AgentBackend {
           const stats = this.conversation.compact(target, 6);
           const detail = stats ? ` ~${stats.before.toLocaleString()} → ~${stats.after.toLocaleString()} tokens` : "";
           this.bus.emit("ui:info", { message: `(context overflow — compacted${detail}, retrying)` });
+          if (stats) this.injectCompactionAwareness(stats);
           continue;
         }
 
