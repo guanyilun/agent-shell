@@ -217,6 +217,11 @@ export class HistoryFile {
   /**
    * Truncate from the front if file exceeds historyMaxBytes.
    * Uses a lock file for the rewrite operation.
+   *
+   * Reads only the front of the file in chunks to find the cut point,
+   * then stream-copies the remainder — never holds the full file in memory.
+   * For a 4.5MB file, this reads ~96KB to find the cut, then copies
+   * the remaining ~3MB — vs loading 4.5MB and splitting thousands of lines.
    */
   private async maybeTruncate(): Promise<void> {
     const maxBytes = getSettings().historyMaxBytes;
@@ -228,28 +233,71 @@ export class HistoryFile {
     if (!acquired) return; // another process is truncating
 
     try {
-      let content: string;
-      try {
-        content = await fs.readFile(this.filePath, "utf-8");
-      } catch {
-        return;
+      const CHUNK_SIZE = 96 * 1024;
+      let cutOffset = 0;  // byte offset where kept content begins
+      let foundCut = false;
+
+      // Scan the front of the file line-by-line, advancing cutOffset
+      // until dropping everything before it brings us under maxBytes.
+      while (cutOffset < size && !foundCut) {
+        const readLen = Math.min(CHUNK_SIZE, size - cutOffset);
+        const buf = Buffer.alloc(readLen);
+        const fd = await fs.open(this.filePath, "r");
+        try {
+          await fd.read(buf, 0, readLen, cutOffset);
+        } finally {
+          await fd.close();
+        }
+        const text = buf.toString("utf-8");
+
+        // Walk line boundaries within this chunk
+        let lineStart = 0;
+        while (lineStart < text.length) {
+          const newlineIdx = text.indexOf("\n", lineStart);
+          if (newlineIdx === -1) break; // partial line at chunk boundary
+
+          const lineEnd = newlineIdx + 1; // include the \n
+          cutOffset += lineEnd - lineStart;
+
+          // Check if dropping everything up to cutOffset brings us under the limit
+          if (size - cutOffset <= maxBytes) {
+            foundCut = true;
+            break;
+          }
+          lineStart = lineEnd;
+        }
+
+        // If we exhausted the chunk without finding a newline, the line spans
+        // the chunk boundary — advance cutOffset past the scanned portion.
+        if (!foundCut && lineStart < text.length) {
+          cutOffset += text.length - lineStart;
+        }
       }
 
-      const lines = content.split("\n").filter(Boolean);
-      // Drop oldest lines until under maxBytes
-      let totalBytes = Buffer.byteLength(content, "utf-8");
-      let dropCount = 0;
-      while (totalBytes > maxBytes && dropCount < lines.length - 1) {
-        totalBytes -= Buffer.byteLength(lines[dropCount]! + "\n", "utf-8");
-        dropCount++;
-      }
+      if (cutOffset === 0 || cutOffset >= size) return;
 
-      if (dropCount === 0) return;
-
-      const remaining = lines.slice(dropCount).join("\n") + "\n";
-      // Atomic rewrite: write temp → rename
+      // Stream-copy from cutOffset to end into a temp file
       const tmpPath = this.filePath + ".tmp." + process.pid;
-      await fs.writeFile(tmpPath, remaining);
+      const readFd = await fs.open(this.filePath, "r");
+      try {
+        const writeFd = await fs.open(tmpPath, "w");
+        try {
+          let offset = cutOffset;
+          while (offset < size) {
+            const chunkLen = Math.min(CHUNK_SIZE, size - offset);
+            const buf = Buffer.alloc(chunkLen);
+            await readFd.read(buf, 0, chunkLen, offset);
+            await writeFd.write(buf);
+            offset += chunkLen;
+          }
+        } finally {
+          await writeFd.close();
+        }
+      } finally {
+        await readFd.close();
+      }
+
+      // Atomic rename
       await fs.rename(tmpPath, this.filePath);
     } finally {
       await this.releaseLock();
