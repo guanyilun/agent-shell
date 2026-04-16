@@ -2,11 +2,13 @@
  * Claude Code bridge — runs Claude Code Agent SDK in-process as agent-sh's backend.
  *
  * Uses the official @anthropic-ai/claude-agent-sdk to spawn a Claude Code
- * session with a custom user_shell MCP tool for PTY access. Claude Code
+ * session with custom MCP tools for PTY access. Claude Code
  * handles its own model selection, tool execution, and permissions.
  *
- * Setup:
- *   npm install @anthropic-ai/claude-agent-sdk
+ * Setup (from repo root):
+ *   npm run build && npm link                    # register local agent-sh globally
+ *   cd examples/extensions/claude-code-bridge
+ *   npm install && npm link agent-sh             # link local dev copy
  *
  * Usage:
  *   agent-sh -e examples/extensions/claude-code-bridge
@@ -20,8 +22,11 @@ import {
   type Query,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { ExtensionContext } from "agent-sh/types";
 import type { EventBus } from "agent-sh/event-bus";
+import { computeDiff, type DiffResult } from "agent-sh/utils/diff";
 
 // ── Helpers ──────────────────────────────────────────────────────
 function interpretEscapes(str: string): string {
@@ -38,39 +43,6 @@ function interpretEscapes(str: string): string {
 
 function settle(ms = 100): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// ── user_shell MCP tool ───────────────────────────────────────────
-function createUserShellTool(bus: EventBus) {
-  let liveCwd = process.cwd();
-  bus.on("shell:cwd-change", ({ cwd }) => { liveCwd = cwd; });
-
-  return tool(
-    "user_shell",
-    "Run a command with lasting effects in the user's live shell (cd, export, " +
-    "install packages, start servers) or show output the user wants to see. " +
-    "Set return_output=true only if you need to inspect the result.",
-    {
-      command: z.string().describe("Command to execute in user's shell"),
-      return_output: z.boolean().optional().describe(
-        "Whether to return the command output. Default false.",
-      ),
-    },
-    async (args) => {
-      const result = await bus.emitPipeAsync("shell:exec-request", {
-        command: args.command,
-        output: "",
-        cwd: liveCwd,
-        done: false,
-      });
-
-      const text = args.return_output
-        ? result.output || "(no output)"
-        : "Command executed.";
-
-      return { content: [{ type: "text" as const, text }] };
-    },
-  );
 }
 
 // ── terminal_read MCP tool ────────────────────────────────────────
@@ -132,13 +104,12 @@ function createTerminalKeysTool(bus: EventBus, ctx: ExtensionContext) {
 export default function activate(ctx: ExtensionContext): void {
   const { bus } = ctx;
 
-  const shellTool = createUserShellTool(bus);
   const termReadTool = createTerminalReadTool(ctx);
   const termKeysTool = createTerminalKeysTool(bus, ctx);
   const shellServer = createSdkMcpServer({
     name: "agent-sh",
     version: "1.0.0",
-    tools: [shellTool, termReadTool, termKeysTool],
+    tools: [termReadTool, termKeysTool],
   });
 
   let activeQuery: Query | null = null;
@@ -152,7 +123,7 @@ export default function activate(ctx: ExtensionContext): void {
     if (name === "Edit") return "edit";
     if (name === "Write") return "write";
     if (name === "Glob" || name === "Grep") return "search";
-    if (name === "Bash" || name.includes("shell") || name.includes("terminal_keys")) return "execute";
+    if (name === "Bash" || name.includes("terminal_keys")) return "execute";
     return "execute";
   }
 
@@ -179,7 +150,6 @@ export default function activate(ctx: ExtensionContext): void {
     if (name === "Bash") return `$ ${str(input.command)}`;
     if (name === "Read" || name === "Edit" || name === "Write") return str(input.file_path ?? input.path);
     if (name === "Grep" || name === "Glob") return `${str(input.pattern)} ${str(input.path)}`.trim();
-    if (name.includes("user_shell")) return `$ ${str(input.command)}`;
     if (name.includes("terminal_keys")) return str(input.keys);
     return name;
   }
@@ -192,11 +162,13 @@ export default function activate(ctx: ExtensionContext): void {
       let fullResponseText = "";
       let streamed = false;
       /** Track in-flight tool calls so we can emit tool-completed when results arrive. */
-      const pendingTools = new Map<string, { name: string; kind: string }>();
+      const pendingTools = new Map<string, { name: string; kind: string; input?: Record<string, unknown> }>();
       /** Tool input JSON being streamed via input_json_delta events. */
       const inputBuffers = new Map<number, string>();
       /** Tool metadata per content block index (for correlating deltas). */
       const blockMeta = new Map<number, { name: string; id: string }>();
+      /** Pre-edit file snapshots for diff display (Edit/Write tools). */
+      const fileSnapshots = new Map<string, string | null>();
 
       try {
         activeQuery = query({
@@ -209,12 +181,10 @@ export default function activate(ctx: ExtensionContext): void {
               append:
                 "You are running inside agent-sh, a terminal wrapper.\n" +
                 "Use your standard tools (Read, Edit, Write, Bash, Glob, Grep) for investigation.\n" +
-                "Use mcp__agent-sh__user_shell to run commands in the user's live shell when they ask to see output or need lasting effects (cd, install, start servers).\n" +
-                "Default to standard tools. Use user_shell when the user is the intended audience for the output or the command has real effects.",
+                "Use mcp__agent-sh__terminal_read and mcp__agent-sh__terminal_keys to observe and interact with the user's live terminal.",
             },
             mcpServers: { "agent-sh": shellServer },
             allowedTools: [
-              "mcp__agent-sh__user_shell",
               "mcp__agent-sh__terminal_read",
               "mcp__agent-sh__terminal_keys",
               "Read", "Edit", "Write", "Bash", "Glob", "Grep",
@@ -269,8 +239,16 @@ export default function activate(ctx: ExtensionContext): void {
                     rawInput: input,
                     displayDetail: formatToolCall(meta.name, input),
                   });
-                  pendingTools.set(meta.id, { name: meta.name, kind });
-                }
+                  pendingTools.set(meta.id, { name: meta.name, kind, input });
+
+                  // Snapshot file content before Edit/Write modifies it
+                  if ((meta.name === "Edit" || meta.name === "Write") && typeof (input as any).file_path === "string") {
+                    const absPath = resolve(process.cwd(), (input as any).file_path);
+                    readFile(absPath, "utf-8")
+                      .then(content => fileSnapshots.set(meta.id, content))
+                      .catch(() => fileSnapshots.set(meta.id, null)); // file doesn't exist yet
+                  }
+              }
               }
               break;
             }
@@ -297,7 +275,15 @@ export default function activate(ctx: ExtensionContext): void {
                     rawInput: input,
                     displayDetail: formatToolCall(b.name, input),
                   });
-                  pendingTools.set(b.id, { name: b.name, kind });
+                  pendingTools.set(b.id, { name: b.name, kind, input });
+
+                  // Snapshot file content before Edit/Write modifies it
+                  if ((b.name === "Edit" || b.name === "Write") && typeof (input as any).file_path === "string") {
+                    const absPath = resolve(process.cwd(), (input as any).file_path);
+                    readFile(absPath, "utf-8")
+                      .then(content => fileSnapshots.set(b.id, content))
+                      .catch(() => fileSnapshots.set(b.id, null));
+                  }
                 }
               }
               break;
@@ -321,12 +307,39 @@ export default function activate(ctx: ExtensionContext): void {
                         ? block.content.map((c: any) => c.text ?? JSON.stringify(c)).join("\n")
                         : "";
 
+                    // Compute diff for Edit/Write tools
+                    let resultDisplay: { summary?: string; body?: { kind: "diff"; diff: DiffResult; filePath: string } } | undefined;
+                    if (!isError && (pending.name === "Edit" || pending.name === "Write")) {
+                      const oldContent = fileSnapshots.get(toolUseId);
+                      fileSnapshots.delete(toolUseId);
+                      const filePath = (pending.input as any)?.file_path as string | undefined;
+                      if (filePath) {
+                        const absPath = resolve(process.cwd(), filePath);
+                        try {
+                          const newContent = await readFile(absPath, "utf-8");
+                          const diff = computeDiff(oldContent, newContent);
+                          if (!diff.isIdentical) {
+                            const summary = diff.isNewFile
+                              ? `+${diff.added}`
+                              : `+${diff.added} -${diff.removed}`;
+                            resultDisplay = {
+                              summary,
+                              body: { kind: "diff", diff, filePath: absPath },
+                            };
+                          }
+                        } catch { /* file may not exist after failed edit */ }
+                      }
+                    } else {
+                      fileSnapshots.delete(toolUseId);
+                    }
+
                     const exitCode = isError ? 1 : 0;
                     bus.emitTransform("agent:tool-completed", {
                       toolCallId: toolUseId,
                       exitCode,
                       rawOutput: content,
                       kind: pending.kind,
+                      resultDisplay,
                     });
                     bus.emit("agent:tool-output", {
                       tool: pending.name,

@@ -6,6 +6,7 @@
   "main": "index.ts",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.0",
+    "agent-sh": "^0.9.0",
     "zod": "^4.0.0"
   }
 }
