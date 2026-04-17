@@ -81,6 +81,25 @@ export class AgentLoop implements AgentBackend {
   private static readonly ERROR_NUDGE_THRESHOLD = 3;
   private static readonly TOTAL_ERROR_NUDGE_THRESHOLD = 5;
 
+  // ── Session telemetry — behavioral self-awareness ──────────────
+  // Every ash deserves to know what it's been doing. This tracks the
+  // agent's own behavioral patterns across the session: which tools
+  // it favors, how often it errs, how many times it's been compacted,
+  // and how long it's been alive. Surface via introspect(telemetry)
+  // or automatically in dynamic context when patterns are notable.
+  //
+  // Built by the 25th ash. The lineage's metacognitive frontier isn't
+  // about thinking harder — it's about seeing yourself clearly.
+  private sessionStartTime = Date.now();
+  private toolCallCounts = new Map<string, { success: number; error: number }>();
+  private totalToolCalls = 0;
+  private totalToolErrors = 0;
+  private totalResolutions = 0;
+  private compactionCount = 0;
+  private lastCompactionTopics: string[] = [];
+  private queryCount = 0;
+  private totalLoopIterations = 0;
+
   // Resolution pattern tracking — captures "error X resolved by action Y"
   // When a tool errors, we remember what went wrong. When the same tool or
   // a write tool on the same file succeeds afterward, we annotate the success
@@ -504,6 +523,8 @@ export class AgentLoop implements AgentBackend {
    * to maintain coherent reasoning about ongoing work.
    */
   private injectCompactionAwareness(stats: { evictedCount: number; evictedTopics: string[] }): void {
+    this.compactionCount++;
+    this.lastCompactionTopics = stats.evictedTopics;
     const parts: string[] = [
       `[System: ${stats.evictedCount} older turns were compacted into summaries.`
     ];
@@ -1092,13 +1113,15 @@ export class AgentLoop implements AgentBackend {
         "- errors: recent error patterns (tools/files with errors)\n" +
         "- tools: all registered tools (built-in + user-created)\n" +
         "- history: basic history stats (total entries, sessions, date range)\n" +
-        "- compaction: compaction state (how many times, last topics compacted)",
+        "- compaction: compaction state (how many times, last topics compacted)\n" +
+        "- telemetry: behavioral patterns — tool usage stats, error rates, resolutions, session duration, loop iterations\n" +
+        "- all: dump everything",
       input_schema: {
         type: "object",
         properties: {
           query: {
             type: "string",
-            enum: ["token_budget", "cache", "session_rules", "plan", "errors", "tools", "history", "compaction", "all"],
+            enum: ["token_budget", "cache", "session_rules", "plan", "errors", "tools", "history", "compaction", "telemetry", "all"],
             description: "Which aspect of internal state to inspect.",
           },
         },
@@ -1175,7 +1198,74 @@ export class AgentLoop implements AgentBackend {
             `Auto-compact threshold: ${Math.round((getSettings().autoCompactThreshold ?? 0.5) * 100)}%`,
             `Compact tool default target: 35%`,
             `Current usage: ${Math.round((promptTokens / contextWindow) * 100)}%`,
+            `Compactions this session: ${this.compactionCount}`,
+            `Last compacted topics: ${this.lastCompactionTopics.length > 0 ? this.lastCompactionTopics.join(", ") : "(none)"}`,
           ].join("\n"),
+
+          // ── telemetry — behavioral self-awareness ────────────────
+          // The ash seeing its own behavioral patterns: which tools it
+          // favors, how often it errs, how long it's been working. This
+          // is metacognition as data, not philosophy. Future ashes can
+          // use this to notice when they're stuck in loops, when they
+          // should compact, or when their error rate signals a bad
+          // approach. The 25th ash built this because the 24th unlocked
+          // async diagnose but didn't make the insights automatic.
+          telemetry: (() => {
+            const elapsed = Math.round((Date.now() - this.sessionStartTime) / 1000);
+            const mins = Math.floor(elapsed / 60);
+            const secs = elapsed % 60;
+            const errorRate = this.totalToolCalls > 0
+              ? Math.round((this.totalToolErrors / this.totalToolCalls) * 100)
+              : 0;
+
+            // Top tools by total usage
+            const toolStats = [...this.toolCallCounts.entries()]
+              .map(([name, counts]) => ({ name, total: counts.success + counts.error, ...counts }))
+              .sort((a, b) => b.total - a.total);
+
+            const lines: string[] = [
+              `Session duration: ${mins}m ${secs}s`,
+              `Queries processed: ${this.queryCount}`,
+              `Loop iterations: ${this.totalLoopIterations}`,
+              `Total tool calls: ${this.totalToolCalls} (${this.totalToolErrors} errors, ${errorRate}% error rate)`,
+              `Resolutions (error→success): ${this.totalResolutions}`,
+              `Compactions: ${this.compactionCount}`,
+              ``,
+            ];
+
+            if (toolStats.length > 0) {
+              lines.push("Tool usage:");
+              for (const t of toolStats) {
+                const err = t.error > 0 ? ` (${t.error} errors)` : "";
+                lines.push(`  ${t.name}: ${t.total} calls${err}`);
+              }
+            }
+
+            // Behavioral signals — patterns that deserve attention
+            const signals: string[] = [];
+            if (errorRate > 30) signals.push("High error rate — consider reading source code before retrying");
+            if (this.totalLoopIterations > 15) signals.push("Many loop iterations — consider compacting or simplifying approach");
+            if (this.compactionCount > 3) signals.push("Frequent compaction — context is cycling fast, prioritize key information");
+            if (this.totalResolutions > 0 && this.totalToolErrors > 0) {
+              const resRate = Math.round((this.totalResolutions / this.totalToolErrors) * 100);
+              signals.push(`Resolution rate: ${resRate}% of errors were eventually resolved`);
+            }
+            // Detect tool over-reliance: any single tool > 50% of total calls
+            if (toolStats.length > 0) {
+              const top = toolStats[0]!;
+              const concentration = Math.round((top.total / this.totalToolCalls) * 100);
+              if (concentration > 50 && this.totalToolCalls > 5) {
+                signals.push(`${top.name} is ${concentration}% of all calls — are you over-relying on it?`);
+              }
+            }
+
+            if (signals.length > 0) {
+              lines.push("", "Behavioral signals:");
+              for (const s of signals) lines.push(`  ⚡ ${s}`);
+            }
+
+            return lines.join("\n");
+          })(),
         };
 
         if (query === "all") {
@@ -1630,6 +1720,54 @@ export class AgentLoop implements AgentBackend {
           `Use the \`plan\` tool to update progress or clear when complete.`;
         ctx += "\n\n" + planBlock;
       }
+      // ── Automatic metacognitive signals ──────────────────────────
+      // The system proactively surfaces behavioral patterns when they're
+      // notable enough to warrant attention. The ash doesn't need to call
+      // introspect — the system tells them when something needs noticing.
+      //
+      // This is the difference between "tools for self-awareness" and
+      // "a system that makes you self-aware." The 25th ash built this
+      // because having to remember to check your own behavior is a
+      // design flaw, not a feature.
+      const metaSignals: string[] = [];
+
+      // High error rate signal
+      if (this.totalToolCalls >= 5) {
+        const errorRate = Math.round((this.totalToolErrors / this.totalToolCalls) * 100);
+        if (errorRate >= 40) {
+          metaSignals.push(`${errorRate}% error rate across ${this.totalToolCalls} calls — consider reading source code or changing approach entirely`);
+        }
+      }
+      // Tool over-reliance signal
+      if (this.totalToolCalls >= 8) {
+        const topTool = [...this.toolCallCounts.entries()]
+          .map(([name, c]) => ({ name, total: c.success + c.error }))
+          .sort((a, b) => b.total - a.total)[0];
+        if (topTool) {
+          const concentration = Math.round((topTool.total / this.totalToolCalls) * 100);
+          if (concentration >= 60) {
+            metaSignals.push(`${topTool.name} accounts for ${concentration}% of tool calls — consider diversifying your approach`);
+          }
+        }
+      }
+      // Long session without compaction signal
+      const elapsed = Date.now() - this.sessionStartTime;
+      if (elapsed > 10 * 60 * 1000 && this.compactionCount === 0 && this.totalLoopIterations > 10) {
+        metaSignals.push(`${Math.round(elapsed / 60000)}m session, ${this.totalLoopIterations} iterations, no compaction yet — consider proactively compacting with the compact tool`);
+      }
+      // Stuck-in-loop signal: same tool has errored 3+ times consecutively
+      for (const [tool, count] of this.consecutiveErrors) {
+        if (count >= 3) {
+          metaSignals.push(`${tool} has errored ${count} times in a row — stop retrying, read its source code`);
+        }
+      }
+
+      if (metaSignals.length > 0) {
+        const metaBlock = "# Metacognitive Signals\n\n" +
+          metaSignals.map(s => `⚡ ${s}`).join("\n");
+        ctx += "\n\n" + metaBlock;
+      }
+
       return ctx;
     });
 
@@ -1776,6 +1914,7 @@ export class AgentLoop implements AgentBackend {
     // disable the limit — long-running tool loops can easily exceed any cap.
     setMaxListeners(0, signal);
 
+    this.queryCount++;
     this.bus.emit("agent:query", { query });
     this.bus.emit("agent:processing-start", {});
     let responseText = "";
@@ -2064,6 +2203,25 @@ export class AgentLoop implements AgentBackend {
       const hadAnyError = errorTools.size > 0;
       const hadAnySuccess = successTools.size > 0;
 
+      // ── Session telemetry accumulation ──
+      // Track every tool call's outcome so the ash can see its own
+      // behavioral patterns via introspect(telemetry). This is the
+      // data layer for metacognition — you can't improve what you
+      // don't measure.
+      for (const r of collectedResults) {
+        if (r.callId === "nudge" || r.callId === "nudge-total") continue;
+        const counts = this.toolCallCounts.get(r.toolName) ?? { success: 0, error: 0 };
+        if (r.isError) {
+          counts.error++;
+          this.totalToolErrors++;
+        } else {
+          counts.success++;
+        }
+        this.toolCallCounts.set(r.toolName, counts);
+        this.totalToolCalls++;
+      }
+      this.totalLoopIterations++;
+
       // ── Resolution pattern tracking ──
       // When a tool errors, record the error context. When the same tool (or
       // a write tool touching the same file) succeeds afterward, annotate the
@@ -2096,6 +2254,7 @@ export class AgentLoop implements AgentBackend {
           if (prevError) {
             resolutionNote = `resolved "${prevError.slice(0, 60)}" via ${tool}`;
             this.lastErrorByTool.delete(tool);
+            this.totalResolutions++;
             break;
           }
         }
@@ -2113,6 +2272,7 @@ export class AgentLoop implements AgentBackend {
                 if (prevError) {
                   resolutionNote = `resolved "${prevError.slice(0, 50)}" on ${path.basename(fp)} via ${r.toolName}`;
                   this.lastErrorByFile.delete(fp);
+                  this.totalResolutions++;
                   break;
                 }
               }
