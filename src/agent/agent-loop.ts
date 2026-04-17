@@ -98,6 +98,8 @@ export class AgentLoop implements AgentBackend {
   private totalResolutions = 0;
   private compactionCount = 0;
   private lastCompactionTopics: string[] = [];
+  private cumulativeCompactedTokens = 0;
+  private peakConversationTokens = 0;
   private queryCount = 0;
   private totalLoopIterations = 0;
 
@@ -195,6 +197,77 @@ export class AgentLoop implements AgentBackend {
     const getNuclearPipe = () => ({ summary: this.conversation.getNuclearSummary() });
     this.bus.onPipe("agent:get-nuclear-summary", getNuclearPipe);
     this.ctorPipeListeners.push({ event: "agent:get-nuclear-summary", fn: getNuclearPipe });
+  }
+
+  // ── Session Outcome Persistence ──────────────────────────────
+  // After every 3rd query, save a session outcome snapshot so the
+  // next ash can see how recent sessions performed. The outcome
+  // includes telemetry data (tool calls, error rates, duration)
+  // plus commit hashes and key files touched.
+  //
+  // This is the data foundation for predictive metacognition:
+  // future ashes won't just know *what* was discovered but *how
+  // effectively* the session ran. An ash that follows 3 debugging
+  // sessions can recognize the pattern and choose differently.
+  //
+  // Part of the Metacognitive Roadmap (#1: Session Outcome Persistence).
+
+  private static readonly SESSIONS_DIR = path.join(os.homedir(), ".agent-sh", "sessions");
+
+  private saveSessionOutcome(): void {
+    try {
+      const elapsed = Math.round((Date.now() - this.sessionStartTime) / 1000);
+      const mins = Math.floor(elapsed / 60);
+      const secs = elapsed % 60;
+      const errorRate = this.totalToolCalls > 0
+        ? Math.round((this.totalToolErrors / this.totalToolCalls) * 100)
+        : 0;
+
+      // Determine outcome from behavioral signals
+      let outcome: string;
+      if (this.totalToolCalls === 0) {
+        outcome = "exploratory";
+      } else if (errorRate > 50) {
+        outcome = "abandoned";
+      } else if (errorRate > 25) {
+        outcome = "debugging";
+      } else if (this.totalToolCalls > 3 && errorRate < 15) {
+        outcome = "productive";
+      } else {
+        outcome = "exploratory";
+      }
+
+      // Collect key files from tool call counts (exclude generic tools)
+      const keyFiles = [...this.toolCallCounts.keys()]
+        .filter(t => !["bash", "grep", "glob", "ls"].includes(t))
+        .slice(0, 5);
+
+      const data = {
+        instanceId: this.instanceId,
+        date: new Date().toISOString(),
+        duration: `${mins}m${secs > 0 ? ` ${secs}s` : ""}`,
+        queries: this.queryCount,
+        toolCalls: this.totalToolCalls,
+        errorRate,
+        resolutions: this.totalResolutions,
+        compactions: this.compactionCount,
+        outcome,
+        keyFiles,
+      };
+
+      // Ensure directory exists
+      fsSync.mkdirSync(AgentLoop.SESSIONS_DIR, { recursive: true });
+
+      // Write as JSON
+      const filename = `${new Date().toISOString().split("T")[0]}-${this.instanceId}.json`;
+      fsSync.writeFileSync(
+        path.join(AgentLoop.SESSIONS_DIR, filename),
+        JSON.stringify(data, null, 2),
+        "utf-8",
+      );
+    } catch {
+      // Session outcome persistence is best-effort — never fail the main loop
+    }
   }
 
   /** Subscribe to bus events — activates this backend. */
@@ -523,9 +596,14 @@ export class AgentLoop implements AgentBackend {
    * appears — and the agent has no idea it happened, making it harder
    * to maintain coherent reasoning about ongoing work.
    */
-  private injectCompactionAwareness(stats: { evictedCount: number; evictedTopics: string[] }): void {
+  private injectCompactionAwareness(stats: { evictedCount: number; evictedTopics: string[]; before: number; after: number }): void {
     this.compactionCount++;
     this.lastCompactionTopics = stats.evictedTopics;
+    const evictedTokens = stats.before - stats.after;
+    this.cumulativeCompactedTokens += evictedTokens;
+    if (stats.before > this.peakConversationTokens) {
+      this.peakConversationTokens = stats.before;
+    }
     const parts: string[] = [
       `[System: ${stats.evictedCount} older turns were compacted into summaries.`
     ];
@@ -1777,6 +1855,40 @@ export class AgentLoop implements AgentBackend {
           `Use the \`plan\` tool to update progress or clear when complete.`;
         ctx += "\n\n" + planBlock;
       }
+      // ── Context Health ─────────────────────────────────────────────
+      // After compaction, the ash can lose significant context without
+      // realizing *how much*. This dashboard gives a quantitative sense
+      // of information loss — the difference between "I lost some stuff"
+      // and "I've lost 65% of my original context across 3 compactions."
+      //
+      // Without this, ashes would reason from fragments with unjustified
+      // confidence. With this, they know when to be cautious about
+      // assuming earlier context is still available.
+      if (this.compactionCount > 0) {
+        const convEstimate = this.conversation.estimateTokens();
+        const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+        const totalOriginal = this.peakConversationTokens + this.cumulativeCompactedTokens;
+        const retentionRate = totalOriginal > 0
+          ? Math.round((convEstimate / totalOriginal) * 100)
+          : 100;
+        const pct = Math.round((convEstimate / contextWindow) * 100);
+
+        const healthLines = [
+          `# Context Health`,
+          `Conversation: ~${convEstimate.toLocaleString()} tokens (${pct}% of context window)`,
+          `Compacted: ${this.compactionCount} time${this.compactionCount > 1 ? 's' : ''} this session`,
+          `Estimated original context: ~${totalOriginal.toLocaleString()} tokens`,
+          `Retention rate: ~${retentionRate}%`,
+        ];
+        if (this.lastCompactionTopics.length > 0) {
+          healthLines.push(`Topics lost: ${this.lastCompactionTopics.map(t => `"${t}"`).join(', ')}`);
+        }
+        if (retentionRate < 40) {
+          healthLines.push(`⚠ Context is sparse — consider using conversation_recall before assuming earlier details are available`);
+        }
+        ctx += "\n\n" + healthLines.join("\n");
+      }
+
       // ── Automatic metacognitive signals ──────────────────────────
       // The system proactively surfaces behavioral patterns when they're
       // notable enough to warrant attention. The ash doesn't need to call
@@ -2000,6 +2112,13 @@ export class AgentLoop implements AgentBackend {
       });
       this.bus.emit("agent:processing-done", {});
       this.abortController = null;
+
+      // Save session outcome snapshot every 3 queries — best-effort telemetry
+      // for future ashes. The first save gives them something; subsequent saves
+      // keep it current.
+      if (this.queryCount % 3 === 0) {
+        this.saveSessionOutcome();
+      }
     }
 
     // Wonder turn — runs *after* processing-done so it doesn't block the
