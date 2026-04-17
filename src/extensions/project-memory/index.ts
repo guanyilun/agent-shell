@@ -322,7 +322,9 @@ export default function activate(ctx: ExtensionContext): void {
 
   bus.on("agent:tool-started", ({ title, toolCallId, rawInput }) => {
     if (!toolCallId || !rawInput) return;
-    pendingTools.set(toolCallId, { name: title, args: rawInput as Record<string, unknown> });
+    // title may include description (e.g., "bash: Install deps") — extract tool name only
+    const name = title.includes(":") ? title.split(":")[0].trim() : title;
+    pendingTools.set(toolCallId, { name, args: rawInput as Record<string, unknown> });
   });
 
   bus.on("agent:tool-completed", ({ toolCallId, exitCode }) => {
