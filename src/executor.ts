@@ -91,14 +91,16 @@ export function executeCommand(opts: {
   child.stderr?.on("data", handleData);
 
   // Timeout handler
+  let cancelKill: (() => void) | undefined;
   const timer = setTimeout(() => {
     if (!session.done) {
-      killSession(session);
+      cancelKill = killSession(session);
     }
   }, timeout);
 
   child.on("exit", (code, signal) => {
     clearTimeout(timer);
+    cancelKill?.(); // cancel SIGKILL fallback if killSession was called
     session.exitCode = code ?? (signal ? -1 : null);
     session.done = true;
     session.process = null;
@@ -107,6 +109,7 @@ export function executeCommand(opts: {
 
   child.on("error", (err) => {
     clearTimeout(timer);
+    cancelKill?.(); // cancel SIGKILL fallback if killSession was called
     if (!session.done) {
       session.exitCode = -1;
       session.output += `\nProcess error: ${err.message}`;
@@ -122,10 +125,13 @@ export function executeCommand(opts: {
 /**
  * Kill a running session's process group.
  * Sends SIGTERM first, then SIGKILL after 5 seconds.
+ *
+ * Returns a cleanup function that cancels the fallback timer.
+ * Call it when the process exits to prevent the timer from firing.
  */
-export function killSession(session: ExecutorSession): void {
+export function killSession(session: ExecutorSession): () => void {
   const proc = session.process;
-  if (!proc || !proc.pid) return;
+  if (!proc || !proc.pid) return () => {};
 
   try {
     // Kill the entire process group
@@ -135,16 +141,25 @@ export function killSession(session: ExecutorSession): void {
   }
 
   // Fallback: SIGKILL after 5 seconds
+  let settled = false;
   const fallback = setTimeout(() => {
-    if (!session.done && proc.pid) {
+    if (!settled && !session.done && proc.pid) {
       try {
         process.kill(-proc.pid, "SIGKILL");
       } catch {
-        // Ignore
+        // Ignore — process likely already dead
       }
     }
   }, 5000);
 
   // Don't let the timer keep the process alive
   fallback.unref();
+
+  // Return cleanup — caller should invoke when process exits
+  return () => {
+    if (!settled) {
+      settled = true;
+      clearTimeout(fallback);
+    }
+  };
 }
