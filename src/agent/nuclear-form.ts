@@ -18,14 +18,37 @@ export interface NuclearEntry {
   ts: number;
   /** Instance ID — 4-char hex identifying the agent-sh process. */
   iid: string;
-  /** Entry kind. */
-  kind: "user" | "agent" | "tool" | "error";
+  /**
+   * Entry kind. Core kinds are "user" | "agent" | "tool" | "error" | "session";
+   * advisors may emit additional labels.
+   */
+  kind: "user" | "agent" | "tool" | "error" | "session" | (string & {});
   /** Tool name (for kind=tool or kind=error). */
   tool?: string;
   /** The one-liner summary — injected in startup context. */
   sum: string;
   /** Expanded content — on disk only, fetched by conversation_recall expand. */
   body?: string;
+  /**
+   * Optional reasoning annotation. Nucleation advisors may populate this
+   * (e.g. by extracting `[why: ...]` from agent text) so the rationale
+   * survives into summaries. Displayed as `{why}` in formatNuclearLine.
+   */
+  why?: string;
+}
+
+/**
+ * Create a session-start marker entry. Markers use seq=0 by default —
+ * they are not part of the nuclear sequence and should not advance the
+ * sequence counter when read back from disk.
+ */
+export function createSessionMarker(iid: string, seq: number = 0): NuclearEntry {
+  return { seq, ts: Date.now(), iid, kind: "session", sum: "session start" };
+}
+
+/** Check if an entry is a session-start marker. */
+export function isSessionMarker(entry: NuclearEntry): boolean {
+  return entry.kind === "session";
 }
 
 // ── Tool classification ───────────────────────────────────────────
@@ -219,7 +242,8 @@ export function formatNuclearLine(entry: NuclearEntry): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   // ISO-ish compact: 2026-04-13 14:05
   const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  return `#${entry.seq} [${stamp}] ${entry.sum}`;
+  const whyTag = entry.why ? ` {${entry.why.length > 80 ? entry.why.slice(0, 77) + "..." : entry.why}}` : "";
+  return `#${entry.seq} [${stamp}] ${entry.sum}${whyTag}`;
 }
 
 // ── Serialization (JSONL for history file) ────────────────────────

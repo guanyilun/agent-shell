@@ -164,6 +164,47 @@ export class ContextManager {
   }
 
   /**
+   * Return shell events with id > afterId, formatted as an incremental
+   * delta suitable for injection into conversation history. Skips
+   * agent-source commands (already visible in tool results). Returns
+   * null when nothing new exists.
+   *
+   * The motivation: resending the full <shell_context> every turn wastes
+   * tokens — N turns × full history = O(N²) cost for O(N) information.
+   * Instead we inject only new events as regular conversation messages,
+   * so the provider's prefix cache amortizes them to O(N).
+   */
+  getEventsSince(afterId: number): { text: string; lastSeq: number } | null {
+    const fresh = this.exchanges.filter((e) => e.id > afterId && !(e.type === "shell_command" && e.source === "agent"));
+    if (fresh.length === 0) return null;
+
+    const lastSeq = this.exchanges[this.exchanges.length - 1]!.id;
+
+    // Apply per-type truncation so giant outputs don't blow up the turn.
+    const truncated: Exchange[] = fresh.map((ex) => {
+      if (ex.type === "shell_command") {
+        const s = getSettings();
+        return {
+          ...ex,
+          output: truncateOutput(ex.output, s.shellTruncateThreshold, s.shellHeadLines, s.shellTailLines, ex.id),
+        };
+      }
+      return { ...ex };
+    });
+
+    const body = truncated.map((ex) => this.formatExchangeTruncated(ex)).join("\n");
+    return {
+      text: `<shell-events>\n${body}</shell-events>`,
+      lastSeq,
+    };
+  }
+
+  /** Highest exchange id seen so far (0 if none). */
+  lastSeq(): number {
+    return this.exchanges.length === 0 ? 0 : this.exchanges[this.exchanges.length - 1]!.id;
+  }
+
+  /**
    * One-line summaries of last N exchanges.
    */
   getRecentSummary(n: number = 25): string {
@@ -283,7 +324,6 @@ export class ContextManager {
       out += `- Your internal tools (bash, read, write, ls, etc.) run in an isolated subprocess. The user CANNOT see their output.\n`;
       out += `- Only use internal tools when YOU need to reason about content silently (e.g. reading a file to answer a question about it).\n`;
       out += `- You can browse or search shell history with shell_recall.\n`;
-      out += `- You can browse or search evicted conversation turns with conversation_recall (search covers summaries and full body text).\n`;
       out += `\n`;
       this.firstPrompt = false;
     }

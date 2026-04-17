@@ -78,14 +78,28 @@ export interface Settings {
   maxCommandOutputLines?: number;
   /** Max read tool output lines shown inline in TUI (0 = hide). */
   readOutputMaxLines?: number;
-  /** Max diff lines shown before "ctrl+o to expand". */
+  /** Max diff lines rendered in the TUI (Infinity = no limit). */
   diffMaxLines?: number;
 
   // ── Agent integration ─────────────────────────────────────
-  /** Tool protocol: "api" (all tools), "deferred" (extensions via meta-tool), "inline" (text). */
-  toolMode?: "api" | "deferred" | "inline";
+  /** Tool protocol:
+   *   "api" — all tools sent with full schema.
+   *   "deferred" — extensions dispatched through `use_extension(name, args)` meta-tool.
+   *   "deferred-lookup" — extensions loaded on demand via `load_tool(names[])`; once loaded, callable as first-class tools.
+   *   "inline" — tools described as text.
+   */
+  toolMode?: "api" | "deferred" | "deferred-lookup" | "inline";
   /** Additional directories to scan for skills (supports ~ expansion). */
   skillPaths?: string[];
+  /**
+   * Enable the "diagnose" tool — lets the agent evaluate JavaScript
+   * expressions against its own runtime state. Powerful for introspection
+   * (e.g. this.conversation.turns.length) but grants arbitrary code
+   * execution within the agent process. Off by default because the
+   * agent already has unrestricted bash access — this is a convenience,
+   * not a new capability.
+   */
+  diagnose?: boolean;
 
   // ── Identity & startup ───────────────────────────────────
   /** Show a startup banner when agent-sh launches. */
@@ -96,6 +110,15 @@ export interface Settings {
   // ── Built-in extensions ──────────────────────────────────
   /** Names of built-in extensions to disable (e.g. ["command-suggest"]). */
   disabledBuiltins?: string[];
+
+  /**
+   * Names of user extensions in ~/.agent-sh/extensions/ to skip when
+   * auto-discovering. Match by basename without extension for files
+   * (e.g. "peer-mesh" matches peer-mesh.ts), or by directory name for
+   * directory-style extensions (e.g. "superash" matches superash/index.ts).
+   * Beats having to rename files to .disabled every time.
+   */
+  disabledExtensions?: string[];
 }
 
 const DEFAULTS: Required<Settings> = {
@@ -104,7 +127,7 @@ const DEFAULTS: Required<Settings> = {
   providers: {},
   defaultProvider: undefined as any,
   defaultBackend: "ash",
-  toolMode: "api" as "api" | "deferred" | "inline",
+  toolMode: "api" as "api" | "deferred" | "deferred-lookup" | "inline",
   contextWindowSize: 20,
   contextBudget: 32768,
   shellTruncateThreshold: 20,
@@ -119,9 +142,11 @@ const DEFAULTS: Required<Settings> = {
   readOutputMaxLines: 10,
   diffMaxLines: Infinity,
   skillPaths: [],
+  diagnose: false,
   startupBanner: true,
   promptIndicator: true,
   disabledBuiltins: [],
+  disabledExtensions: [],
 };
 
 let cached: Settings | null = null;
@@ -167,6 +192,52 @@ export function getExtensionSettings<T extends Record<string, unknown>>(
 /** Reset cached settings (for testing or after external edit). */
 export function reloadSettings(): void {
   cached = null;
+}
+
+/**
+ * Deep-merge a patch into ~/.agent-sh/settings.json on disk.
+ *
+ * Reads the raw file (preserving unknown keys), merges the patch, writes back
+ * with 2-space indentation, and clears the cache so subsequent getSettings()
+ * calls see the new values.
+ *
+ * Used by runtime controls (`/model`, `/backend`) that want their selection
+ * to persist as the default across restarts.
+ */
+export function updateSettings(patch: Record<string, unknown>): void {
+  let existing: Record<string, unknown> = {};
+  try {
+    const raw = fs.readFileSync(SETTINGS_PATH, "utf-8");
+    existing = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    // file missing or unreadable — start fresh
+  }
+
+  const merged = deepMerge(existing, patch);
+
+  try {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2) + "\n", "utf-8");
+    cached = null;
+  } catch (err) {
+    console.error(`[agent-sh] Warning: failed to update ${SETTINGS_PATH}: ${(err as Error).message}`);
+  }
+}
+
+function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...target };
+  for (const [key, val] of Object.entries(source)) {
+    const existing = out[key];
+    if (
+      val !== null && typeof val === "object" && !Array.isArray(val) &&
+      existing !== null && typeof existing === "object" && !Array.isArray(existing)
+    ) {
+      out[key] = deepMerge(existing as Record<string, unknown>, val as Record<string, unknown>);
+    } else {
+      out[key] = val;
+    }
+  }
+  return out;
 }
 
 /**

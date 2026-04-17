@@ -16,7 +16,7 @@ export function createGrepTool(getCwd: () => string): ToolDefinition {
       properties: {
         pattern: {
           type: "string",
-          description: "Regex pattern to search for",
+          description: "Regex pattern to search for (NOT a glob — `*.md` is invalid here; use `.*\\.md` for regex, or use the glob tool to find files by name). For filename filtering while searching content, use the `include` parameter.",
         },
         path: {
           type: "string",
@@ -141,6 +141,21 @@ export function createGrepTool(getCwd: () => string): ToolDefinition {
           content: "No matches found.",
           exitCode: 0,
           isError: false,
+        };
+      }
+
+      // exit code >= 2 is a ripgrep error (invalid regex, unreadable path, etc).
+      // Surface it as an error so the model retries with a correct pattern
+      // rather than treating "no useful output" as a successful no-match.
+      if (session.exitCode != null && session.exitCode >= 2) {
+        const looksLikeGlob = /^[*?]|\*\./.test(pattern) && !/[\\()\[\]|^$]/.test(pattern);
+        const hint = looksLikeGlob
+          ? " Hint: `*.md` is a glob, not a regex — use the glob tool to find files by name, or pass `include: \"*.md\"` here to filter files while searching content for a regex pattern."
+          : "";
+        return {
+          content: `grep failed (rg exit ${session.exitCode}): ${session.output.trim() || "no output"}${hint}`,
+          exitCode: session.exitCode,
+          isError: true,
         };
       }
 

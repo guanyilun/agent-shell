@@ -12,6 +12,7 @@
  */
 import { highlight } from "cli-highlight";
 import { MarkdownRenderer, wrapLine, MAX_CONTENT_WIDTH } from "../utils/markdown.js";
+import { DEFAULT_CONTEXT_WINDOW } from "../agent/token-budget.js";
 import { createFencedBlockTransform, type FencedBlockTransformHandle } from "../utils/stream-transform.js";
 import { palette as p } from "../utils/palette.js";
 import {
@@ -302,7 +303,7 @@ export default function activate(ctx: ExtensionContext): void {
     s.isThinking = false;
     if (pendingUsage && s.renderer) {
       const { prompt_tokens, completion_tokens } = pendingUsage;
-      const maxTokens = backendInfo?.contextWindow ?? 128_000;
+      const maxTokens = backendInfo?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
       s.renderer.writeLine("");
       s.renderer.writeLine(ctx.call("tui:render-usage", prompt_tokens, completion_tokens, maxTokens));
       drain();

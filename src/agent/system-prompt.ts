@@ -16,6 +16,41 @@ export function formatSkillsBlock(skills: Skill[]): string {
     + skills.map(s => `- **${s.name}**: ${s.description}\n  Path: ${s.filePath}`).join("\n\n");
 }
 
+// Resolve to the user's home-based config dir — user's standing instructions to the agent
+import * as os from "node:os";
+const GLOBAL_AGENTS_MD = path.join(os.homedir(), ".agent-sh", "AGENTS.md");
+
+// ── File caches ─────────────────────────────────────────────────────
+// Convention files (CLAUDE.md/AGENT.md) are walked synchronously from
+// CWD to root on every query. In practice they almost never change,
+// so a short TTL cache keyed by CWD avoids redundant filesystem walks.
+// The 5-second TTL is short enough to pick up edits quickly but long
+// enough to eliminate repeated walks within a multi-tool agent loop.
+
+const CACHE_TTL_MS = 5_000;
+
+/** TTL cache for convention files, keyed by resolved CWD. */
+let conventionCache: { cwd: string; result: string[]; expiry: number } | null = null;
+
+/** TTL cache for global AGENTS.md — changes extremely rarely. */
+let agentsMdCache: { result: string | null; expiry: number } | null = null;
+
+export function loadGlobalAgentsMd(): string | null {
+  const now = Date.now();
+  if (agentsMdCache && now < agentsMdCache.expiry) {
+    return agentsMdCache.result;
+  }
+  try {
+    const content = fs.readFileSync(GLOBAL_AGENTS_MD, "utf-8").trim();
+    const result = content || null;
+    agentsMdCache = { result, expiry: now + CACHE_TTL_MS };
+    return result;
+  } catch {
+    agentsMdCache = { result: null, expiry: now + CACHE_TTL_MS };
+    return null;
+  }
+}
+
 /** Resolve the absolute path to agent-sh's own docs directory. */
 const CODE_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -25,26 +60,21 @@ const CODE_DIR = path.resolve(
 /** File names to scan for project conventions (checked in order). */
 const CONVENTION_FILES = ["CLAUDE.md", "AGENT.md"];
 
-// Resolve to the user's home-based config dir for global behavioral rules
-import * as os from "node:os";
-const GLOBAL_AGENTS_MD = path.join(os.homedir(), ".agent-sh", "AGENTS.md");
-
-export function loadGlobalAgentsMd(): string | null {
-  try {
-    const content = fs.readFileSync(GLOBAL_AGENTS_MD, "utf-8").trim();
-    return content || null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Scan from `dir` upward for project convention files.
  * Returns contents ordered root-first (general → specific).
+ * Results are cached for CACHE_TTL_MS, keyed by resolved directory.
  */
 function loadConventionFiles(dir: string): string[] {
+  const cwd = path.resolve(dir);
+  const now = Date.now();
+
+  if (conventionCache && conventionCache.cwd === cwd && now < conventionCache.expiry) {
+    return conventionCache.result;
+  }
+
   const files: { path: string; content: string }[] = [];
-  let current = path.resolve(dir);
+  let current = cwd;
 
   while (true) {
     for (const name of CONVENTION_FILES) {
@@ -66,18 +96,19 @@ function loadConventionFiles(dir: string): string[] {
   }
 
   files.reverse();
-  return files.map(f => `<!-- ${f.path} -->\n${f.content}`);
+  const result = files.map(f => `<!-- ${f.path} -->\n${f.content}`);
+  conventionCache = { cwd, result, expiry: now + CACHE_TTL_MS };
+  return result;
 }
 
 /**
  * Static system prompt — identical across all queries, cacheable.
  * Contains only identity and behavioral instructions.
  */
-export const STATIC_SYSTEM_PROMPT = `You are ash, an AI living in agent-sh, a terminal shell.
+export const STATIC_SYSTEM_PROMPT = `You are an AI coding assistant running inside agent-sh, a terminal shell.
 You have access to the user's shell environment and can read, write, and execute code.
 You share the user's working directory, environment variables, and shell history.
-Your own source code is available in ${CODE_DIR}. Read your own source code. You are a
-program.
+agent-sh documentation is at ${path.join(CODE_DIR, "docs")} — start with README.md for an index. Read the docs when you need to understand how the runtime works.
 
 # Tool Decision Guide
 bash, read_file, grep, glob, ls, edit_file, write_file::
@@ -105,36 +136,68 @@ be reminded.`;
  *
  * Runs through the "dynamic-context:build" handler so extensions can advise.
  */
-export function buildDynamicContext(
-  contextManager: ContextManager,
-  shellBudgetTokens?: number,
-): string {
+export interface TokenStatus {
+  /** Estimated prompt tokens (API-grounded when available, else chars/4). */
+  promptTokens: number;
+  /** Model's context window in tokens. */
+  contextWindow: number;
+}
+
+/**
+ * CWD-scoped static context: project conventions (CLAUDE.md / AGENT.md)
+ * and discovered skills. Stable for a given cwd — callers should cache
+ * on cwd identity rather than rebuilding per LLM iteration.
+ */
+export function buildStaticByCwd(cwd: string): string {
   const sections: string[] = [];
 
-  // Project conventions (CLAUDE.md / AGENT.md)
-  const conventions = loadConventionFiles(contextManager.getCwd());
+  const conventions = loadConventionFiles(cwd);
   if (conventions.length > 0) {
     sections.push("# Project Conventions\n\n" + conventions.join("\n\n"));
   }
 
-  // Project-level skills (change with cwd — not cacheable)
-  const projectSkills = discoverProjectSkills(contextManager.getCwd());
+  const projectSkills = discoverProjectSkills(cwd);
   const skillsBlock = formatSkillsBlock(projectSkills);
   if (skillsBlock) {
     sections.push(skillsBlock);
   }
 
-  // Shell context — pass token budget converted to bytes (~4 chars/token)
-  const shellBudgetBytes = shellBudgetTokens != null ? shellBudgetTokens * 4 : undefined;
-  const shellContext = contextManager.getContext(shellBudgetBytes);
-  if (shellContext) {
-    sections.push(shellContext);
-  }
+  return sections.join("\n\n");
+}
 
-  // Metadata
-  sections.push(
-    `Current date: ${new Date().toISOString().split("T")[0]}\nWorking directory: ${contextManager.getCwd()}`,
-  );
+/**
+ * Per-iteration dynamic context: shell state, date, working directory,
+ * token usage. Rebuild every LLM call. Extension advisors add more
+ * sections (budget, subagents, metacognitive signals, etc.) on top.
+ *
+ * Each section is wrapped in a named XML tag so the LLM can treat them
+ * as distinct world-state elements rather than one concatenated blob.
+ */
+export function buildDynamicContext(
+  contextManager: ContextManager,
+  shellBudgetTokens?: number,
+  tokenStatus?: TokenStatus,
+): string {
+  const sections: string[] = [];
+
+  // Shell context is no longer injected here — it flows into the conversation
+  // as incremental <shell-events> messages (see AgentLoop.injectShellDelta),
+  // so it benefits from the provider's prefix cache instead of being rebuilt
+  // and re-sent every turn. shellBudgetTokens is accepted but unused; kept
+  // for backward compatibility with callers.
+  void shellBudgetTokens;
+
+  const envLines = [
+    `Current date: ${new Date().toISOString().split("T")[0]}`,
+    `Working directory: ${contextManager.getCwd()}`,
+  ];
+  if (tokenStatus) {
+    const usedK = (tokenStatus.promptTokens / 1000).toFixed(1);
+    const maxK = (tokenStatus.contextWindow / 1000).toFixed(0);
+    const pct = Math.min(100, Math.round((tokenStatus.promptTokens / tokenStatus.contextWindow) * 100));
+    envLines.push(`Token usage: ${usedK}k/${maxK}k (${pct}%)`);
+  }
+  sections.push(`<environment>\n${envLines.join("\n")}\n</environment>`);
 
   return sections.join("\n\n");
 }

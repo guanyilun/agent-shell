@@ -61,6 +61,14 @@
     "./utils/floating-panel": {
       "types": "./dist/utils/floating-panel.d.ts",
       "default": "./dist/utils/floating-panel.js"
+    },
+    "./agent/token-budget": {
+      "types": "./dist/agent/token-budget.d.ts",
+      "default": "./dist/agent/token-budget.js"
+    },
+    "./executor": {
+      "types": "./dist/executor.d.ts",
+      "default": "./dist/executor.js"
     }
   },
   "files": [

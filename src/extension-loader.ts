@@ -74,6 +74,14 @@ function createScopedContext(ctx: ExtensionContext, extensionName: string): { sc
     cleanups.push(() => bus.emit("agent:unregister-tool", { name: tool.name }));
   };
 
+  // Track slash command registrations — without this, reloading an
+  // extension stacks its commands (old `/status` + new `/status`) in
+  // the slash-commands registry.
+  const scopedRegisterCommand: typeof ctx.registerCommand = (name, description, handler) => {
+    ctx.registerCommand(name, description, handler);
+    cleanups.push(() => bus.emit("command:unregister", { name }));
+  };
+
   const scoped: ExtensionContext = {
     ...ctx,
     bus: scopedBus,
@@ -84,6 +92,7 @@ function createScopedContext(ctx: ExtensionContext, extensionName: string): { sc
     removeSkill: ctx.removeSkill,
     registerTool: scopedRegisterTool,
     unregisterTool: ctx.unregisterTool,
+    registerCommand: scopedRegisterCommand,
   };
 
   const dispose = () => {
@@ -150,9 +159,16 @@ export async function loadExtensions(
 
 async function discoverUserExtensions(): Promise<string[]> {
   const specifiers: string[] = [];
+  const disabled = new Set(getSettings().disabledExtensions ?? []);
   try {
     const entries = await fs.readdir(EXT_DIR, { withFileTypes: true });
     for (const entry of entries) {
+      // Disable check: directory name for dir-extensions, or basename sans
+      // extension for file-extensions. Lets settings.json turn one off
+      // without renaming it.
+      const nameForDisable = entry.name.replace(/\.[^.]+$/, "");
+      if (disabled.has(nameForDisable)) continue;
+
       const fullPath = path.join(EXT_DIR, entry.name);
       const isDir = entry.isDirectory() ||
         (entry.isSymbolicLink() && (await fs.stat(fullPath)).isDirectory());

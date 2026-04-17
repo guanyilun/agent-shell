@@ -128,9 +128,9 @@ agent-sh/
 │   │   ├── token-budget.ts   # Unified token budget (splits context window between streams)
 │   │   ├── tool-registry.ts  # Map-based tool registry
 │   │   ├── tool-protocol.ts  # Tool calling protocol abstraction
-│   │   ├── conversation-state.ts  # Three-tier conversation: active + nuclear + history
-│   │   ├── nuclear-form.ts   # Nuclear one-liner generation + serialization
-│   │   ├── history-file.ts   # Persistent JSONL history file
+│   │   ├── conversation-state.ts  # Messages + eager nucleation + two-tier pin compaction + recall
+│   │   ├── nuclear-form.ts   # One-line-summary primitives (nucleate, serialize, priority)
+│   │   ├── history-file.ts   # Persistent JSONL at ~/.agent-sh/history (append-only, concurrent-safe)
 │   │   ├── system-prompt.ts  # System prompt builder
 │   │   ├── skills.ts         # Skill discovery and loading
 │   │   ├── subagent.ts       # Subagent orchestration

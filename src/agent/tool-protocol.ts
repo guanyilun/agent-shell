@@ -62,6 +62,13 @@ export interface ToolProtocol {
 
   /** Create a stream filter for stripping tool calls from display. null = pass-through. */
   createStreamFilter(toolNames: string[]): StreamFilter | null;
+
+  /**
+   * Extra tool definitions the protocol wants registered in the tool registry.
+   * Used by deferred-lookup mode to register its `load_tool` meta-tool.
+   * Default: none.
+   */
+  getProtocolTools?(): ToolDefinition[];
 }
 
 // ── API mode (current behavior) ──────────────────────────────────
@@ -496,17 +503,211 @@ export class DeferredToolProtocol implements ToolProtocol {
   }
 }
 
+// ── Deferred-lookup mode (load-on-demand with full schema) ──────
+//
+// Like deferred, but instead of wrapping extension calls through a meta-
+// tool dispatcher, we expose a `load_tool` meta-tool that returns the
+// full schema as a tool result AND mutates the protocol's loaded set.
+// Loaded tools become first-class on the NEXT LLM call — the model calls
+// them natively with complete schema fidelity. One round-trip per group
+// of tools loaded, not per call. Prevents the whole class of bugs where
+// models guess arg names from a schema they can only see partially.
+
+export class DeferredLookupProtocol implements ToolProtocol {
+  readonly mode = "deferred-lookup" as const;
+  private coreNames: Set<string>;
+  private loadedExt = new Set<string>();
+  /** Cache of the current tools list so load_tool's execute can find schemas. */
+  private toolsRef: ToolDefinition[] = [];
+
+  constructor(coreNames: string[]) {
+    this.coreNames = new Set(coreNames);
+  }
+
+  getApiTools(tools: ToolDefinition[]): ChatCompletionTool[] | undefined {
+    this.toolsRef = tools;
+
+    const visible: ChatCompletionTool[] = [];
+    const unloadedExt: string[] = [];
+
+    for (const t of tools) {
+      if (t.name === "load_tool") continue; // rebuilt below with fresh catalog
+      const isCore = this.coreNames.has(t.name);
+      const isLoaded = this.loadedExt.has(t.name);
+      if (isCore || isLoaded) {
+        visible.push({
+          type: "function" as const,
+          function: {
+            name: t.name,
+            description: t.description,
+            parameters: t.input_schema,
+          },
+        });
+      } else {
+        unloadedExt.push(t.name);
+      }
+    }
+
+    if (unloadedExt.length > 0) {
+      visible.push({
+        type: "function" as const,
+        function: {
+          name: "load_tool",
+          description:
+            `Load extension tool schemas so you can call them on the next turn. ` +
+            `Unloaded: ${unloadedExt.join(", ")}. ` +
+            `After load_tool succeeds, call those tools directly — not through load_tool again.`,
+          parameters: {
+            type: "object" as const,
+            properties: {
+              names: {
+                type: "array",
+                items: { type: "string" },
+                description: "Names of extension tools to load.",
+              },
+            },
+            required: ["names"],
+          },
+        },
+      });
+    }
+
+    return visible.length > 0 ? visible : undefined;
+  }
+
+  getToolPrompt(): string {
+    return "";
+  }
+
+  extractToolCalls(
+    _text: string,
+    streamedCalls: PendingToolCall[],
+  ): PendingToolCall[] {
+    return streamedCalls;
+  }
+
+  rewriteToolCall(tc: PendingToolCall): PendingToolCall {
+    return tc; // no dispatching needed — load_tool is a real registered tool
+  }
+
+  recordAssistant(
+    conv: ConversationState,
+    text: string,
+    toolCalls: PendingToolCall[],
+  ): void {
+    const calls = toolCalls.length
+      ? toolCalls.map((tc) => ({
+          id: tc.id,
+          function: { name: tc.name, arguments: tc.argumentsJson },
+        }))
+      : undefined;
+    conv.addAssistantMessage(text || null, calls);
+  }
+
+  recordResults(conv: ConversationState, results: ToolResult[]): void {
+    for (const r of results) {
+      const content = r.isError ? `Error: ${r.content}` : r.content;
+      conv.addToolResult(r.callId, content);
+    }
+  }
+
+  createStreamFilter(): null {
+    return null;
+  }
+
+  getProtocolTools(): ToolDefinition[] {
+    // load_tool is registered as a real tool so the executor can run it
+    // through the normal dispatch path. Its execute closes over the protocol
+    // instance to mutate the loadedExt set and return schemas.
+    const self = this;
+    return [
+      {
+        name: "load_tool",
+        description:
+          "Load extension tool schemas so you can call them natively on the next turn.",
+        input_schema: {
+          type: "object",
+          properties: {
+            names: {
+              type: "array",
+              items: { type: "string" },
+              description: "Names of extension tools to load.",
+            },
+          },
+          required: ["names"],
+        },
+        showOutput: false,
+        async execute(args) {
+          const names = Array.isArray(args.names) ? (args.names as string[]) : [];
+          if (names.length === 0) {
+            return { content: "No tool names provided. Pass { names: [...] }.", exitCode: 1, isError: true };
+          }
+
+          const loaded: string[] = [];
+          const alreadyLoaded: string[] = [];
+          const errors: string[] = [];
+          const sections: string[] = [];
+
+          for (const name of names) {
+            const tool = self.toolsRef.find((t) => t.name === name);
+            if (!tool) {
+              errors.push(`Unknown tool: ${name}`);
+              continue;
+            }
+            if (self.coreNames.has(name) || name === "load_tool") {
+              errors.push(`${name} is already available — no need to load.`);
+              continue;
+            }
+            if (self.loadedExt.has(name)) {
+              alreadyLoaded.push(name);
+              continue;
+            }
+            self.loadedExt.add(name);
+            loaded.push(name);
+            sections.push(
+              `## ${name}\n${tool.description}\n\nSchema:\n\`\`\`json\n${JSON.stringify(tool.input_schema, null, 2)}\n\`\`\``,
+            );
+          }
+
+          const lines: string[] = [];
+          if (loaded.length > 0) {
+            lines.push(
+              `Loaded ${loaded.length} tool(s): ${loaded.join(", ")}. ` +
+                `They are now available as first-class tools on your next turn — call directly.`,
+            );
+            lines.push("");
+            lines.push(sections.join("\n\n"));
+          }
+          if (alreadyLoaded.length > 0) {
+            lines.push(`Already loaded: ${alreadyLoaded.join(", ")}.`);
+          }
+          if (errors.length > 0) {
+            lines.push(`Errors:\n${errors.map((e) => `- ${e}`).join("\n")}`);
+          }
+
+          return {
+            content: lines.join("\n") || "Nothing to do.",
+            exitCode: 0,
+            isError: loaded.length === 0 && alreadyLoaded.length === 0 && errors.length > 0,
+          };
+        },
+      },
+    ];
+  }
+}
+
 // ── Factory ─────────────────────────────────────────────────────
 
 /** Core tool names — always sent with full schema. */
 const CORE_TOOLS = [
   "bash", "read_file", "write_file", "edit_file",
   "grep", "glob", "ls",
-  "list_skills", "conversation_recall",
+  "list_skills",
 ];
 
-export function createToolProtocol(mode: "api" | "inline" | "deferred"): ToolProtocol {
+export function createToolProtocol(mode: "api" | "inline" | "deferred" | "deferred-lookup"): ToolProtocol {
   if (mode === "inline") return new InlineToolProtocol();
   if (mode === "deferred") return new DeferredToolProtocol(CORE_TOOLS);
+  if (mode === "deferred-lookup") return new DeferredLookupProtocol(CORE_TOOLS);
   return new ApiToolProtocol();
 }

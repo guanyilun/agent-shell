@@ -93,7 +93,7 @@ export default function activate(ctx: ExtensionContext): void {
 
   register({
     name: "/compact",
-    description: "Compact conversation (move full content to nuclear summaries)",
+    description: "Compact conversation via the active compaction strategy",
     handler: () => {
       bus.emit("agent:compact-request", {});
     },
@@ -105,19 +105,15 @@ export default function activate(ctx: ExtensionContext): void {
     handler: () => {
       const stats = bus.emitPipe("context:get-stats", {
         activeTokens: 0,
-        nuclearEntries: 0,
-        recallArchiveSize: 0,
+        totalTokens: 0,
         budgetTokens: 0,
       });
       const pct = stats.budgetTokens > 0
         ? Math.round((stats.activeTokens / stats.budgetTokens) * 100)
         : 0;
-      const lines = [
-        `Active context: ~${stats.activeTokens.toLocaleString()} tokens / ${stats.budgetTokens.toLocaleString()} budget (${pct}%)`,
-        `Nuclear entries: ${stats.nuclearEntries} in-context`,
-        `Recall archive: ${stats.recallArchiveSize} entries`,
-      ];
-      bus.emit("ui:info", { message: lines.join("\n") });
+      bus.emit("ui:info", {
+        message: `Active context: ~${stats.activeTokens.toLocaleString()} tokens / ${stats.budgetTokens.toLocaleString()} budget (${pct}%)`,
+      });
     },
   });
 
@@ -134,10 +130,21 @@ export default function activate(ctx: ExtensionContext): void {
     },
   });
 
+  // Handler form so extensions can trigger reload programmatically
+  // (e.g. an ash-callable reload_extensions tool in superash).
+  ctx.define("extensions:reload", async () => {
+    return await reloadExtensions(ctx);
+  });
+
   // ── Extension registration ────────────────────────────────────
 
   bus.on("command:register", (cmd) => {
     register(cmd);
+  });
+
+  bus.on("command:unregister", ({ name }) => {
+    const key = name.startsWith("/") ? name : `/${name}`;
+    commands.delete(key);
   });
 
   // ── Skill commands (/skill:<name>) ────────────────────────────

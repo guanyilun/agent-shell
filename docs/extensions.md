@@ -373,8 +373,14 @@ These are registered by the `agent-backend` built-in extension (AgentLoop) and l
 
 | Handler | Signature | Description |
 |---|---|---|
-| `dynamic-context:build` | `() → string` | Build per-query context injected before the conversation. Default: tools, conventions, shell history, cwd. |
+| `system-prompt:build` | `() → string` | Assemble the cached system prompt. Advise to append identity blocks, memory files, learned lessons, etc. Rebuilt on cwd change, not every query. |
+| `dynamic-context:build` | `() → string` | Build the per-iteration user-role injection. Rebuilt before every LLM call. Default: `<shell>` + `<environment>` XML-tagged sections. Advisors add more tagged sections. |
 | `conversation:prepare` | `(messages[]) → messages[]` | Transform the full message array before it's sent to the LLM. Default: pass through. |
+| `conversation:compact` | `({target, keepRecent, force}) → void` | Compaction strategy. Default: two-tier pin. Advise for richer strategies (topic pinning, LLM summarization). |
+| `conversation:inject-note` | `(text) → void` | Inject a `role:"user"` note mid-loop — how extensions deliver async results (subagent output, peer messages) into the next iteration. |
+| `conversation:nucleate-user` / `-agent` / `-tool` | `(msg) → NuclearEntry` | Turn a message into its one-line summary. Advise to extract extra metadata (e.g. `[why: ...]` annotations). |
+| `conversation:format-prior-history` | `(entries) → string` | Render prior-session history into a preamble. Advise for session-grouped output. |
+| `history:append` / `:search` / `:find-by-seq` / `:read-recent` | — | Shell-history-style persistent log at `~/.agent-sh/history`. Advise to add indexing, filtering, or external stores. |
 | `tool:execute` | `(ctx) → ToolResult` | Wrap the full tool lifecycle: permission → execute → emit events. |
 
 **`dynamic-context:build`** — Each advisor appends its own context. Multiple extensions compose independently:

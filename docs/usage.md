@@ -198,13 +198,16 @@ When cycling across providers (e.g. from OpenAI to Ollama), the API key and base
 | `extensions` | `[]` | Extensions to load (npm packages or file paths) |
 | `historySize` | `500` | Max agent query history entries (persisted across sessions) |
 | `contextWindowSize` | `20` | Recent exchanges included in agent context |
-| `contextBudget` | `16384` | Context budget in bytes (~4K tokens) |
-| `shellTruncateThreshold` | `10` | Shell output lines before truncation |
-| `shellHeadLines` / `shellTailLines` | `5` / `5` | Lines kept from start/end of truncated output |
-| `recallExpandMaxLines` | `100` | Max lines for recall expand |
+| `contextBudget` | `32768` | Context budget in bytes (~8K tokens) |
+| `shellTruncateThreshold` | `20` | Shell output lines before truncation |
+| `shellHeadLines` / `shellTailLines` | `10` / `10` | Lines kept from start/end of truncated output |
+| `recallExpandMaxLines` | `500` | Max lines for recall expand |
 | `maxCommandOutputLines` | `3` | Max tool output lines shown inline in TUI |
 | `readOutputMaxLines` | `10` | Max read tool output lines shown inline (0 = hidden) |
-| `diffMaxLines` | `20` | Max diff lines before "ctrl+o to expand" |
+| `diffMaxLines` | `Infinity` | Max diff lines rendered in the TUI. Defaults to no limit |
+| `toolMode` | `"api"` | How tools are presented to the LLM. `"api"` sends all tool schemas. `"deferred"` bundles extension tools behind a `use_extension(name, args)` meta-tool (saves prompt tokens, loses schema fidelity). `"deferred-lookup"` keeps extension schemas dormant until the model calls `load_tool(names[])` — loaded tools then become first-class on the next turn with full schemas. `"inline"` describes tools as text. |
+| `disabledExtensions` | `[]` | Names of user extensions in `~/.agent-sh/extensions/` to skip when auto-discovering. Match by basename without extension for files (`"peer-mesh"` matches `peer-mesh.ts`) or by directory name for dir-style extensions (`"superash"` matches `superash/index.ts`). Avoids having to rename files to `.disabled`. |
+| `disabledBuiltins` | `[]` | Names of built-in extensions to disable. |
 
 ## Startup Banner
 

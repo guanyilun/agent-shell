@@ -90,6 +90,13 @@ export interface ExtensionContext {
   /** Read extension-namespaced settings from ~/.agent-sh/settings.json. */
   getExtensionSettings: <T extends Record<string, unknown>>(namespace: string, defaults: T) => T;
 
+  /**
+   * Get (and lazily create) a per-extension storage directory under
+   * ~/.agent-sh/<namespace>/. Returns the absolute path. Lets extensions
+   * persist state without each one re-deriving the location.
+   */
+  getStoragePath: (namespace: string) => string;
+
   // ── Slash command registration ─────────────────────────────
   /** Register a slash command available in any input mode. */
   registerCommand: (name: string, description: string, handler: (args: string) => Promise<void> | void) => void;
@@ -121,6 +128,8 @@ export interface ExtensionContext {
   advise: (name: string, wrapper: (next: (...args: any[]) => any, ...args: any[]) => any) => () => void;
   /** Call a named handler. */
   call: (name: string, ...args: any[]) => any;
+  /** Names of all registered handlers — for diagnostic / introspection use. */
+  list: () => string[];
 
   // ── Terminal utilities ────────────────────────────────────────
   /**

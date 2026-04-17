@@ -96,10 +96,11 @@ export default function agentBackend(ctx: ExtensionContext): void {
     bus,
     contextManager: ctx.contextManager,
     llmClient,
-    handlers: { define: ctx.define, advise: ctx.advise, call: ctx.call },
+    handlers: { define: ctx.define, advise: ctx.advise, call: ctx.call, list: ctx.list },
     modes,
     initialModeIndex,
     compositor: ctx.compositor,
+    instanceId: ctx.instanceId,
   });
 
   // Register as backend

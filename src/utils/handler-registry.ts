@@ -32,6 +32,7 @@ export interface HandlerFunctions {
   define(name: string, fn: (...args: any[]) => any): void;
   advise(name: string, advisor: (next: (...args: any[]) => any, ...args: any[]) => any): () => void;
   call(name: string, ...args: any[]): any;
+  list(): string[];
 }
 
 export class HandlerRegistry {
@@ -103,5 +104,12 @@ export class HandlerRegistry {
    */
   has(name: string): boolean {
     return this.entries.has(name);
+  }
+
+  /**
+   * Names of all registered handlers. For diagnostic/introspection use.
+   */
+  list(): string[] {
+    return [...this.entries.keys()];
   }
 }

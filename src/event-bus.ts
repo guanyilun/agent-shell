@@ -76,6 +76,40 @@ export interface ShellEvents {
     }>;
   };
 
+  // Fires once after each tool-call batch's results are recorded. Enables
+  // extensions to track per-batch outcomes (consecutive errors, resolution
+  // patterns, etc.) without polling. Distinct from per-tool `agent:tool-
+  // output` events because batch-level decisions see the whole batch.
+  "agent:tool-batch-complete": {
+    results: Array<{ name: string; isError: boolean; errorSummary?: string }>;
+  };
+
+  // Fires after any message is appended to the conversation (user query,
+  // assistant response, tool result, system note). Lets extensions
+  // persist a derived log, build analytics, or react to turn boundaries
+  // without hooking the LLM loop. For tool results, a minimal bundle
+  // (toolName, args, isError) is included so extensions don't have to
+  // parse the message structure back out to know what ran.
+  "conversation:message-appended": {
+    role: "user" | "assistant" | "tool" | "system";
+    content: string;
+    /** For role="tool": name of the tool whose result this is. */
+    toolName?: string;
+    /** For role="tool": parsed arguments passed to the tool. */
+    toolArgs?: Record<string, unknown>;
+    /** For role="tool": whether the tool errored. */
+    isError?: boolean;
+  };
+
+  // Fires after a compaction completes. Carries generic before/after
+  // token counts so analytics/ui extensions can react. Strategy-specific
+  // fields (evicted topics, etc.) belong on the strategy's own event.
+  "conversation:after-compact": {
+    beforeTokens: number;
+    afterTokens: number;
+    evictedCount: number;
+  };
+
   // Tool rendering (used by TUI for display — distinct data shape from above)
   "agent:tool-started": {
     title: string;
@@ -99,6 +133,10 @@ export interface ShellEvents {
   };
   "agent:tool-output-chunk": { chunk: string };
 
+  // Subagent lifecycle (non-blocking background tasks)
+  "agent:subagent-started": { taskId: string; task: string };
+  "agent:subagent-completed": { taskId: string; task: string; result: string; isError: boolean };
+
   // Tool interactive UI (tool has taken over rendering + input)
   "tool:interactive-start": Record<string, never>;
   "tool:interactive-end": Record<string, never>;
@@ -121,6 +159,7 @@ export interface ShellEvents {
     description: string;
     handler: (args: string) => Promise<void> | void;
   };
+  "command:unregister": { name: string };
 
   // Slash command execution
   "command:execute": {
@@ -186,13 +225,14 @@ export interface ShellEvents {
   // Manual compaction request (slash command → backend)
   "agent:compact-request": Record<string, never>;
 
-  // Context stats query (sync pipe: slash command → backend)
+  // Context stats query (sync pipe: slash command → backend).
+  // Core fields only; extensions can chain onPipe to add more.
   "context:get-stats": {
     activeTokens: number;
-    nuclearEntries: number;
-    recallArchiveSize: number;
+    totalTokens: number;
     budgetTokens: number;
   };
+
 
   // Extension registers itself as agent backend (extension → core)
   "agent:register-backend": {
@@ -248,7 +288,6 @@ export interface ShellEvents {
   "agent:register-tool": { tool: import("./agent/types.js").ToolDefinition; extensionName?: string };
   "agent:unregister-tool": { name: string };
   "agent:get-tools": { tools: import("./agent/types.js").ToolDefinition[] };
-  "agent:get-nuclear-summary": { summary: string | null };
   "agent:register-instruction": { name: string; text: string; extensionName: string };
   "agent:remove-instruction": { name: string };
   "agent:register-skill": { name: string; description: string; filePath: string; extensionName: string };

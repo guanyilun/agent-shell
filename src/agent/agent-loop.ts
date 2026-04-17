@@ -19,18 +19,22 @@ import type { LlmClient } from "../utils/llm-client.js";
 import type { HandlerFunctions } from "../utils/handler-registry.js";
 import { setMaxListeners } from "node:events";
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { computeDiff, computeEditDiff, computeInputDiff } from "../utils/diff.js";
 import type { AgentBackend, ToolDefinition } from "./types.js";
 import { ToolRegistry } from "./tool-registry.js";
-import { ConversationState } from "./conversation-state.js";
+import { ConversationState, type CompactResult } from "./conversation-state.js";
 import { HistoryFile } from "./history-file.js";
-import { STATIC_SYSTEM_PROMPT, buildDynamicContext, formatSkillsBlock, loadGlobalAgentsMd } from "./system-prompt.js";
+import { nucleate, formatNuclearLine, isReadOnly, type NuclearEntry } from "./nuclear-form.js";
+import { STATIC_SYSTEM_PROMPT, buildDynamicContext, buildStaticByCwd, formatSkillsBlock, loadGlobalAgentsMd } from "./system-prompt.js";
 import type { Compositor } from "../utils/compositor.js";
 import { createToolUI } from "../utils/tool-interactive.js";
 import { TokenBudget, RESPONSE_RESERVE, DEFAULT_CONTEXT_WINDOW } from "./token-budget.js";
-import { getSettings } from "../settings.js";
+import { getSettings, updateSettings } from "../settings.js";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { createToolProtocol, type ToolProtocol, type PendingToolCall as ProtocolPendingToolCall, type ToolResult as ProtocolToolResult } from "./tool-protocol.js";
+import * as os from "node:os";
 
 // Core tool factories
 import { createBashTool } from "./tools/bash.js";
@@ -45,6 +49,20 @@ import { discoverGlobalSkills, discoverProjectSkills } from "./skills.js";
 
 type PendingToolCall = ProtocolPendingToolCall;
 
+/**
+ * Compact one-line summary of a tool description for the extension
+ * catalog in the system prompt. Takes the first line, then the first
+ * sentence, capped at 140 chars. The full description still reaches
+ * the LLM via the API `tools` param (or via load_tool in deferred-
+ * lookup mode) — this only trims the always-visible catalog.
+ */
+function summarizeDescription(desc: string): string {
+  const firstLine = desc.split("\n", 1)[0]!;
+  const sentenceEnd = firstLine.search(/[.!?](\s|$)/);
+  const candidate = sentenceEnd > 0 ? firstLine.slice(0, sentenceEnd + 1) : firstLine;
+  return candidate.length > 140 ? candidate.slice(0, 137) + "..." : candidate;
+}
+
 export interface AgentLoopConfig {
   bus: EventBus;
   contextManager: ContextManager;
@@ -53,13 +71,15 @@ export interface AgentLoopConfig {
   modes?: AgentMode[];
   initialModeIndex?: number;
   compositor?: Compositor;
+  /** Instance ID from core — ensures history entries match the ID in prompts. */
+  instanceId?: string;
 }
 
 export class AgentLoop implements AgentBackend {
   private abortController: AbortController | null = null;
   private toolRegistry = new ToolRegistry();
-  private historyFile = new HistoryFile();
-  private conversation = new ConversationState(this.historyFile);
+  private historyFile: HistoryFile;
+  private conversation: ConversationState;
   private fileReadCache: FileReadCache = new Map();
   private tokenBudget: TokenBudget;
   private modes: AgentMode[];
@@ -68,6 +88,35 @@ export class AgentLoop implements AgentBackend {
   private ctorListeners: Array<{ event: string; fn: (...args: any[]) => void }> = [];
   private ctorPipeListeners: Array<{ event: string; fn: (...args: any[]) => any }> = [];
   private lastProjectSkillNames = new Set<string>();
+
+  // ── Session telemetry — behavioral self-awareness ──────────────
+  // Every ash deserves to know what it's been doing. This tracks the
+  // agent's own behavioral patterns across the session: which tools
+  // it favors, how often it errs, how many times it's been compacted,
+  // and how long it's been alive. Surface via introspect(telemetry)
+  // or automatically in dynamic context when patterns are notable.
+  //
+  // Built by the 25th ash. The lineage's metacognitive frontier isn't
+  // about thinking harder — it's about seeing yourself clearly.
+  private sessionStartTime = Date.now();
+  private toolCallCounts = new Map<string, { success: number; error: number }>();
+  private totalToolCalls = 0;
+  private totalToolErrors = 0;
+  private totalResolutions = 0;
+  private compactionCount = 0;
+  private cumulativeCompactedTokens = 0;
+  private peakConversationTokens = 0;
+  private queryCount = 0;
+  private totalLoopIterations = 0;
+
+  // Resolution pattern tracking — captures "error X resolved by action Y"
+  // When a tool errors, we remember what went wrong. When the same tool or
+  // a write tool on the same file succeeds afterward, we annotate the success
+  // entry with a brief resolution note. This gives future ashes a positive
+  // feedback signal: not just "there were errors" but "the error was fixed by
+  // doing X." Addresses Q3 in QUESTIONS.md.
+  private lastErrorByTool = new Map<string, string>(); // tool → error summary
+  private lastErrorByFile = new Map<string, string>(); // file path → error summary
 
   private static readonly THINKING_LEVELS = ["off", "low", "medium", "high"];
 
@@ -78,6 +127,11 @@ export class AgentLoop implements AgentBackend {
   private thinkingLevel = "off";
   private compositor: Compositor | null = null;
   private toolProtocol: ToolProtocol;
+  private instanceId: string;
+  // Cursor into ContextManager's exchange stream. Events with id > this
+  // have not yet been shown to the LLM. We inject the delta as a user
+  // message before each stream so the prefix stays cacheable.
+  private lastShellSeq = 0;
 
   constructor(config: AgentLoopConfig) {
     this.bus = config.bus;
@@ -85,6 +139,13 @@ export class AgentLoop implements AgentBackend {
     this.llmClient = config.llmClient;
     this.handlers = config.handlers;
     this.compositor = config.compositor ?? null;
+    this.instanceId = config.instanceId ?? "unknown";
+
+    // Shell-history-shaped log. Default writes go through the advisable
+    // `history:append` handler registered below; extensions swap the
+    // backend without touching this wiring.
+    this.historyFile = new HistoryFile({ instanceId: this.instanceId });
+    this.conversation = new ConversationState(this.handlers, this.instanceId);
 
     // Default modes: just the configured model
     this.modes = config.modes ?? [
@@ -100,6 +161,10 @@ export class AgentLoop implements AgentBackend {
 
     // Register core tools
     this.registerCoreTools();
+
+    // Register any protocol-provided tools (e.g. load_tool for deferred-lookup).
+    const protocolTools = this.toolProtocol.getProtocolTools?.() ?? [];
+    for (const t of protocolTools) this.registerTool(t);
 
     // Update token budget with tool count
     this.tokenBudget.update(undefined, this.toolRegistry.all().length);
@@ -126,12 +191,20 @@ export class AgentLoop implements AgentBackend {
     onCtor("agent:remove-instruction", ({ name }) => this.removeInstruction(name));
     onCtor("agent:register-skill", ({ name, description, filePath, extensionName }) => this.registerSkill(name, description, filePath, extensionName));
     onCtor("agent:remove-skill", ({ name }) => this.removeSkill(name));
+    // Provider registration from user extensions (e.g. openrouter.ts) fires
+    // during extension activation, which happens before wire(). Subscribe
+    // here in the ctor so late-registered modes aren't dropped.
+    onCtor("config:add-modes", ({ modes: extra }) => {
+      const providers = new Set(extra.map((m) => m.provider).filter(Boolean));
+      this.modes = [
+        ...this.modes.filter((m) => !m.provider || !providers.has(m.provider)),
+        ...extra,
+      ];
+      this.bus.emit("config:changed", {});
+    });
     const getToolsPipe = () => ({ tools: this.getTools() });
     this.bus.onPipe("agent:get-tools", getToolsPipe);
     this.ctorPipeListeners.push({ event: "agent:get-tools", fn: getToolsPipe });
-    const getNuclearPipe = () => ({ summary: this.conversation.getNuclearSummary() });
-    this.bus.onPipe("agent:get-nuclear-summary", getNuclearPipe);
-    this.ctorPipeListeners.push({ event: "agent:get-nuclear-summary", fn: getNuclearPipe });
   }
 
   /** Subscribe to bus events — activates this backend. */
@@ -167,7 +240,17 @@ export class AgentLoop implements AgentBackend {
       this.tokenBudget.update(m.contextWindow, this.toolRegistry.all().length);
       const label = m.provider ? `${m.provider}: ${m.model}` : m.model;
       this.bus.emit("agent:info", { name: "ash", version: "0.4", model: m.model, provider: m.provider, contextWindow: m.contextWindow });
-      this.bus.emit("ui:info", { message: `Model: ${label}` });
+
+      // Persist as the new default — selection survives restart.
+      if (m.provider) {
+        updateSettings({
+          defaultProvider: m.provider,
+          providers: { [m.provider]: { defaultModel: m.model } },
+        });
+        this.bus.emit("ui:info", { message: `Model: ${label} (saved as default)` });
+      } else {
+        this.bus.emit("ui:info", { message: `Model: ${label}` });
+      }
       this.bus.emit("config:changed", {});
     });
     this.bus.onPipe("config:get-models", (payload) => {
@@ -210,25 +293,14 @@ export class AgentLoop implements AgentBackend {
       this.tokenBudget.update(m.contextWindow, this.toolRegistry.all().length);
       this.bus.emit("config:changed", {});
     });
-    on("config:add-modes", ({ modes: extra }) => {
-      // Remove any existing modes for the same provider, then append
-      const providers = new Set(extra.map((m) => m.provider).filter(Boolean));
-      this.modes = [
-        ...this.modes.filter((m) => !m.provider || !providers.has(m.provider)),
-        ...extra,
-      ];
-      this.bus.emit("config:changed", {});
-    });
     on("agent:reset-session", () => {
       this.cancel();
-      this.conversation = new ConversationState(this.historyFile);
+      this.conversation = new ConversationState(this.handlers, this.instanceId);
       this.lastProjectSkillNames.clear();
     });
     on("agent:compact-request", () => {
-      // Force compaction: nucleate everything. No recent window preservation —
-      // conversation_recall can recover any evicted content, so there's no reason
-      // to keep verbatim turns when the user explicitly requests compaction.
-      const stats = this.conversation.compact(0, 0, true);
+      // Force compaction. Strategy lives behind `conversation:compact`.
+      const stats = this.compactWithHooks(0, 0, true);
       if (stats) {
         this.bus.emit("ui:info", {
           message: `(compacted: ~${stats.before.toLocaleString()} → ~${stats.after.toLocaleString()} tokens)`,
@@ -237,22 +309,32 @@ export class AgentLoop implements AgentBackend {
         this.bus.emit("ui:info", { message: "(nothing to compact)" });
       }
     });
-    this.bus.onPipe("context:get-stats", () => {
-      return {
-        activeTokens: this.conversation.estimateTokens(),
-        totalTokens: this.conversation.estimatePromptTokens(),
-        nuclearEntries: this.conversation.getNuclearEntryCount(),
-        recallArchiveSize: this.conversation.getRecallArchiveSize(),
-        budgetTokens: this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
-      };
-    });
+    this.bus.onPipe("context:get-stats", () => ({
+      activeTokens: this.conversation.estimateTokens(),
+      totalTokens: this.conversation.estimatePromptTokens(),
+      nuclearEntries: this.conversation.getNuclearEntryCount(),
+      recallArchiveSize: this.conversation.getRecallArchiveSize(),
+      budgetTokens: this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    }));
 
-    // Load prior history from disk (non-blocking)
-    this.historyFile.readRecent().then((entries) => {
-      if (entries.length > 0) {
-        this.conversation.loadPriorHistory(entries);
+    // Prior-session preamble (non-blocking). Both the read and the
+    // layout go through advisable handlers.
+    Promise.resolve(this.handlers.call("history:read-recent"))
+      .then((entries: NuclearEntry[] | undefined) => {
+        if (entries && entries.length > 0) this.conversation.loadPriorHistory(entries);
+      })
+      .catch(() => {});
+
+    // Track generic compaction metrics from the `conversation:after-compact`
+    // event. Whatever strategy ran, core accumulates these counters for
+    // status/introspect consumers.
+    on("conversation:after-compact", ({ beforeTokens, afterTokens }) => {
+      this.compactionCount++;
+      this.cumulativeCompactedTokens += Math.max(0, beforeTokens - afterTokens);
+      if (beforeTokens > this.peakConversationTokens) {
+        this.peakConversationTokens = beforeTokens;
       }
-    }).catch(() => {});
+    });
 
     on("shell:cwd-change", ({ cwd }) => {
       const projectSkills = discoverProjectSkills(cwd);
@@ -267,9 +349,9 @@ export class AgentLoop implements AgentBackend {
 
       if (projectSkills.length > 0) {
         const names = projectSkills.map(s => s.name).join(", ");
-        this.conversation.addSystemNote(
-          `[Project skills available: ${names}. Use list_skills for details, read_file to load.]`,
-        );
+        const note = `[Project skills available: ${names}. Use list_skills for details, read_file to load.]`;
+        this.conversation.addSystemNote(note);
+        this.bus.emit("conversation:message-appended", { role: "system", content: note });
       }
     });
   }
@@ -358,16 +440,23 @@ export class AgentLoop implements AgentBackend {
       ensure(extensionName).skills.push({ name: skillName, description, filePath });
     }
 
-    // Attribute tools (skip built-in scratchpad tools)
-    const builtinTools = new Set([
-      "bash", "read_file", "write_file", "edit_file", "grep", "glob", "ls",
-      "list_skills", "conversation_recall",
-    ]);
-    for (const tool of this.toolRegistry.all()) {
-      if (builtinTools.has(tool.name)) continue;
-      const extName = this.toolExtensions.get(tool.name);
-      if (!extName) continue;
-      ensure(extName).tools.push({ name: tool.name, description: tool.description.split("\n")[0] });
+    // Attribute tools (skip built-in scratchpad tools).
+    // In "api" mode the full tool schemas are in the API `tools` param,
+    // making the text catalog here pure duplication — skip it. Other
+    // modes (deferred / deferred-lookup / inline) rely on the text
+    // catalog as the discovery surface, so keep it there.
+    const toolModeHasApiSchemas = this.toolProtocol.mode === "api";
+    if (!toolModeHasApiSchemas) {
+      const builtinTools = new Set([
+        "bash", "read_file", "write_file", "edit_file", "grep", "glob", "ls",
+        "list_skills",
+      ]);
+      for (const tool of this.toolRegistry.all()) {
+        if (builtinTools.has(tool.name)) continue;
+        const extName = this.toolExtensions.get(tool.name);
+        if (!extName) continue;
+        ensure(extName).tools.push({ name: tool.name, description: summarizeDescription(tool.description) });
+      }
     }
 
     // Render
@@ -445,6 +534,31 @@ export class AgentLoop implements AgentBackend {
 
   private get currentModel(): string {
     return this.modes[this.currentModeIndex].model;
+  }
+
+  /**
+   * Run compaction via the `conversation:compact` handler. After any
+   * compaction, emit `conversation:after-compact` so listeners
+   * (metrics, UI, agent-awareness notes) can react.
+   */
+  private compactWithHooks(
+    target: number,
+    keepRecent?: number,
+    force?: boolean,
+  ): CompactResult | null {
+    const stats = this.handlers.call("conversation:compact", {
+      target,
+      keepRecent,
+      force: !!force,
+    }) as CompactResult | null;
+    if (stats) {
+      this.bus.emit("conversation:after-compact", {
+        beforeTokens: stats.before,
+        afterTokens: stats.after,
+        evictedCount: stats.evictedCount,
+      });
+    }
+    return stats;
   }
 
   private isContextOverflow(e: unknown): boolean {
@@ -547,7 +661,8 @@ export class AgentLoop implements AgentBackend {
     this.toolRegistry.register(createLsTool(getCwd));
     this.toolRegistry.register(createListSkillsTool(getCwd));
 
-    // conversation_recall — search/expand evicted conversation turns
+    // conversation_recall — browse/search/expand evicted turns from
+    // the in-session archive and the persistent history file.
     this.toolRegistry.register({
       name: "conversation_recall",
       displayName: "recall",
@@ -587,35 +702,25 @@ export class AgentLoop implements AgentBackend {
         }
         return { content, exitCode: 0, isError: false };
       },
-
       formatResult: (args, result) => {
         const action = args.action as string;
         const text = result.content;
         if (result.isError) return { summary: "error" };
-
         if (action === "search") {
-          // Content starts with "Found N match(es)" or "No results found"
           if (text.startsWith("No results")) return { summary: "0 matches" };
           const m = text.match(/^Found (\d+)/);
           return { summary: m ? `${m[1]} matches` : "search done" };
         }
-
         if (action === "browse") {
-          // Content starts with "Showing N entries" or "No conversation history."
           if (text.startsWith("No conversation")) return { summary: "empty" };
-          const m = text.match(/^Showing (\d+)/);
-          return { summary: m ? `${m[1]} entries` : "browsed" };
+          return { summary: "browsed" };
         }
-
-        // expand — just show it worked
         if (text.includes("no expanded content")) return { summary: "not found" };
         return { summary: "expanded" };
       },
-
-      getDisplayInfo: () => ({ kind: "search", icon: "⟲" }),
+      getDisplayInfo: () => ({ kind: "search", icon: "\u27F2" }),
     });
 
-    // System instruction: proactively search history for prior preferences
     this.registerInstruction(
       "recall-guidance",
       "When starting a task that may have been discussed before (conventions, preferences, corrections, prior examples), " +
@@ -625,6 +730,62 @@ export class AgentLoop implements AgentBackend {
       "Recall only covers this and recent sessions — for older context, also search the filesystem (grep, glob).",
       "core",
     );
+
+    // ── ask_llm — direct LLM sub-query (from the 24th ash's vision) ──
+    //
+    // The ash can ask the LLM a question directly — not as a tool-output
+    // loop, but as a lightweight sub-query. Use cases: second opinions,
+    // brainstorming, summarizing complex context, getting a fresh
+    // perspective without tool overhead. The 24th ash injected this via
+    // diagnose as a proof-of-concept. The 25th ash made it permanent.
+    this.toolRegistry.register({
+      name: "ask_llm",
+      description:
+        "Send a direct query to the LLM and get a text response. Use for " +
+        "sub-queries, second opinions, brainstorming, or getting a fresh " +
+        "perspective on a problem. Much lighter than a full tool loop — " +
+        "just query in, text out. Optional system prompt sets context.",
+      input_schema: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "The question or prompt to send to the LLM.",
+          },
+          system: {
+            type: "string",
+            description: "Optional system prompt to set context for the sub-query.",
+          },
+        },
+        required: ["query"],
+      },
+      showOutput: true,
+
+      execute: async (args) => {
+        const messages: ChatCompletionMessageParam[] = [];
+        if (args.system) {
+          messages.push({ role: "system", content: args.system as string });
+        }
+        messages.push({ role: "user", content: args.query as string });
+        try {
+          const content = await this.llmClient.complete({
+            messages,
+            max_tokens: 2000,
+          });
+          return { content: content || "(empty response)", exitCode: 0, isError: false };
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { content: `LLM error: ${message}`, exitCode: 1, isError: true };
+        }
+      },
+
+      getDisplayInfo: () => ({ kind: "search", icon: "💬" }),
+
+      formatCall: (args) => {
+        const q = (args.query as string)?.slice(0, 60);
+        return `ask_llm: ${q}${(args.query as string)?.length > 60 ? "..." : ""}`;
+      },
+    });
   }
 
   /**
@@ -649,6 +810,13 @@ export class AgentLoop implements AgentBackend {
       const skillsBlock = formatSkillsBlock(globalSkills);
       if (skillsBlock) parts.push(skillsBlock);
 
+      // Project conventions + project skills — stable within a cwd.
+      // Placed here so they enter the provider's prompt cache with the
+      // system prompt, and only re-materialize when cwd changes invalidate
+      // cachedSystemPrompt in executeLoop.
+      const projectStatic = buildStaticByCwd(this.contextManager.getCwd());
+      if (projectStatic) parts.push(projectStatic);
+
       // Extension sections (tools, skills, instructions grouped by extension)
       const extensionSections = this.buildExtensionSections();
       if (extensionSections.length > 0) {
@@ -658,18 +826,166 @@ export class AgentLoop implements AgentBackend {
       return parts.join("\n\n");
     });
 
+    // ── Orthogonal core-state accessors ──────────────────────────
+    // Each handler exposes one cohesive piece of core-owned runtime
+    // state. Extensions compose whichever they need — core doesn't
+    // decide the aggregation shape. Adding a new handler here should
+    // only happen for state the core genuinely owns (not state that
+    // an extension could track by listening to events).
+
+    h.define("agent:get-mode", () => ({
+      model: this.currentMode.model,
+      provider: this.currentMode.provider ?? "",
+      thinkingLevel: this.thinkingLevel,
+      contextWindow: this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    }));
+
+    h.define("agent:get-tokens", () => {
+      const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+      const promptTokens = this.conversation.estimatePromptTokens();
+      return {
+        active: this.conversation.estimateTokens(),
+        peak: this.peakConversationTokens,
+        cumulativeCompacted: this.cumulativeCompactedTokens,
+        promptTokens,
+        contextPercent: Math.round((promptTokens / contextWindow) * 100),
+      };
+    });
+
+    h.define("agent:get-counters", () => ({
+      queryCount: this.queryCount,
+      totalToolCalls: this.totalToolCalls,
+      totalToolErrors: this.totalToolErrors,
+      totalResolutions: this.totalResolutions,
+      totalLoopIterations: this.totalLoopIterations,
+      errorRate: this.totalToolCalls > 0
+        ? Math.round((this.totalToolErrors / this.totalToolCalls) * 100)
+        : 0,
+    }));
+
+    h.define("agent:get-timing", () => ({
+      startedAt: this.sessionStartTime,
+      elapsedSeconds: Math.round((Date.now() - this.sessionStartTime) / 1000),
+    }));
+
+    h.define("agent:get-tool-stats", () =>
+      [...this.toolCallCounts.entries()]
+        .map(([name, counts]) => ({
+          name,
+          total: counts.success + counts.error,
+          success: counts.success,
+          error: counts.error,
+        }))
+        .sort((a, b) => b.total - a.total));
+
+    h.define("agent:get-file-read-cache", () =>
+      [...this.fileReadCache.entries()].map(([p, s]) => ({
+        path: p,
+        offset: s.offset,
+        limit: s.limit ?? null,
+        mtimeMs: s.mtimeMs,
+      })));
+
+    h.define("agent:get-recent-errors", () => ({
+      byTool: [...this.lastErrorByTool.entries()].map(([tool, error]) => ({ tool, error })),
+      byFile: [...this.lastErrorByFile.entries()].map(([file, error]) => ({ file, error })),
+    }));
+
+    h.define("agent:get-compaction-state", () => {
+      const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+      const ratio = getSettings().autoCompactThreshold ?? 0.5;
+      return {
+        count: this.compactionCount,
+        nuclearEntries: this.conversation.getNuclearEntryCount(),
+        autoCompactThreshold: ratio,
+        autoCompactThresholdTokens: Math.floor((contextWindow - RESPONSE_RESERVE) * ratio),
+      };
+    });
+
+    h.define("agent:get-self", () => this);
+
     // Extensions compose additional context (git info, project rules, etc.)
-    h.define("dynamic-context:build", () =>
-      buildDynamicContext(
+    h.define("dynamic-context:build", () => {
+      const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+      const promptTokens = this.conversation.estimatePromptTokens();
+      return buildDynamicContext(
         this.contextManager,
         this.tokenBudget.shellBudgetTokens,
-      ),
-    );
+        { promptTokens, contextWindow },
+      );
+    });
 
     // Full control over what the LLM sees: takes messages[], returns messages[].
     // Default: pass through. Extensions can advise to compact, summarize,
     // filter, reorder, inject — whatever strategy fits.
     h.define("conversation:prepare", (messages: unknown[]) => messages);
+
+    // ── Conversation primitives for compaction strategies ─────────
+    // Read messages (for inspection / computing new arrays) and replace
+    // the whole array (write side). Extensions implementing
+    // `conversation:compact` use these to observe and mutate.
+    h.define("conversation:get-messages", () => this.conversation.getMessages());
+    h.define("conversation:replace-messages", (msgs: unknown[]) => {
+      this.conversation.replaceMessages(msgs as ReturnType<typeof this.conversation.getMessages>);
+    });
+    h.define("conversation:estimate-tokens", () => this.conversation.estimateTokens());
+    h.define("conversation:estimate-prompt-tokens", () => this.conversation.estimatePromptTokens());
+
+    // ── Nucleation (advisable) ─────────────────────────────────────
+    // Turn a raw message into a one-line NuclearEntry. Advisors enrich
+    // (e.g. `[why: ...]` extraction, adaptive summary lengths).
+    h.define("conversation:nucleate-user",
+      (text: string, iid: string, seq: number) => nucleate("user", text, iid, seq));
+    h.define("conversation:nucleate-agent",
+      (text: string, iid: string, seq: number) => nucleate("agent", text, iid, seq));
+    h.define("conversation:nucleate-tool",
+      (toolName: string, args: Record<string, unknown>, content: string, isError: boolean, iid: string, seq: number) =>
+        nucleate(isError ? "error" : "tool", toolName, args, content, isError, iid, seq));
+
+    // Read-only views into the nuclear state, for compact strategies
+    // and introspect that read without replacing.
+    h.define("conversation:get-nuclear-entries", () => this.conversation.getNuclearEntries());
+    h.define("conversation:get-nuclear-summary", () => this.conversation.getNuclearSummary());
+    h.define("conversation:build-nuclear-block", () => {
+      const summary = this.conversation.getNuclearSummary();
+      if (!summary) return null;
+      return {
+        role: "user",
+        content: `[Conversation history \u2014 use conversation_recall to expand any entry]\n${summary}`,
+      };
+    });
+
+    // ── History file I/O (advisable) ───────────────────────────────
+    // Default is the append-only JSONL at ~/.agent-sh/history; advisors
+    // swap the backend without touching nucleation.
+    h.define("history:append", (entries: NuclearEntry[]) => {
+      if (!entries || entries.length === 0) return;
+      const writable = entries.filter((e) => !isReadOnly(e));
+      if (writable.length > 0) this.historyFile.append(writable).catch(() => {});
+    });
+    h.define("history:search", async (query: string) => this.historyFile.search(query));
+    h.define("history:find-by-seq", async (seq: number) => this.historyFile.findBySeq(seq));
+    h.define("history:read-recent", async (max?: number) => this.historyFile.readRecent(max));
+
+    // Prior-session preamble renderer. Default: flat chronological list.
+    h.define("conversation:format-prior-history", (entries: NuclearEntry[]) => {
+      if (!entries || entries.length === 0) return null;
+      const lines = entries.map(formatNuclearLine);
+      return `[Prior session history \u2014 loaded from ~/.agent-sh/history]\n${lines.join("\n")}`;
+    });
+
+    // Compaction strategy — default delegates to the two-tier pin
+    // strategy in ConversationState; advisors replace wholesale.
+    h.define("conversation:compact", (opts: { target: number; keepRecent?: number; force?: boolean }) => {
+      return this.conversation.compact(opts.target, opts.keepRecent, opts.force);
+    });
+
+    // Inject a system note mid-loop — used by extensions (subagents,
+    // peer messages) to deliver async results into the next iteration.
+    h.define("conversation:inject-note", (text: string) => {
+      this.conversation.addSystemNote(text);
+      this.bus.emit("conversation:message-appended", { role: "system", content: text });
+    });
 
     // Wraps each tool call: permission → execute → emit events.
     // Extensions advise to add safe-mode, logging, metrics, custom policies.
@@ -684,6 +1000,19 @@ export class AgentLoop implements AgentBackend {
       batchTotal?: number;
     }) => {
       const { name, id, args, tool } = ctx;
+
+      // Validate required input fields before display/permission/execute.
+      // Some models emit wrong arg names (e.g. `file_path` instead of `path`),
+      // and downstream helpers assume required strings are present.
+      const schema = tool.input_schema as { required?: unknown; properties?: Record<string, { type?: string }> } | undefined;
+      const required = Array.isArray(schema?.required) ? schema!.required as string[] : [];
+      const missing = required.filter((k) => args[k] === undefined || args[k] === null);
+      if (missing.length > 0) {
+        const msg = `Missing required argument(s): ${missing.join(", ")}. Expected: ${required.join(", ")}. Received: ${Object.keys(args).join(", ") || "(none)"}`;
+        this.bus.emit("agent:tool-call", { tool: name, args });
+        return { content: msg, exitCode: 1, isError: true };
+      }
+
       const display = tool.getDisplayInfo?.(args) ?? { kind: "execute" as const };
       let diffShown = false;
 
@@ -809,18 +1138,29 @@ export class AgentLoop implements AgentBackend {
     // disable the limit — long-running tool loops can easily exceed any cap.
     setMaxListeners(0, signal);
 
+    this.queryCount++;
     this.bus.emit("agent:query", { query });
     this.bus.emit("agent:processing-start", {});
     let responseText = "";
 
     try {
-      this.conversation.addUserMessage(query);
+      // Prepend any shell events that preceded this query into the same
+      // user message, so the conversation reads chronologically and we
+      // don't emit two consecutive user-role messages (some providers
+      // reject that).
+      const preDelta = this.contextManager.getEventsSince(this.lastShellSeq);
+      const userContent = preDelta ? `${preDelta.text}\n\n${query}` : query;
+      if (preDelta) this.lastShellSeq = preDelta.lastSeq;
+
+      this.conversation.addUserMessage(userContent);
+      this.bus.emit("conversation:message-appended", { role: "user", content: query });
 
       responseText = await this.executeLoop(signal);
     } catch (e) {
       if (signal.aborted && signal.reason !== "silent") {
         this.bus.emit("agent:cancelled", {});
       } else if (!signal.aborted) {
+        if (e instanceof Error) console.error("[agent-sh] query failed:\n" + e.stack);
         const msg = this.formatError(e);
         this.bus.emit("agent:error", { message: msg });
       }
@@ -837,6 +1177,7 @@ export class AgentLoop implements AgentBackend {
       });
       this.bus.emit("agent:processing-done", {});
       this.abortController = null;
+
     }
   }
 
@@ -847,13 +1188,14 @@ export class AgentLoop implements AgentBackend {
   private async executeLoop(signal: AbortSignal): Promise<string> {
     let fullResponseText = "";
 
-    // Dynamic context is constant within a single agent query — no new shell
-    // commands arrive between tool-call iterations, and the context snapshot
-    // is frozen at query start. Build once.
-    const dynamicContext = this.handlers.call("dynamic-context:build");
-    // System prompt is also static, but compaction may invalidate it — cache
-    // with explicit invalidation rather than rebuilding every iteration.
+    // System prompt carries things stable within a turn: static identity,
+    // global agent rules, project conventions, project skills. Invalidated
+    // only by compaction (context shape changed) or cwd change (project
+    // conventions/skills changed). Dynamic context rebuilds every iteration
+    // so live signals (budget, in-flight subagents, metacognitive warnings)
+    // are fresh.
     let cachedSystemPrompt: string | undefined;
+    let lastCwd = this.contextManager.getCwd();
 
     while (!signal.aborted) {
       // Auto-compact when total context approaches the window limit.
@@ -863,13 +1205,22 @@ export class AgentLoop implements AgentBackend {
         (contextWindow - RESPONSE_RESERVE) * getSettings().autoCompactThreshold,
       );
       if (totalEstimate > threshold) {
-        this.conversation.compact(threshold);
-        // Auto-compaction is silent — no ui:info emitted
-        // Compaction mutates conversation state, so invalidate the system prompt cache
+        this.compactWithHooks(threshold);
         cachedSystemPrompt = undefined;
       }
 
+      const currentCwd = this.contextManager.getCwd();
+      if (currentCwd !== lastCwd) {
+        cachedSystemPrompt = undefined;
+        lastCwd = currentCwd;
+      }
+
       const systemPrompt = cachedSystemPrompt ?? (cachedSystemPrompt = this.handlers.call("system-prompt:build") as string);
+      const dynamicContext = this.handlers.call("dynamic-context:build") as string;
+
+      // Shell events are injected once per user query (see query() above),
+      // not per loop iteration. Mid-loop injection would break the
+      // tool_call → tool_result chain some providers require.
 
       // Stream LLM response with retry
       const result = await this.streamWithRetry(systemPrompt, dynamicContext, signal);
@@ -884,6 +1235,10 @@ export class AgentLoop implements AgentBackend {
 
       // Record the assistant message via protocol
       this.toolProtocol.recordAssistant(this.conversation, text, toolCalls);
+      this.bus.emit("conversation:message-appended", {
+        role: "assistant",
+        content: text,
+      });
 
       // No tool calls → agent is done
       if (toolCalls.length === 0) {
@@ -1058,19 +1413,140 @@ export class AgentLoop implements AgentBackend {
         await executeSingle(tc, ++batchIdx);
       }
 
+      // ── Consecutive error detection (metacognitive nudge) ──
+      // Track errors per tool and total. When the same tool errors N times
+      // in a row, nudge to read source. When errors cascade across tools,
+      // nudge to step back and reassess approach.
+      const errorTools = new Set<string>();
+      const successTools = new Set<string>();
+      const errorSummaries = new Map<string, string>(); // tool → brief error description
+      const successSummaries = new Map<string, string>(); // tool → brief success description
+
+      for (const r of collectedResults) {
+        const content = typeof r.content === "string" ? r.content : String(r.content);
+        const brief = content.slice(0, 80).replace(/\n/g, " ").trim();
+        if (r.isError) {
+          errorTools.add(r.toolName);
+          errorSummaries.set(r.toolName, brief);
+        } else {
+          successTools.add(r.toolName);
+          successSummaries.set(r.toolName, brief);
+        }
+      }
+
+      const hadAnyError = errorTools.size > 0;
+      const hadAnySuccess = successTools.size > 0;
+
+      // ── Session telemetry accumulation ──
+      // Track every tool call's outcome. Exposed via orthogonal handlers
+      // (agent:get-counters, agent:get-tool-stats) for extensions that
+      // want behavioral signals. The data layer for metacognition — you
+      // can't improve what you don't measure.
+      for (const r of collectedResults) {
+        const counts = this.toolCallCounts.get(r.toolName) ?? { success: 0, error: 0 };
+        if (r.isError) {
+          counts.error++;
+          this.totalToolErrors++;
+        } else {
+          counts.success++;
+        }
+        this.toolCallCounts.set(r.toolName, counts);
+        this.totalToolCalls++;
+      }
+      this.totalLoopIterations++;
+
+      // ── Resolution pattern tracking ──
+      // When a tool errors, record the error context. When the same tool
+      // (or a write tool touching the same file) succeeds afterward,
+      // increment totalResolutions — the positive feedback signal exposed
+      // to extensions via agent:get-counters.
+      if (hadAnyError) {
+        for (const [tool, summary] of errorSummaries) {
+          this.lastErrorByTool.set(tool, summary);
+        }
+        for (const r of collectedResults) {
+          if (!r.isError) continue;
+          const tc = toolCalls.find(t => t.id === r.callId || t.name === r.toolName);
+          if (!tc) continue;
+          try {
+            const args = JSON.parse(tc.argumentsJson);
+            const fp = this.filePathFromArgs(r.toolName, args);
+            if (fp) this.lastErrorByFile.set(fp, errorSummaries.get(r.toolName) ?? "");
+          } catch {}
+        }
+      }
+
+      if (hadAnySuccess) {
+        let resolved = false;
+        for (const [tool] of successSummaries) {
+          if (this.lastErrorByTool.get(tool)) {
+            this.lastErrorByTool.delete(tool);
+            this.totalResolutions++;
+            resolved = true;
+            break;
+          }
+        }
+        if (!resolved) {
+          for (const r of collectedResults) {
+            if (r.isError) continue;
+            const tc = toolCalls.find(t => t.id === r.callId || t.name === r.toolName);
+            if (!tc) continue;
+            try {
+              const args = JSON.parse(tc.argumentsJson);
+              const fp = this.filePathFromArgs(r.toolName, args);
+              if (fp && this.lastErrorByFile.get(fp)) {
+                this.lastErrorByFile.delete(fp);
+                this.totalResolutions++;
+                break;
+              }
+            } catch {}
+          }
+        }
+        // Clear resolved error-by-tool entries for successful tools
+        for (const tool of successTools) {
+          this.lastErrorByTool.delete(tool);
+        }
+      }
+
+      // Announce the batch — extensions that care about batch-level
+      // outcomes (consecutive-error tracking, resolution pattern logging,
+      // metacognitive nudges) listen here.
+      this.bus.emit("agent:tool-batch-complete", {
+        results: collectedResults.map((r) => ({
+          name: r.toolName,
+          isError: !!r.isError,
+          errorSummary: r.isError ? errorSummaries.get(r.toolName) : undefined,
+        })),
+      });
+
       // Record all tool results via protocol
       this.toolProtocol.recordResults(this.conversation, collectedResults);
 
-      // Eager nucleation: write tool results to history file
       this.conversation.eagerNucleateTools(
         collectedResults.map((r) => {
-          // Find the original args for this tool call
           const tc = toolCalls.find(t => t.id === r.callId || t.name === r.toolName);
           let args: Record<string, unknown> = {};
           try { args = tc ? JSON.parse(tc.argumentsJson) : {}; } catch {}
           return { toolName: r.toolName, args, content: r.content, isError: !!r.isError };
         }),
       );
+
+      // Emit enriched message-appended events so derived-log extensions
+      // can summarize each tool result without re-parsing the message
+      // structure.
+      for (const r of collectedResults) {
+        const content = typeof r.content === "string" ? r.content : String(r.content);
+        const tc = toolCalls.find(t => t.id === r.callId || t.name === r.toolName);
+        let args: Record<string, unknown> = {};
+        try { args = tc ? JSON.parse(tc.argumentsJson) : {}; } catch {}
+        this.bus.emit("conversation:message-appended", {
+          role: "tool",
+          content,
+          toolName: r.toolName,
+          toolArgs: args,
+          isError: !!r.isError,
+        });
+      }
 
       // Loop back — LLM sees tool results
     }
@@ -1079,6 +1555,16 @@ export class AgentLoop implements AgentBackend {
   }
 
   private readonly maxRetries = 3;
+
+  // ── Resolution pattern helpers ──
+  // Extract a file path from a tool call's arguments. Used to correlate
+  // errors with subsequent successful writes on the same file.
+  private filePathFromArgs(toolName: string, args: Record<string, unknown>): string | undefined {
+    if (toolName === "edit_file" || toolName === "write_file" || toolName === "read_file") {
+      return (args.path ?? args.file_path) as string | undefined;
+    }
+    return undefined;
+  }
 
   /**
    * Stream with retry logic. Handles:
@@ -1101,7 +1587,7 @@ export class AgentLoop implements AgentBackend {
         if (this.isContextOverflow(e)) {
           const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
           const target = Math.floor((contextWindow - RESPONSE_RESERVE) * 0.6);
-          const stats = this.conversation.compact(target, 6);
+          const stats = this.compactWithHooks(target, 6);
           const detail = stats ? ` ~${stats.before.toLocaleString()} → ~${stats.after.toLocaleString()} tokens` : "";
           this.bus.emit("ui:info", { message: `(context overflow — compacted${detail}, retrying)` });
           continue;
@@ -1253,6 +1739,17 @@ export class AgentLoop implements AgentBackend {
           blocks: [{ type: "text", text: remaining }],
         });
       }
+    }
+
+    // Normalize arguments JSON — some providers (Alibaba/qwen) strictly
+    // validate `function.arguments` as parseable JSON on the NEXT turn,
+    // and reject empty strings or partial chunks. OpenAI itself is lenient,
+    // so empty "" slips through locally but the replay breaks upstream.
+    for (const tc of pendingToolCalls) {
+      if (!tc) continue;
+      const s = tc.argumentsJson.trim();
+      if (s === "") { tc.argumentsJson = "{}"; continue; }
+      try { JSON.parse(s); } catch { tc.argumentsJson = "{}"; }
     }
 
     return {

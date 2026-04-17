@@ -10,7 +10,7 @@ Here's what happens when you submit a query:
 User types "> fix the failing test"
   │
   ├─ 1. Context assembly — gather recent shell commands, output, cwd
-  ├─ 2. System prompt — tools + context + guidelines, rebuilt every call
+  ├─ 2. System prompt (cached per cwd) + dynamic context (rebuilt every LLM call)
   ├─ 3. LLM call — stream response from the API
   ├─ 4. Tool loop — if LLM requested tool calls:
   │     ├─ Execute each tool (with permission check if needed)
@@ -28,21 +28,24 @@ Every query includes two streams of context that share a unified token budget:
 - **Shell context** = user terminal history (commands + outputs), assembled fresh for every LLM call. It's what lets the agent understand "fix this" after you ran a failing command.
 - **Conversation state** = the OpenAI chat messages array (`user`/`assistant`/`tool` messages). This is the LLM's memory of what it already said and did.
 
-The two streams don't overlap — agent tool outputs live only in the conversation, while shell context tracks only user-initiated activity. Both streams support recall tools (`shell_recall` and `conversation_recall`) for recovering evicted content.
+The two streams don't overlap — agent tool outputs live only in the conversation, while shell context tracks only user-initiated activity. The `shell_recall` tool recovers evicted shell content; `conversation_recall` browses/searches/expands evicted turns from the in-session archive and the persistent history file at `~/.agent-sh/history`. Every message is nucleated into a one-line summary and appended to that file eagerly, so context flows across restarts like a shell history. The `conversation:compact` handler is advisable — extensions may install richer strategies without changing the recall surface.
 
-See [Context Management](context-management.md) for the full design: token budgeting, truncation pipeline, priority-based compaction, and configuration.
+See [Context Management](context-management.md) for the full design: token budgeting, truncation pipeline, compaction hook, and configuration.
 
 ## System Prompt
 
-The system prompt is rebuilt on **every LLM call** (not cached), so context is always fresh. It includes:
+The system prompt is assembled once per `cwd` and cached (invalidated when the working directory changes), so the prefix is stable for provider-side prompt caching. It includes:
 
-1. **Identity** — "You are an AI coding assistant in agent-sh..."
-2. **Tool decision guide** — when to use scratchpad tools
+1. **Identity** — "You are an AI coding assistant running inside agent-sh..."
+2. **Tool decision guide** — when to use which built-in tool
 3. **Tool usage guidelines** — read before editing, prefer edit over write, use grep/glob to find files, etc.
-4. **Extension instructions** — blocks registered by extensions via `registerInstruction()` (e.g. proactive recall guidance)
-5. **Available tools** — name + description of every registered tool
-6. **Shell context** — the assembled context from above
-7. **Metadata** — current date, working directory
+4. **Project conventions** — `CLAUDE.md`/`AGENT.md` walked from cwd to root (cwd-stable; see next section)
+5. **Skills** — discovered project/global skills (cwd-stable)
+6. **Extension instructions** — blocks registered by extensions via `registerInstruction()` (e.g. proactive recall guidance)
+7. **Available tools** — name + description of every registered tool
+8. **Extension-appended content** — extensions can advise `system-prompt:build` to append additional context (instance IDs, memory files, etc.)
+
+**Shell context**, **environment metadata** (date, cwd, token usage), and any other per-iteration signals live in the *dynamic context* — a user-role message injected fresh before every LLM call via the `dynamic-context:build` handler. Each section is wrapped in a named XML tag (`<shell>`, `<environment>`, etc.) so extensions can add their own tagged sections without colliding.
 
 ## Project Conventions
 
@@ -100,13 +103,13 @@ The `name` and `description` fields are required. An optional `disable-model-inv
 
 ### How the agent uses skills
 
-Skills are **not** loaded into the system prompt. Instead:
+Only skill **metadata** (name, description, file path) is included in the system prompt — not the full skill content. This keeps the prompt small regardless of how many skills you have.
 
-1. The system prompt tells the agent how many skills are available
-2. The agent calls `list_skills` to see names, descriptions, and file paths
-3. The agent calls `read_file` on the relevant `SKILL.md` to load full instructions
+1. The system prompt lists available skills with their descriptions and paths
+2. The agent decides which skill is relevant (no extra round-trip needed)
+3. The agent calls `read_file` on the skill's `SKILL.md` to load full instructions when ready to use it
 
-This keeps the system prompt small regardless of how many skills you have.
+The `list_skills` tool is also available for broader discovery.
 
 ### Slash command
 
@@ -180,7 +183,6 @@ Extensions can add tools that cross the shell↔agent boundary via `shell:exec-r
 | `glob` | Find files by name pattern | No | No |
 | `ls` | List directory contents (with timestamps and sizes) | No | No |
 | `list_skills` | List available skills (name, description, path) | No | No |
-| `conversation_recall` | Search or expand evicted conversation turns | No | No |
 | `shell_recall` | Browse or search truncated shell context (extension: shell-recall) | No | No |
 | `terminal_read` | Read the current terminal screen (extension: terminal-buffer) | No | No |
 | `terminal_keys` | Send keystrokes to the user's live PTY (extension: terminal-buffer) | No | No |
