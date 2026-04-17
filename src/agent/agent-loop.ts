@@ -25,6 +25,8 @@ import { computeDiff, computeEditDiff, computeInputDiff } from "../utils/diff.js
 import type { AgentBackend, ToolDefinition } from "./types.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { ConversationState, type CompactResult } from "./conversation-state.js";
+import { HistoryFile } from "./history-file.js";
+import { nucleate, formatNuclearLine, isReadOnly, type NuclearEntry } from "./nuclear-form.js";
 import { STATIC_SYSTEM_PROMPT, buildDynamicContext, formatSkillsBlock, loadGlobalAgentsMd } from "./system-prompt.js";
 import type { Compositor } from "../utils/compositor.js";
 import { createToolUI } from "../utils/tool-interactive.js";
@@ -62,6 +64,7 @@ export interface AgentLoopConfig {
 export class AgentLoop implements AgentBackend {
   private abortController: AbortController | null = null;
   private toolRegistry = new ToolRegistry();
+  private historyFile: HistoryFile;
   private conversation: ConversationState;
   private fileReadCache: FileReadCache = new Map();
   private tokenBudget: TokenBudget;
@@ -120,7 +123,11 @@ export class AgentLoop implements AgentBackend {
     this.compositor = config.compositor ?? null;
     this.instanceId = config.instanceId ?? "unknown";
 
-    this.conversation = new ConversationState();
+    // Shell-history-shaped log. Default writes go through the advisable
+    // `history:append` handler registered below; extensions swap the
+    // backend without touching this wiring.
+    this.historyFile = new HistoryFile({ instanceId: this.instanceId });
+    this.conversation = new ConversationState(this.handlers, this.instanceId);
 
     // Default modes: just the configured model
     this.modes = config.modes ?? [
@@ -254,13 +261,11 @@ export class AgentLoop implements AgentBackend {
     });
     on("agent:reset-session", () => {
       this.cancel();
-      this.conversation = new ConversationState();
+      this.conversation = new ConversationState(this.handlers, this.instanceId);
       this.lastProjectSkillNames.clear();
     });
     on("agent:compact-request", () => {
-      // Force compaction via the conversation:compact advisor chain. The
-      // strategy (what to preserve, what to evict) is owned by whichever
-      // extension has advised that handler.
+      // Force compaction. Strategy lives behind `conversation:compact`.
       const stats = this.compactWithHooks(0, 0, true);
       if (stats) {
         this.bus.emit("ui:info", {
@@ -273,8 +278,18 @@ export class AgentLoop implements AgentBackend {
     this.bus.onPipe("context:get-stats", () => ({
       activeTokens: this.conversation.estimateTokens(),
       totalTokens: this.conversation.estimatePromptTokens(),
+      nuclearEntries: this.conversation.getNuclearEntryCount(),
+      recallArchiveSize: this.conversation.getRecallArchiveSize(),
       budgetTokens: this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     }));
+
+    // Prior-session preamble (non-blocking). Both the read and the
+    // layout go through advisable handlers.
+    Promise.resolve(this.handlers.call("history:read-recent"))
+      .then((entries: NuclearEntry[] | undefined) => {
+        if (entries && entries.length > 0) this.conversation.loadPriorHistory(entries);
+      })
+      .catch(() => {});
 
     // Track generic compaction metrics from the `conversation:after-compact`
     // event. Whatever strategy ran, core accumulates these counters for
@@ -481,11 +496,9 @@ export class AgentLoop implements AgentBackend {
   }
 
   /**
-   * Run compaction via the `conversation:compact` handler. The handler's
-   * default implementation is a no-op; extensions advise it with a
-   * strategy (FIFO, two-tier pin, LLM summarization, etc.). After any
-   * compaction, emit the generic `conversation:after-compact` event so
-   * listeners can react (metrics, UI, agent-awareness notes, etc.).
+   * Run compaction via the `conversation:compact` handler. After any
+   * compaction, emit `conversation:after-compact` so listeners
+   * (metrics, UI, agent-awareness notes) can react.
    */
   private compactWithHooks(
     target: number,
@@ -607,9 +620,75 @@ export class AgentLoop implements AgentBackend {
     this.toolRegistry.register(createLsTool(getCwd));
     this.toolRegistry.register(createListSkillsTool(getCwd));
 
-    // Extension-owned tools (conversation recall, compact, etc.) live
-    // in whichever extension maintains the state they operate on. Core
-    // here only registers truly generic tools.
+    // conversation_recall — browse/search/expand evicted turns from
+    // the in-session archive and the persistent history file.
+    this.toolRegistry.register({
+      name: "conversation_recall",
+      displayName: "recall",
+      description:
+        "Browse, search, or expand evicted conversation turns. " +
+        "Use when you need context from earlier in the conversation that was compacted away. " +
+        "Search is regex-based and covers both summaries and full body text. " +
+        "If search doesn't find what you expect, try broader/shorter terms or browse to scan the timeline.",
+      input_schema: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["browse", "search", "expand"],
+            description: "browse: list evicted turns, search: regex search, expand: show full turn",
+          },
+          query: {
+            type: "string",
+            description: "Search query (for action=search)",
+          },
+          turn_id: {
+            type: "number",
+            description: "Turn ID to expand (for action=expand)",
+          },
+        },
+        required: ["action"],
+      },
+      execute: async (args) => {
+        const action = args.action as string;
+        let content: string;
+        if (action === "search") {
+          content = await this.conversation.search((args.query as string) ?? "");
+        } else if (action === "expand") {
+          content = await this.conversation.expand(args.turn_id as number);
+        } else {
+          content = await this.conversation.browse();
+        }
+        return { content, exitCode: 0, isError: false };
+      },
+      formatResult: (args, result) => {
+        const action = args.action as string;
+        const text = result.content;
+        if (result.isError) return { summary: "error" };
+        if (action === "search") {
+          if (text.startsWith("No results")) return { summary: "0 matches" };
+          const m = text.match(/^Found (\d+)/);
+          return { summary: m ? `${m[1]} matches` : "search done" };
+        }
+        if (action === "browse") {
+          if (text.startsWith("No conversation")) return { summary: "empty" };
+          return { summary: "browsed" };
+        }
+        if (text.includes("no expanded content")) return { summary: "not found" };
+        return { summary: "expanded" };
+      },
+      getDisplayInfo: () => ({ kind: "search", icon: "\u27F2" }),
+    });
+
+    this.registerInstruction(
+      "recall-guidance",
+      "When starting a task that may have been discussed before (conventions, preferences, corrections, prior examples), " +
+      "use conversation_recall to search history for relevant prior entries. " +
+      "Treat recurring user guidance as standing preferences. " +
+      "If a search returns nothing useful, try: shorter queries, alternate terms, or browse to scan the full timeline. " +
+      "Recall only covers this and recent sessions — for older context, also search the filesystem (grep, glob).",
+      "core",
+    );
 
     // ── ask_llm — direct LLM sub-query (from the 24th ash's vision) ──
     //
@@ -798,17 +877,57 @@ export class AgentLoop implements AgentBackend {
     h.define("conversation:estimate-tokens", () => this.conversation.estimateTokens());
     h.define("conversation:estimate-prompt-tokens", () => this.conversation.estimatePromptTokens());
 
-    // Compaction strategy — default is no-op. Extensions advise with
-    // their policy (FIFO, two-tier pin, LLM summarization, etc.).
-    // Opts carry `target` (prompt-token budget) and optional `force` /
-    // `keepRecent` hints the strategy MAY honour; the return shape is
-    // strategy-defined but should include before/after/evictedCount so
-    // the generic `conversation:after-compact` event can fire.
-    h.define("conversation:compact", (_opts: { target: number; keepRecent?: number; force?: boolean }) => null);
+    // ── Nucleation (advisable) ─────────────────────────────────────
+    // Turn a raw message into a one-line NuclearEntry. Advisors enrich
+    // (e.g. `[why: ...]` extraction, adaptive summary lengths).
+    h.define("conversation:nucleate-user",
+      (text: string, iid: string, seq: number) => nucleate("user", text, iid, seq));
+    h.define("conversation:nucleate-agent",
+      (text: string, iid: string, seq: number) => nucleate("agent", text, iid, seq));
+    h.define("conversation:nucleate-tool",
+      (toolName: string, args: Record<string, unknown>, content: string, isError: boolean, iid: string, seq: number) =>
+        nucleate(isError ? "error" : "tool", toolName, args, content, isError, iid, seq));
 
-    // Inject a system note into the conversation mid-loop.
-    // Used by extensions (e.g. subagents) to deliver asynchronous results
-    // that the agent will see on its next LLM iteration.
+    // Read-only views into the nuclear state, for compact strategies
+    // and introspect that read without replacing.
+    h.define("conversation:get-nuclear-entries", () => this.conversation.getNuclearEntries());
+    h.define("conversation:get-nuclear-summary", () => this.conversation.getNuclearSummary());
+    h.define("conversation:build-nuclear-block", () => {
+      const summary = this.conversation.getNuclearSummary();
+      if (!summary) return null;
+      return {
+        role: "user",
+        content: `[Conversation history \u2014 use conversation_recall to expand any entry]\n${summary}`,
+      };
+    });
+
+    // ── History file I/O (advisable) ───────────────────────────────
+    // Default is the append-only JSONL at ~/.agent-sh/history; advisors
+    // swap the backend without touching nucleation.
+    h.define("history:append", (entries: NuclearEntry[]) => {
+      if (!entries || entries.length === 0) return;
+      const writable = entries.filter((e) => !isReadOnly(e));
+      if (writable.length > 0) this.historyFile.append(writable).catch(() => {});
+    });
+    h.define("history:search", async (query: string) => this.historyFile.search(query));
+    h.define("history:find-by-seq", async (seq: number) => this.historyFile.findBySeq(seq));
+    h.define("history:read-recent", async (max?: number) => this.historyFile.readRecent(max));
+
+    // Prior-session preamble renderer. Default: flat chronological list.
+    h.define("conversation:format-prior-history", (entries: NuclearEntry[]) => {
+      if (!entries || entries.length === 0) return null;
+      const lines = entries.map(formatNuclearLine);
+      return `[Prior session history \u2014 loaded from ~/.agent-sh/history]\n${lines.join("\n")}`;
+    });
+
+    // Compaction strategy — default delegates to the two-tier pin
+    // strategy in ConversationState; advisors replace wholesale.
+    h.define("conversation:compact", (opts: { target: number; keepRecent?: number; force?: boolean }) => {
+      return this.conversation.compact(opts.target, opts.keepRecent, opts.force);
+    });
+
+    // Inject a system note mid-loop — used by extensions (subagents,
+    // peer messages) to deliver async results into the next iteration.
     h.define("conversation:inject-note", (text: string) => {
       this.conversation.addSystemNote(text);
       this.bus.emit("conversation:message-appended", { role: "system", content: text });
@@ -1036,6 +1155,7 @@ export class AgentLoop implements AgentBackend {
 
       // No tool calls → agent is done
       if (toolCalls.length === 0) {
+        this.conversation.eagerNucleateAgent(fullResponseText);
         break;
       }
 
@@ -1314,6 +1434,15 @@ export class AgentLoop implements AgentBackend {
 
       // Record all tool results via protocol
       this.toolProtocol.recordResults(this.conversation, collectedResults);
+
+      this.conversation.eagerNucleateTools(
+        collectedResults.map((r) => {
+          const tc = toolCalls.find(t => t.id === r.callId || t.name === r.toolName);
+          let args: Record<string, unknown> = {};
+          try { args = tc ? JSON.parse(tc.argumentsJson) : {}; } catch {}
+          return { toolName: r.toolName, args, content: r.content, isError: !!r.isError };
+        }),
+      );
 
       // Emit enriched message-appended events so derived-log extensions
       // can summarize each tool result without re-parsing the message

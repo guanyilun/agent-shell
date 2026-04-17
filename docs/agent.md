@@ -28,7 +28,7 @@ Every query includes two streams of context that share a unified token budget:
 - **Shell context** = user terminal history (commands + outputs), assembled fresh for every LLM call. It's what lets the agent understand "fix this" after you ran a failing command.
 - **Conversation state** = the OpenAI chat messages array (`user`/`assistant`/`tool` messages). This is the LLM's memory of what it already said and did.
 
-The two streams don't overlap — agent tool outputs live only in the conversation, while shell context tracks only user-initiated activity. The `shell_recall` tool recovers evicted shell content; conversation compaction strategy and any conversation-recall behaviour is provided by extensions (the kernel exposes `conversation:compact` as an advisable handler).
+The two streams don't overlap — agent tool outputs live only in the conversation, while shell context tracks only user-initiated activity. The `shell_recall` tool recovers evicted shell content; `conversation_recall` browses/searches/expands evicted turns from the in-session archive and the persistent history file at `~/.agent-sh/history`. Every message is nucleated into a one-line summary and appended to that file eagerly, so context flows across restarts like a shell history. The `conversation:compact` handler is advisable — extensions may install richer strategies without changing the recall surface.
 
 See [Context Management](context-management.md) for the full design: token budgeting, truncation pipeline, compaction hook, and configuration.
 

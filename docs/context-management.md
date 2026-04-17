@@ -16,7 +16,7 @@ This is the model agent-sh follows for context management:
 
 **Model-aware.** A 200k context model should behave differently from an 8k model. The token budget adapts to the model's actual context window, not a hardcoded threshold.
 
-**Strategy is pluggable.** The kernel decides *when* to compact (threshold crossing, explicit `/compact`, overflow retry). *How* to compact — what to preserve, how to summarise, whether to archive evicted turns elsewhere — is an extension responsibility, plugged in via the advisable `conversation:compact` handler. If no extension provides a strategy, compaction is a no-op and conversations overflow naturally instead of being silently truncated.
+**Strategy is pluggable.** The kernel decides *when* to compact (threshold crossing, explicit `/compact`, overflow retry). *How* to compact lives behind the advisable `conversation:compact` handler. The built-in agent ships a shell-history-shaped default: every message is nucleated into a one-line summary and appended to `~/.agent-sh/history` as it arrives; when the window fills, lower-priority turns are evicted and replaced in context by their summaries, recoverable through `conversation_recall`. Extensions advise the handler to install richer strategies (LLM summarisation, topic pinning, etc.) but the flow itself — nucleate, append, evict — stays continuous.
 
 ## The Two Streams
 
@@ -56,13 +56,16 @@ Configurable via `shellContextRatio` in settings. Recalculates on model switch. 
 
 When the kernel detects that compaction is warranted, it invokes the `conversation:compact` handler. This handler is advisable — extensions wrap it to implement their own strategy.
 
-**Default (no extension advising):** pass-through no-op. Messages stay as-is; the next LLM call may overflow.
+**Default (built-in agent):** three-tier priority-based compaction.
+- Every message is nucleated eagerly on arrival into a one-line summary and appended to the persistent history file at `~/.agent-sh/history` (JSONL, append-only, concurrency-safe). Read-only tool results are skipped for disk writes — the agent can re-run them.
+- Active context: full messages + a rolling in-context "nuclear block" (the one-liners) + an in-memory recall archive keyed by seq.
+- When conversation size exceeds the target, `compact()` keeps the first turn and the last `keepRecent` turns (verbatim plus slimmed), scores the rest by priority × recency, and evicts lowest-priority turns first. Evicted turns collapse into their one-liners; the full text remains searchable via `conversation_recall` (in-memory for this session, history file for prior sessions).
+- On startup, the most recent entries from the history file are injected as a `[Prior session history]` preamble so context carries across restarts.
 
-**With a strategy extension:** the advisor receives the full messages array plus metadata about why compaction was triggered, and returns a replacement array. Typical strategies:
-- Evict old tool results while keeping user messages
-- Summarise evicted turns into one-liners injected back into context
-- Archive evicted turns to disk for a recall tool
-- Pin specific topics/turns that must survive
+**With a strategy extension:** the advisor replaces the default. It reads the messages array (via `conversation:get-messages`), computes a replacement, installs it via `conversation:replace-messages`, and returns `{ before, after, evictedCount }`. Useful override points:
+- LLM-summarised compaction (summarise evicted turns before eviction)
+- Topic pinning (preserve turns matching pinned keywords)
+- Alternate persistence backends (SQLite, remote, etc.)
 
 Observation hook: `conversation:message-appended` fires every time a message is added to the conversation (user/assistant/tool), allowing extensions to build rolling indexes, summarise content, or feed memory systems.
 
@@ -85,7 +88,14 @@ Recovers truncated shell context:
 - `shell_recall --search "query"` — regex search
 - `shell_recall --expand 41` — full content of exchange #41
 
-Conversation recall, if provided, is a tool registered by whichever extension owns conversation compaction strategy.
+### conversation_recall
+
+Recovers evicted conversation turns:
+- `conversation_recall {"action": "browse"}` — list in-context nuclear entries + recent history file entries
+- `conversation_recall {"action": "search", "query": "..."}` — regex search across the in-session archive and the history file (both summary + body)
+- `conversation_recall {"action": "expand", "turn_id": 42}` — full content of a specific turn
+
+The tool is registered by the built-in agent; extensions that replace the compaction strategy can either reuse it or advise it with their own semantics.
 
 ## Slash Commands
 
@@ -110,13 +120,17 @@ All settings in `~/.agent-sh/settings.json`:
 | `shellContextRatio` | 0.35 | Fraction of content budget for shell context |
 | `recallExpandMaxLines` | 500 | Max lines shell_recall expand returns without line ranges |
 | `autoCompactThreshold` | 0.5 | Fraction of context window at which auto-compact triggers |
+| `historyMaxBytes` | 104857600 | Max size of `~/.agent-sh/history` before rotation |
+| `historyStartupEntries` | 100 | Prior history entries loaded as a preamble on startup |
 
 ## Key Files
 
 | File | Role |
 |------|------|
 | `src/context-manager.ts` | Shell exchange storage, windowing, truncation, recall API |
-| `src/agent/conversation-state.ts` | Messages array + token estimation (API-grounded + chars/4 fallback) |
+| `src/agent/conversation-state.ts` | Messages + eager nucleation + two-tier pin compaction + recall (search/expand/browse) |
+| `src/agent/nuclear-form.ts` | One-line-summary primitives (nucleate, serialize, priority classification) |
+| `src/agent/history-file.ts` | Append-only JSONL at `~/.agent-sh/history`, chunked search/tail-read, front-truncation |
 | `src/agent/token-budget.ts` | Shell context budget calculator. Exports `RESPONSE_RESERVE`, `DEFAULT_CONTEXT_WINDOW` |
-| `src/agent/agent-loop.ts` | Wires budget, API token feedback, auto-compact trigger, invokes `conversation:compact` advisor chain |
+| `src/agent/agent-loop.ts` | Wires budget, API token feedback, auto-compact trigger, invokes `conversation:compact` advisor chain, registers `conversation_recall` |
 | `src/extensions/slash-commands.ts` | /compact, /context commands |
