@@ -120,11 +120,42 @@ function emptyProject(rootPath: string, dirName: string): ProjectData {
 
 // ── Persistence ───────────────────────────────────────────────────
 
+// ── Data cleanup ──────────────────────────────────────────────────
+// Historical data may contain fragmented tool names (e.g., "bash: Install deps"
+// before the title fix) or out-of-project file paths. Clean on load.
+
+function cleanProjectData(data: ProjectData, cwd: string): void {
+  // Merge fragmented tool entries — old data may have "bash: some description"
+  // as separate keys. Extract base tool name and merge into a single entry.
+  const mergedTools: Record<string, ToolStats> = {};
+  for (const [key, stats] of Object.entries(data.tools)) {
+    // Extract base tool name (before colon, if present)
+    const baseName = key.includes(":") ? key.split(":")[0].trim() : key;
+    if (!mergedTools[baseName]) {
+      mergedTools[baseName] = { name: baseName, invocations: 0, errors: 0 };
+    }
+    mergedTools[baseName].invocations += stats.invocations;
+    mergedTools[baseName].errors += stats.errors;
+  }
+  data.tools = mergedTools;
+
+  // Remove file entries outside the project root
+  const absCwd = cwd;
+  for (const key of Object.keys(data.files)) {
+    // Absolute paths that don't start with cwd are external
+    if (path.isAbsolute(key) && !key.startsWith(absCwd + path.sep) && key !== absCwd) {
+      delete data.files[key];
+    }
+  }
+}
+
 function loadProject(absolutePath: string): ProjectData | null {
   const file = projectFile(absolutePath);
   try {
     const raw = fs.readFileSync(file, "utf-8");
-    return JSON.parse(raw);
+    const data: ProjectData = JSON.parse(raw);
+    cleanProjectData(data, absolutePath);
+    return data;
   } catch {
     return null;
   }
@@ -361,11 +392,12 @@ export default function activate(ctx: ExtensionContext): void {
       // Extract file path from tool arguments
       const filePath = (args.path || args.file || args.directory || "") as string;
       if (filePath) {
-        // Make path relative to cwd
-        let relPath = filePath;
-        if (filePath.startsWith(cwd)) {
-          relPath = path.relative(cwd, filePath);
-        }
+        // Skip files outside the project root — they don't carry
+        // project-specific signal and pollute the data.
+        const absPath = path.resolve(filePath);
+        if (!absPath.startsWith(cwd + path.sep) && absPath !== cwd) return;
+
+        const relPath = path.relative(cwd, absPath);
 
         // Ensure file stats exist
         if (!project.files[relPath]) {
