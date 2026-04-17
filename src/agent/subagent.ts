@@ -37,6 +37,25 @@ export interface SubagentOptions {
   signal?: AbortSignal;
   /** Max tool loop iterations (default 20). */
   maxIterations?: number;
+  /**
+   * Ambient context rebuilt per iteration, same shape the parent's
+   * streamResponse uses. If provided, the subagent sees budget,
+   * metacognitive signals, in-flight siblings, etc.
+   */
+  dynamicContext?: string;
+  /**
+   * Per-subagent token budget. When total (prompt+completion) tokens
+   * exceed this, the subagent terminates gracefully on the next
+   * iteration. The parent's daily budget still counts these tokens
+   * via onUsage; this is an additional per-call cap.
+   */
+  budgetTokens?: number;
+  /**
+   * Invoked after every streamed LLM response with its usage totals.
+   * The parent uses this to forward to its event bus so global budget
+   * tracking stays accurate.
+   */
+  onUsage?: (usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }) => void;
 }
 
 /**
@@ -53,6 +72,9 @@ export async function runSubagent(opts: SubagentOptions): Promise<string> {
     bus,
     signal,
     maxIterations = 20,
+    dynamicContext,
+    budgetTokens,
+    onUsage,
   } = opts;
 
   const toolMap = new Map(tools.map(t => [t.name, t]));
@@ -70,13 +92,24 @@ export async function runSubagent(opts: SubagentOptions): Promise<string> {
 
   let fullResponseText = "";
   let iterations = 0;
+  let tokensConsumed = 0;
+  let budgetExhausted = false;
 
   while (iterations++ < maxIterations) {
     if (signal?.aborted) break;
+    if (budgetTokens != null && tokensConsumed >= budgetTokens) {
+      budgetExhausted = true;
+      break;
+    }
 
     // Stream LLM response
-    const { text, toolCalls, assistantContent, assistantToolCalls } =
-      await streamOnce(llmClient, systemPrompt, conversation, apiTools, model, signal);
+    const { text, toolCalls, assistantContent, assistantToolCalls, usage } =
+      await streamOnce(llmClient, systemPrompt, conversation, apiTools, model, signal, dynamicContext);
+
+    if (usage) {
+      tokensConsumed += usage.total_tokens || 0;
+      onUsage?.(usage);
+    }
 
     fullResponseText += text;
 
@@ -138,6 +171,11 @@ export async function runSubagent(opts: SubagentOptions): Promise<string> {
     }
   }
 
+  if (budgetExhausted) {
+    const note = `\n\n[Subagent terminated: token budget (${budgetTokens}) exhausted after ${tokensConsumed} tokens. Returning partial progress.]`;
+    return fullResponseText + note;
+  }
+
   return fullResponseText;
 }
 
@@ -149,20 +187,28 @@ async function streamOnce(
   apiTools: any[],
   model: string | undefined,
   signal: AbortSignal | undefined,
+  dynamicContext?: string,
 ): Promise<{
   text: string;
   toolCalls: PendingToolCall[];
   assistantContent: string | null;
   assistantToolCalls: { id: string; function: { name: string; arguments: string } }[] | undefined;
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
 }> {
   let text = "";
   const pendingToolCalls: PendingToolCall[] = [];
+  let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
+
+  const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+    { role: "system", content: systemPrompt },
+  ];
+  if (dynamicContext) {
+    messages.push({ role: "user", content: `<context>\n${dynamicContext}\n</context>` });
+    messages.push({ role: "assistant", content: "Understood." });
+  }
 
   const stream = await llmClient.stream({
-    messages: [
-      { role: "system", content: systemPrompt },
-      ...conversation.getMessages(),
-    ],
+    messages: [...messages, ...conversation.getMessages()],
     tools: apiTools.length > 0 ? apiTools : undefined,
     model,
     signal,
@@ -170,6 +216,15 @@ async function streamOnce(
 
   for await (const chunk of stream) {
     if (signal?.aborted) break;
+
+    if ((chunk as any).usage) {
+      const u = (chunk as any).usage;
+      usage = {
+        prompt_tokens: u.prompt_tokens ?? 0,
+        completion_tokens: u.completion_tokens ?? 0,
+        total_tokens: u.total_tokens ?? 0,
+      };
+    }
 
     const choice = chunk.choices[0];
     if (!choice) continue;
@@ -196,5 +251,5 @@ async function streamOnce(
     ? pendingToolCalls.map(tc => ({ id: tc.id, function: { name: tc.name, arguments: tc.argumentsJson } }))
     : undefined;
 
-  return { text, toolCalls: pendingToolCalls, assistantContent: text || null, assistantToolCalls };
+  return { text, toolCalls: pendingToolCalls, assistantContent: text || null, assistantToolCalls, usage };
 }

@@ -74,6 +74,14 @@ function createScopedContext(ctx: ExtensionContext, extensionName: string): { sc
     cleanups.push(() => bus.emit("agent:unregister-tool", { name: tool.name }));
   };
 
+  // Track slash command registrations — without this, reloading an
+  // extension stacks its commands (old `/status` + new `/status`) in
+  // the slash-commands registry.
+  const scopedRegisterCommand: typeof ctx.registerCommand = (name, description, handler) => {
+    ctx.registerCommand(name, description, handler);
+    cleanups.push(() => bus.emit("command:unregister", { name }));
+  };
+
   const scoped: ExtensionContext = {
     ...ctx,
     bus: scopedBus,
@@ -84,6 +92,7 @@ function createScopedContext(ctx: ExtensionContext, extensionName: string): { sc
     removeSkill: ctx.removeSkill,
     registerTool: scopedRegisterTool,
     unregisterTool: ctx.unregisterTool,
+    registerCommand: scopedRegisterCommand,
   };
 
   const dispose = () => {

@@ -27,7 +27,7 @@ import { ToolRegistry } from "./tool-registry.js";
 import { ConversationState, type CompactResult } from "./conversation-state.js";
 import { HistoryFile } from "./history-file.js";
 import { nucleate, formatNuclearLine, isReadOnly, type NuclearEntry } from "./nuclear-form.js";
-import { STATIC_SYSTEM_PROMPT, buildDynamicContext, formatSkillsBlock, loadGlobalAgentsMd } from "./system-prompt.js";
+import { STATIC_SYSTEM_PROMPT, buildDynamicContext, buildStaticByCwd, formatSkillsBlock, loadGlobalAgentsMd } from "./system-prompt.js";
 import type { Compositor } from "../utils/compositor.js";
 import { createToolUI } from "../utils/tool-interactive.js";
 import { TokenBudget, RESPONSE_RESERVE, DEFAULT_CONTEXT_WINDOW } from "./token-budget.js";
@@ -169,6 +169,17 @@ export class AgentLoop implements AgentBackend {
     onCtor("agent:remove-instruction", ({ name }) => this.removeInstruction(name));
     onCtor("agent:register-skill", ({ name, description, filePath, extensionName }) => this.registerSkill(name, description, filePath, extensionName));
     onCtor("agent:remove-skill", ({ name }) => this.removeSkill(name));
+    // Provider registration from user extensions (e.g. openrouter.ts) fires
+    // during extension activation, which happens before wire(). Subscribe
+    // here in the ctor so late-registered modes aren't dropped.
+    onCtor("config:add-modes", ({ modes: extra }) => {
+      const providers = new Set(extra.map((m) => m.provider).filter(Boolean));
+      this.modes = [
+        ...this.modes.filter((m) => !m.provider || !providers.has(m.provider)),
+        ...extra,
+      ];
+      this.bus.emit("config:changed", {});
+    });
     const getToolsPipe = () => ({ tools: this.getTools() });
     this.bus.onPipe("agent:get-tools", getToolsPipe);
     this.ctorPipeListeners.push({ event: "agent:get-tools", fn: getToolsPipe });
@@ -248,15 +259,6 @@ export class AgentLoop implements AgentBackend {
         this.llmClient.model = m.model;
       }
       this.tokenBudget.update(m.contextWindow, this.toolRegistry.all().length);
-      this.bus.emit("config:changed", {});
-    });
-    on("config:add-modes", ({ modes: extra }) => {
-      // Remove any existing modes for the same provider, then append
-      const providers = new Set(extra.map((m) => m.provider).filter(Boolean));
-      this.modes = [
-        ...this.modes.filter((m) => !m.provider || !providers.has(m.provider)),
-        ...extra,
-      ];
       this.bus.emit("config:changed", {});
     });
     on("agent:reset-session", () => {
@@ -769,6 +771,13 @@ export class AgentLoop implements AgentBackend {
       const skillsBlock = formatSkillsBlock(globalSkills);
       if (skillsBlock) parts.push(skillsBlock);
 
+      // Project conventions + project skills — stable within a cwd.
+      // Placed here so they enter the provider's prompt cache with the
+      // system prompt, and only re-materialize when cwd changes invalidate
+      // cachedSystemPrompt in executeLoop.
+      const projectStatic = buildStaticByCwd(this.contextManager.getCwd());
+      if (projectStatic) parts.push(projectStatic);
+
       // Extension sections (tools, skills, instructions grouped by extension)
       const extensionSections = this.buildExtensionSections();
       if (extensionSections.length > 0) {
@@ -843,10 +852,16 @@ export class AgentLoop implements AgentBackend {
       byFile: [...this.lastErrorByFile.entries()].map(([file, error]) => ({ file, error })),
     }));
 
-    h.define("agent:get-compaction-state", () => ({
-      count: this.compactionCount,
-      autoCompactThreshold: getSettings().autoCompactThreshold ?? 0.5,
-    }));
+    h.define("agent:get-compaction-state", () => {
+      const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+      const ratio = getSettings().autoCompactThreshold ?? 0.5;
+      return {
+        count: this.compactionCount,
+        nuclearEntries: this.conversation.getNuclearEntryCount(),
+        autoCompactThreshold: ratio,
+        autoCompactThresholdTokens: Math.floor((contextWindow - RESPONSE_RESERVE) * ratio),
+      };
+    });
 
     h.define("agent:get-self", () => this);
 
@@ -1085,6 +1100,7 @@ export class AgentLoop implements AgentBackend {
       if (signal.aborted && signal.reason !== "silent") {
         this.bus.emit("agent:cancelled", {});
       } else if (!signal.aborted) {
+        if (e instanceof Error) console.error("[agent-sh] query failed:\n" + e.stack);
         const msg = this.formatError(e);
         this.bus.emit("agent:error", { message: msg });
       }
@@ -1112,13 +1128,14 @@ export class AgentLoop implements AgentBackend {
   private async executeLoop(signal: AbortSignal): Promise<string> {
     let fullResponseText = "";
 
-    // Dynamic context is constant within a single agent query — no new shell
-    // commands arrive between tool-call iterations, and the context snapshot
-    // is frozen at query start. Build once.
-    const dynamicContext = this.handlers.call("dynamic-context:build");
-    // System prompt is also static, but compaction may invalidate it — cache
-    // with explicit invalidation rather than rebuilding every iteration.
+    // System prompt carries things stable within a turn: static identity,
+    // global agent rules, project conventions, project skills. Invalidated
+    // only by compaction (context shape changed) or cwd change (project
+    // conventions/skills changed). Dynamic context rebuilds every iteration
+    // so live signals (budget, in-flight subagents, metacognitive warnings)
+    // are fresh.
     let cachedSystemPrompt: string | undefined;
+    let lastCwd = this.contextManager.getCwd();
 
     while (!signal.aborted) {
       // Auto-compact when total context approaches the window limit.
@@ -1129,11 +1146,17 @@ export class AgentLoop implements AgentBackend {
       );
       if (totalEstimate > threshold) {
         this.compactWithHooks(threshold);
-        // Compaction mutates conversation state, so invalidate the system prompt cache.
         cachedSystemPrompt = undefined;
       }
 
+      const currentCwd = this.contextManager.getCwd();
+      if (currentCwd !== lastCwd) {
+        cachedSystemPrompt = undefined;
+        lastCwd = currentCwd;
+      }
+
       const systemPrompt = cachedSystemPrompt ?? (cachedSystemPrompt = this.handlers.call("system-prompt:build") as string);
+      const dynamicContext = this.handlers.call("dynamic-context:build") as string;
 
       // Stream LLM response with retry
       const result = await this.streamWithRetry(systemPrompt, dynamicContext, signal);

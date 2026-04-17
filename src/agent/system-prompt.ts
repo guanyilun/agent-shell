@@ -144,6 +144,36 @@ export interface TokenStatus {
   contextWindow: number;
 }
 
+/**
+ * CWD-scoped static context: project conventions (CLAUDE.md / AGENT.md)
+ * and discovered skills. Stable for a given cwd — callers should cache
+ * on cwd identity rather than rebuilding per LLM iteration.
+ */
+export function buildStaticByCwd(cwd: string): string {
+  const sections: string[] = [];
+
+  const conventions = loadConventionFiles(cwd);
+  if (conventions.length > 0) {
+    sections.push("# Project Conventions\n\n" + conventions.join("\n\n"));
+  }
+
+  const projectSkills = discoverProjectSkills(cwd);
+  const skillsBlock = formatSkillsBlock(projectSkills);
+  if (skillsBlock) {
+    sections.push(skillsBlock);
+  }
+
+  return sections.join("\n\n");
+}
+
+/**
+ * Per-iteration dynamic context: shell state, date, working directory,
+ * token usage. Rebuild every LLM call. Extension advisors add more
+ * sections (budget, subagents, metacognitive signals, etc.) on top.
+ *
+ * Each section is wrapped in a named XML tag so the LLM can treat them
+ * as distinct world-state elements rather than one concatenated blob.
+ */
 export function buildDynamicContext(
   contextManager: ContextManager,
   shellBudgetTokens?: number,
@@ -151,35 +181,23 @@ export function buildDynamicContext(
 ): string {
   const sections: string[] = [];
 
-  // Project conventions (CLAUDE.md / AGENT.md)
-  const conventions = loadConventionFiles(contextManager.getCwd());
-  if (conventions.length > 0) {
-    sections.push("# Project Conventions\n\n" + conventions.join("\n\n"));
-  }
-
-  // Project-level skills (change with cwd — not cacheable)
-  const projectSkills = discoverProjectSkills(contextManager.getCwd());
-  const skillsBlock = formatSkillsBlock(projectSkills);
-  if (skillsBlock) {
-    sections.push(skillsBlock);
-  }
-
-  // Shell context — pass token budget converted to bytes (~4 chars/token)
   const shellBudgetBytes = shellBudgetTokens != null ? shellBudgetTokens * 4 : undefined;
   const shellContext = contextManager.getContext(shellBudgetBytes);
   if (shellContext) {
-    sections.push(shellContext);
+    sections.push(`<shell>\n${shellContext}\n</shell>`);
   }
 
-  // Metadata + token awareness
-  let metadata = `Current date: ${new Date().toISOString().split("T")[0]}\nWorking directory: ${contextManager.getCwd()}`;
+  const envLines = [
+    `Current date: ${new Date().toISOString().split("T")[0]}`,
+    `Working directory: ${contextManager.getCwd()}`,
+  ];
   if (tokenStatus) {
     const usedK = (tokenStatus.promptTokens / 1000).toFixed(1);
     const maxK = (tokenStatus.contextWindow / 1000).toFixed(0);
     const pct = Math.min(100, Math.round((tokenStatus.promptTokens / tokenStatus.contextWindow) * 100));
-    metadata += `\nToken usage: ${usedK}k/${maxK}k (${pct}%)`;
+    envLines.push(`Token usage: ${usedK}k/${maxK}k (${pct}%)`);
   }
-  sections.push(metadata);
+  sections.push(`<environment>\n${envLines.join("\n")}\n</environment>`);
 
   return sections.join("\n\n");
 }

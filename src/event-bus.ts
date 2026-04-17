@@ -159,6 +159,7 @@ export interface ShellEvents {
     description: string;
     handler: (args: string) => Promise<void> | void;
   };
+  "command:unregister": { name: string };
 
   // Slash command execution
   "command:execute": {

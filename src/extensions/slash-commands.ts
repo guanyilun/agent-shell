@@ -130,10 +130,21 @@ export default function activate(ctx: ExtensionContext): void {
     },
   });
 
+  // Handler form so extensions can trigger reload programmatically
+  // (e.g. an ash-callable reload_extensions tool in superash).
+  ctx.define("extensions:reload", async () => {
+    return await reloadExtensions(ctx);
+  });
+
   // ── Extension registration ────────────────────────────────────
 
   bus.on("command:register", (cmd) => {
     register(cmd);
+  });
+
+  bus.on("command:unregister", ({ name }) => {
+    const key = name.startsWith("/") ? name : `/${name}`;
+    commands.delete(key);
   });
 
   // ── Skill commands (/skill:<name>) ────────────────────────────
