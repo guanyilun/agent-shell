@@ -117,7 +117,7 @@ export function renderToolCall(
     if (tool.command) {
       detail = `$ ${tool.command}`;
     } else if (tool.locations && tool.locations.length > 0) {
-      const loc = tool.locations[0]!;
+      const loc = tool.locations.find((l) => l?.path) ?? tool.locations[0]!;
       const lineInfo = loc.line ? `:${loc.line}` : "";
       detail = `${shortenPath(loc.path, cwd)}${lineInfo}`;
     } else if (tool.rawInput) {
@@ -294,7 +294,8 @@ export function renderSpinnerLine(
 /**
  * Shorten an absolute path to a relative or tilde-prefixed form.
  */
-function shortenPath(p: string, cwd: string): string {
+function shortenPath(p: string | undefined | null, cwd: string): string {
+  if (!p || typeof p !== "string") return "";
   if (p.startsWith(cwd + "/")) return p.slice(cwd.length + 1);
   if (p.startsWith(cwd)) return p.slice(cwd.length) || ".";
   const home = process.env.HOME;

@@ -961,6 +961,19 @@ export class AgentLoop implements AgentBackend {
       batchTotal?: number;
     }) => {
       const { name, id, args, tool } = ctx;
+
+      // Validate required input fields before display/permission/execute.
+      // Some models emit wrong arg names (e.g. `file_path` instead of `path`),
+      // and downstream helpers assume required strings are present.
+      const schema = tool.input_schema as { required?: unknown; properties?: Record<string, { type?: string }> } | undefined;
+      const required = Array.isArray(schema?.required) ? schema!.required as string[] : [];
+      const missing = required.filter((k) => args[k] === undefined || args[k] === null);
+      if (missing.length > 0) {
+        const msg = `Missing required argument(s): ${missing.join(", ")}. Expected: ${required.join(", ")}. Received: ${Object.keys(args).join(", ") || "(none)"}`;
+        this.bus.emit("agent:tool-call", { tool: name, args });
+        return { content: msg, exitCode: 1, isError: true };
+      }
+
       const display = tool.getDisplayInfo?.(args) ?? { kind: "execute" as const };
       let diffShown = false;
 
