@@ -46,20 +46,19 @@ export class HistoryFile {
    * Read the most recent N entries from the history file, filtered.
    * Read-only tool calls (read_file, grep, glob, ls) are excluded so
    * the returned entries are all meaningful conversation turns.
+   *
+   * Optimization: reads the file as a buffer and extracts only the last
+   * ~3×maxEntries lines from the end, avoiding full split of large files.
    */
   async readRecent(maxEntries?: number): Promise<NuclearEntry[]> {
     maxEntries ??= getSettings().historyStartupEntries;
-    let content: string;
-    try {
-      content = await fs.readFile(this.filePath, "utf-8");
-    } catch {
-      return [];
-    }
-    const lines = content.trim().split("\n").filter(Boolean);
-    // Read more than needed so we still get maxEntries after filtering
-    const oversample = lines.slice(-(maxEntries * 3));
+    const targetLines = maxEntries * 3; // oversample to account for filtered read-only entries
+
+    const tailLines = await this.readTailLines(targetLines + 10); // +10 safety margin
+    if (tailLines.length === 0) return [];
+
     const entries: NuclearEntry[] = [];
-    for (const line of oversample) {
+    for (const line of tailLines) {
       const entry = deserializeEntry(line);
       if (entry && !isReadOnly(entry)) entries.push(entry);
     }
@@ -68,6 +67,8 @@ export class HistoryFile {
 
   /**
    * Search history entries by regex/keyword.
+   * Scans from the end of the file (most recent first) for better UX,
+   * and caps the scan to avoid loading huge files entirely.
    */
   async search(query: string): Promise<{ entry: NuclearEntry; line: string }[]> {
     if (!query.trim()) return [];
@@ -83,15 +84,15 @@ export class HistoryFile {
       regex = new RegExp(lookaheads, "i");
     }
 
-    let content: string;
-    try {
-      content = await fs.readFile(this.filePath, "utf-8");
-    } catch {
-      return [];
-    }
+    // Scan up to 2000 recent lines — sufficient for interactive search
+    // while avoiding full load of 100MB history files
+    const lines = await this.readTailLines(2000);
+    if (lines.length === 0) return [];
 
     const results: { entry: NuclearEntry; line: string }[] = [];
-    for (const line of content.trim().split("\n")) {
+    // Scan in reverse (most recent first) for better result ordering
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]!;
       const entry = deserializeEntry(line);
       if (!entry || isReadOnly(entry)) continue;
       // Search both the summary and the body — the body can contain up to
@@ -106,16 +107,16 @@ export class HistoryFile {
 
   /**
    * Find a single entry by sequence number. Returns null if not found.
-   * Searches from the end of the file (most recent first).
+   * Uses tail-reading to avoid loading huge files.
+   *
+   * Strategy: seq numbers are monotonically increasing, so a given seq
+   * will appear near the end of the file. Read the last 5000 lines and
+   * scan from the end (most recent first).
    */
   async findBySeq(seq: number): Promise<NuclearEntry | null> {
-    let content: string;
-    try {
-      content = await fs.readFile(this.filePath, "utf-8");
-    } catch {
-      return null;
-    }
-    const lines = content.trim().split("\n").filter(Boolean);
+    const lines = await this.readTailLines(5000);
+    if (lines.length === 0) return null;
+
     for (let i = lines.length - 1; i >= 0; i--) {
       const entry = deserializeEntry(lines[i]!);
       if (entry && entry.seq === seq) return entry;
@@ -132,6 +133,34 @@ export class HistoryFile {
       return stat.size;
     } catch {
       return 0;
+    }
+  }
+
+  /**
+   * Read the last N lines from the history file efficiently.
+   * Reads from the end of the file to avoid loading the entire content.
+   */
+  private async readTailLines(maxLines: number): Promise<string[]> {
+    try {
+      const { size: fileSize } = await fs.stat(this.filePath);
+      if (fileSize === 0) return [];
+      // Estimate average line length as 200 bytes; read 2× estimate for safety
+      const estimateBytes = Math.min(fileSize, maxLines * 400);
+      const start = Math.max(0, fileSize - estimateBytes);
+      const handle = await fs.open(this.filePath, "r");
+      try {
+        const buf = Buffer.alloc(estimateBytes);
+        const { bytesRead } = await handle.read(buf, 0, estimateBytes, start);
+        const content = buf.toString("utf-8", 0, bytesRead);
+        // If start > 0, the first "line" is likely a partial line — discard it
+        const lines = content.split("\n").filter(Boolean);
+        if (start > 0 && lines.length > 0) lines.shift();
+        return lines.slice(-maxLines);
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      return [];
     }
   }
 
