@@ -3,3 +3,8 @@ dist/
 *.tsbuildinfo
 *.org
 package-lock.json
+.DS_Store
+
+# Extension experiments (tracked independently)
+examples/extensions/ember/
+examples/extensions/haoai-backend/

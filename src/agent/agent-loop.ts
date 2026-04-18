@@ -918,7 +918,6 @@ export class AgentLoop implements AgentBackend {
       const promptTokens = this.conversation.estimatePromptTokens();
       return buildDynamicContext(
         this.contextManager,
-        this.tokenBudget.shellBudgetTokens,
         { promptTokens, contextWindow },
       );
     });

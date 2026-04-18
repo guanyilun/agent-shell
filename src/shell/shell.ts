@@ -261,7 +261,10 @@ export class Shell implements InputContext {
     // Clear any pending echoSkip — we explicitly want to see the prompt output.
     // A stale echoSkip (e.g. from handleProcessingDone re-entering a mode) would
     // swallow the ZLE redraw or shell prompt, making the terminal appear frozen.
+    // Also unpause stdout so the redrawn prompt is visible (it may have been
+    // kept paused after handleProcessingDone re-entered a mode).
     this.echoSkip = false;
+    this.paused = false;
     const result = this.bus.emitPipe("shell:redraw-prompt", {
       cwd: this.outputParser.getCwd(),
       handled: false,
@@ -354,12 +357,12 @@ export class Shell implements InputContext {
           this.echoSkip = true;
         }
       } else {
-        // Re-entered a mode via handleProcessingDone — keep stdout paused
-        // briefly so any stale PTY data (e.g. shell prompt from a tool exec)
-        // doesn't overwrite the mode prompt. Set echoSkip to discard the
-        // first line of PTY output once we unpause.
-        this.echoSkip = true;
-        this.paused = false;
+        // Re-entered a mode via handleProcessingDone. Keep stdout paused
+        // so any stale PTY data (e.g. shell prompt from a tool exec)
+        // doesn't overwrite the mode prompt. It will be unpaused when the
+        // user exits the mode (exitMode → redrawPrompt unpasuses stdout).
+        // Don't set echoSkip since no \n was sent to the PTY — a stale
+        // echoSkip would swallow or corrupt subsequent PTY output.
       }
     });
 

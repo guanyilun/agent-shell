@@ -50,6 +50,10 @@
       "types": "./dist/agent/subagent.d.ts",
       "default": "./dist/agent/subagent.js"
     },
+    "./agent/agent-loop": {
+      "types": "./dist/agent/agent-loop.d.ts",
+      "default": "./dist/agent/agent-loop.js"
+    },
     "./event-bus": {
       "types": "./dist/event-bus.d.ts",
       "default": "./dist/event-bus.js"

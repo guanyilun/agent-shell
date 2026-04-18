@@ -183,7 +183,7 @@ export function buildDynamicContext(
   );
 
   // Shell context
-  const shellContext = contextManager.buildShellContext();
+  const shellContext = contextManager.getContext();
   if (shellContext) {
     sections.push(shellContext);
   }

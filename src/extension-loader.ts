@@ -284,8 +284,14 @@ async function resolveSpecifier(specifier: string): Promise<string> {
   } else if (path.isAbsolute(specifier)) {
     resolved = specifier;
   } else {
-    // Bare specifier — npm package
-    return specifier;
+    // Check if it looks like a file path (contains /) vs bare npm package name
+    if (specifier.includes("/")) {
+      // Treat as relative path from cwd
+      resolved = path.resolve(process.cwd(), specifier);
+    } else {
+      // Bare specifier — npm package
+      return specifier;
+    }
   }
 
   // If it's a directory, find the index file
