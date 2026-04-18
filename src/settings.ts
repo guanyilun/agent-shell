@@ -125,7 +125,7 @@ const DEFAULTS: Required<Settings> = {
   extensions: [],
   historySize: 500,
   providers: {},
-  defaultProvider: undefined as any,
+  defaultProvider: undefined as unknown as string,
   defaultBackend: "ash",
   toolMode: "api" as "api" | "deferred" | "deferred-lookup" | "inline",
   contextWindowSize: 20,

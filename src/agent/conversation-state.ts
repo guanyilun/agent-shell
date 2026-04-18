@@ -329,10 +329,13 @@ export class ConversationState {
 
     const rebuilt: ChatCompletionMessageParam[] = [];
     let insertedNuclearBlock = false;
+    this.nuclearBlockIdx = -1; // reset — rebuilt is a new array
     for (let i = 0; i < turns.length; i++) {
       if (evictedIndices.has(i)) {
         if (!insertedNuclearBlock) {
-          rebuilt.push(this.buildNuclearBlock());
+          const block = this.buildNuclearBlock();
+          this.nuclearBlockIdx = rebuilt.length;
+          rebuilt.push(block);
           insertedNuclearBlock = true;
         }
       } else if (slimmedIndices.has(i)) {
@@ -488,13 +491,26 @@ export class ConversationState {
     };
   }
 
+  /** Index of the nuclear block in messages[], or -1 if not present. */
+  private nuclearBlockIdx = -1;
+
   private updateNuclearBlockInMessages(messages: ChatCompletionMessageParam[]): void {
     if (this.nuclearEntries.length === 0) return;
     const marker = "[Conversation history — use conversation_recall";
+    const newBlock = this.buildNuclearBlock();
+
+    // Fast path: if we know the index, update in place
+    if (this.nuclearBlockIdx >= 0 && this.nuclearBlockIdx < messages.length) {
+      messages[this.nuclearBlockIdx] = newBlock;
+      return;
+    }
+
+    // Slow path: scan for the marker (only on first compaction)
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i]!;
       if (msg.role === "user" && typeof msg.content === "string" && msg.content.startsWith(marker)) {
-        messages[i] = this.buildNuclearBlock();
+        this.nuclearBlockIdx = i;
+        messages[i] = newBlock;
         return;
       }
     }
@@ -504,7 +520,8 @@ export class ConversationState {
         if (messages[i]!.role === "user") { insertIdx = i; break; }
         insertIdx = i + 1;
       }
-      messages.splice(insertIdx, 0, this.buildNuclearBlock());
+      messages.splice(insertIdx, 0, newBlock);
+      this.nuclearBlockIdx = insertIdx;
     }
   }
 
@@ -575,7 +592,9 @@ export class ConversationState {
       if (msg.role === "tool") {
         hasToolResult = true;
         const content = typeof msg.content === "string" ? msg.content : "";
-        if (content.startsWith("Error:") || content.includes("error")) hasError = true;
+        if (content.startsWith("Error:")) {
+          hasError = true;
+        }
       }
       if (msg.role === "assistant" && "tool_calls" in msg && msg.tool_calls) {
         for (const tc of msg.tool_calls) {

@@ -133,11 +133,21 @@ function addUnique(target: Skill[], source: Skill[], seen: Set<string>): void {
   }
 }
 
+// ── Global skills cache ─────────────────────────────────────────
+// Global skills don't change within a session (based on ~/.agent-sh/skills/
+// and settings.skillPaths, both stable). Cache to avoid redundant filesystem
+// scans on every system-prompt:build.
+
+let _cachedGlobalSkills: Skill[] | null = null;
+
 /**
  * Discover global skills (stable across cwd changes).
- * Default: ~/.agents/skills/, plus any skillPaths from settings.
+ * Results are cached for the lifetime of the process.
+ * Call invalidateGlobalSkillsCache() after /reload to refresh.
  */
 export function discoverGlobalSkills(): Skill[] {
+  if (_cachedGlobalSkills) return _cachedGlobalSkills;
+
   const seen = new Set<string>();
   const skills: Skill[] = [];
 
@@ -148,7 +158,13 @@ export function discoverGlobalSkills(): Skill[] {
     addUnique(skills, scanDir(path.resolve(expandHome(p))), seen);
   }
 
+  _cachedGlobalSkills = skills;
   return skills;
+}
+
+/** Invalidate the global skills cache (e.g. after extension reload). */
+export function invalidateGlobalSkillsCache(): void {
+  _cachedGlobalSkills = null;
 }
 
 /**

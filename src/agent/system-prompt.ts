@@ -166,38 +166,40 @@ export function buildStaticByCwd(cwd: string): string {
 }
 
 /**
- * Per-iteration dynamic context: shell state, date, working directory,
- * token usage. Rebuild every LLM call. Extension advisors add more
- * sections (budget, subagents, metacognitive signals, etc.) on top.
- *
- * Each section is wrapped in a named XML tag so the LLM can treat them
- * as distinct world-state elements rather than one concatenated blob.
+ * Build the dynamic context for a query.
+ * Injects shell state, conventions, and skills as a user message.
  */
 export function buildDynamicContext(
   contextManager: ContextManager,
-  shellBudgetTokens?: number,
-  tokenStatus?: TokenStatus,
+  tokenStatus: TokenStatus,
 ): string {
   const sections: string[] = [];
 
-  // Shell context is no longer injected here — it flows into the conversation
-  // as incremental <shell-events> messages (see AgentLoop.injectShellDelta),
-  // so it benefits from the provider's prefix cache instead of being rebuilt
-  // and re-sent every turn. shellBudgetTokens is accepted but unused; kept
-  // for backward compatibility with callers.
-  void shellBudgetTokens;
+  // Token budget line
+  const { promptTokens, contextWindow } = tokenStatus;
+  const pct = contextWindow > 0 ? Math.round((promptTokens / contextWindow) * 100) : 0;
+  sections.push(
+    `Context: ${promptTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (${pct}%)`
+  );
 
-  const envLines = [
-    `Current date: ${new Date().toISOString().split("T")[0]}`,
-    `Working directory: ${contextManager.getCwd()}`,
-  ];
-  if (tokenStatus) {
-    const usedK = (tokenStatus.promptTokens / 1000).toFixed(1);
-    const maxK = (tokenStatus.contextWindow / 1000).toFixed(0);
-    const pct = Math.min(100, Math.round((tokenStatus.promptTokens / tokenStatus.contextWindow) * 100));
-    envLines.push(`Token usage: ${usedK}k/${maxK}k (${pct}%)`);
+  // Shell context
+  const shellContext = contextManager.buildShellContext();
+  if (shellContext) {
+    sections.push(shellContext);
   }
-  sections.push(`<environment>\n${envLines.join("\n")}\n</environment>`);
+
+  // Global skills
+  const globalSkills = discoverGlobalSkills();
+  const globalSkillsBlock = formatSkillsBlock(globalSkills);
+  if (globalSkillsBlock) {
+    sections.push(globalSkillsBlock);
+  }
+
+  // Global AGENTS.md
+  const agentsMd = loadGlobalAgentsMd();
+  if (agentsMd) {
+    sections.push("# Cross-Session Memory\n\n" + agentsMd);
+  }
 
   return sections.join("\n\n");
 }

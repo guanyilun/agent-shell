@@ -50,25 +50,23 @@ export function createLsTool(getCwd: () => string): ToolDefinition {
           withFileTypes: true,
         });
 
-        const lines: string[] = [];
-        for (const e of entries) {
-          const fullPath = path.join(absPath, e.name);
-          try {
-            const stat = await fs.stat(fullPath);
-            const size = e.isDirectory() ? "-" : formatSize(stat.size);
-            const mtime = stat.mtime.toISOString().slice(0, 16).replace("T", " ");
-            lines.push(
-              `${mtime}  ${size.padStart(8)}  ${e.isDirectory() ? e.name + "/" : e.name}`,
-            );
-          } catch {
-            lines.push(
-              `${"?".padStart(16)}  ${"?".padStart(8)}  ${e.isDirectory() ? e.name + "/" : e.name}`,
-            );
-          }
-        }
+        // Batch stat calls in parallel to avoid N+1 serial overhead
+        const items = await Promise.all(
+          entries.map(async (e) => {
+            const fullPath = path.join(absPath, e.name);
+            try {
+              const stat = await fs.stat(fullPath);
+              const size = e.isDirectory() ? "-" : formatSize(stat.size);
+              const mtime = stat.mtime.toISOString().slice(0, 16).replace("T", " ");
+              return `${mtime}  ${size.padStart(8)}  ${e.isDirectory() ? e.name + "/" : e.name}`;
+            } catch {
+              return `${"?".padStart(16)}  ${"?".padStart(8)}  ${e.isDirectory() ? e.name + "/" : e.name}`;
+            }
+          }),
+        );
 
         return {
-          content: lines.join("\n") || "(empty directory)",
+          content: items.join("\n") || "(empty directory)",
           exitCode: 0,
           isError: false,
         };
