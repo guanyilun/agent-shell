@@ -428,6 +428,10 @@ async function handleSessionNew(id: number | string, params: Record<string, unkn
       process.stderr.write(`Warning: ${err instanceof Error ? err.message : err}\n`);
     });
 
+    // Signal deferred-init listeners (agent-backend) that the provider
+    // registry is complete — they resolve their LLM config on this event.
+    core.bus.emit("core:extensions-loaded", {});
+
     core.activateBackend();
   }
 
