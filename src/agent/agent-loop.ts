@@ -571,8 +571,21 @@ export class AgentLoop implements AgentBackend {
 
   private isContextOverflow(e: unknown): boolean {
     if (!(e instanceof Error)) return false;
+    // Match the specific error codes providers use, or unambiguous phrases.
+    // Bare "token"/"context" match too broadly (auth errors, model-name
+    // mismatches, etc.) and caused infinite-no-op retry loops.
+    const code = (e as any).code;
+    if (code === "context_length_exceeded" || code === "string_above_max_length") return true;
     const msg = e.message.toLowerCase();
-    return msg.includes("context") || msg.includes("token") || msg.includes("too long");
+    return (
+      msg.includes("context length") ||
+      msg.includes("context window") ||
+      msg.includes("maximum context") ||
+      msg.includes("prompt is too long") ||
+      msg.includes("input is too long") ||
+      msg.includes("too many tokens") ||
+      msg.includes("reduce the length")
+    );
   }
 
   /** Check if an error is retryable (transient). */
@@ -1599,8 +1612,17 @@ export class AgentLoop implements AgentBackend {
           const contextWindow = this.currentMode.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
           const target = Math.floor((contextWindow - RESPONSE_RESERVE) * 0.6);
           const stats = this.compactWithHooks(target, 6);
-          const detail = stats ? ` ~${stats.before.toLocaleString()} → ~${stats.after.toLocaleString()} tokens` : "";
-          this.bus.emit("ui:info", { message: `(context overflow — compacted${detail}, retrying)` });
+          // If compaction freed nothing, retrying will hit the same error.
+          // Surface the real failure instead of looping until exhaustion.
+          if (!stats || stats.after >= stats.before) {
+            this.bus.emit("ui:info", {
+              message: "(context overflow — nothing to compact; aborting retries)",
+            });
+            throw e;
+          }
+          this.bus.emit("ui:info", {
+            message: `(context overflow — compacted ~${stats.before.toLocaleString()} → ~${stats.after.toLocaleString()} tokens, retrying)`,
+          });
           continue;
         }
 
