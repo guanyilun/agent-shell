@@ -12,6 +12,8 @@
  *   - `setText()`     — replace buffer content (clears paste attachments)
  */
 
+import { charWidth } from "./ansi.js";
+
 // ── Kitty protocol keycode → readable name ──────────────────────
 
 const KITTY_KEY_NAMES: Record<number, string> = {
@@ -85,7 +87,7 @@ export class LineEditor {
     return result;
   }
 
-  /** Cursor position mapped to display-text coordinates. */
+  /** Cursor position mapped to display-text character offset. */
   get displayCursor(): number {
     let pos = 0;
     for (let i = 0; i < this._buf.length && i < this.cursor; i++) {
@@ -99,6 +101,22 @@ export class LineEditor {
       }
     }
     return pos;
+  }
+
+  /** Cursor position as visible terminal-column width (accounts for CJK etc.). */
+  get displayCursorWidth(): number {
+    let width = 0;
+    for (let i = 0; i < this._buf.length && i < this.cursor; i++) {
+      const ch = this._buf[i]!;
+      const paste = this.pastes.get(ch.charCodeAt(0) - PUA_BASE);
+      if (paste) {
+        const n = paste.split("\n").length;
+        width += `[paste +${n} lines]`.length; // ASCII-only, 1 col each
+      } else {
+        width += charWidth(ch.codePointAt(0) ?? 0);
+      }
+    }
+    return width;
   }
 
   /** Number of logical positions in the buffer. */

@@ -15,7 +15,7 @@ export const RESET = "\x1b[0m";
  * Check if a Unicode code point is a wide character (CJK, fullwidth, emoji, etc.)
  * Returns 2 for wide chars, 1 for normal chars.
  */
-function charWidth(codePoint: number): number {
+export function charWidth(codePoint: number): number {
   // CJK Unified Ideographs
   if (codePoint >= 0x4e00 && codePoint <= 0x9fff) return 2;
   // CJK Unified Ideographs Extension A

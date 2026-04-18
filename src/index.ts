@@ -17,6 +17,13 @@ import type { AgentShellConfig } from "./types.js";
  */
 async function captureShellEnvAsync(shell: string): Promise<Record<string, string>> {
   return new Promise((resolve) => {
+    let settled = false;
+    const done = (result: Record<string, string>): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
     try {
       const shellName = path.basename(shell);
       const isZsh = shellName.includes("zsh");
@@ -35,8 +42,9 @@ async function captureShellEnvAsync(shell: string): Promise<Record<string, strin
       });
 
       child.on("close", (code) => {
+        clearTimeout(timer);
         if (code !== 0 || !output) {
-          resolve({});
+          done({});
           return;
         }
         const env: Record<string, string> = {};
@@ -44,19 +52,20 @@ async function captureShellEnvAsync(shell: string): Promise<Record<string, strin
           const eq = entry.indexOf("=");
           if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1);
         }
-        resolve(env);
+        done(env);
       });
 
       child.on("error", () => {
-        resolve({});
+        clearTimeout(timer);
+        done({});
       });
 
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         child.kill("SIGTERM");
-        resolve({});
+        done({});
       }, 5000);
     } catch {
-      resolve({});
+      done({});
     }
   });
 }

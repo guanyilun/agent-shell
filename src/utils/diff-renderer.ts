@@ -7,7 +7,7 @@
  */
 import { highlight } from "cli-highlight";
 import type { DiffResult, DiffHunk, DiffLine } from "./diff.js";
-import { visibleLen } from "./ansi.js";
+import { visibleLen, charWidth } from "./ansi.js";
 import { palette as p } from "./palette.js";
 import { wrapLine } from "./markdown.js";
 
@@ -622,7 +622,8 @@ function truncateText(text: string, maxWidth: number): string {
   if (visibleLen(text) <= maxWidth) return text;
   if (maxWidth <= 1) return "…";
 
-  // Walk through the string, tracking visible characters
+  // Walk through the string, tracking visible characters.
+  // Accounts for CJK double-width characters (width=2).
   let visible = 0;
   let i = 0;
   while (i < text.length && visible < maxWidth - 1) {
@@ -634,8 +635,11 @@ function truncateText(text: string, maxWidth: number): string {
         continue;
       }
     }
-    visible++;
-    i++;
+    const cp = text.codePointAt(i) ?? 0;
+    const cw = charWidth(cp);
+    if (visible + cw > maxWidth - 1) break; // not enough room for this char + "…"
+    visible += cw;
+    i += cp > 0xffff ? 2 : 1; // advance past surrogate pairs
   }
 
   return text.slice(0, i) + p.reset + "…";
