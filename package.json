@@ -1,6 +1,6 @@
 {
   "name": "agent-sh",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "A shell-first terminal where AI is one keystroke away",
   "type": "module",
   "main": "dist/core.js",
