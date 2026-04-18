@@ -1,5 +1,5 @@
 /**
- * Built-in terminal buffer extension.
+ * Terminal buffer extension.
  *
  * Registers two agent tools:
  *   - terminal_read: get the current screen contents + cursor position
