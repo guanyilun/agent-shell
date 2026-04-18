@@ -256,6 +256,18 @@ See [Extensions: Remote Sessions](extensions.md#remote-sessions) for the full AP
 
 Use the compositor directly only when you need fine-grained control — e.g. redirecting a single sub-stream like `"agent:diff"` without affecting the rest.
 
+## Observing writes (`compositor:write`)
+
+When the core creates the compositor with an `EventBus` attached, every surface write emits a `compositor:write` event:
+
+```typescript
+bus.on("compositor:write", ({ stream, text }) => {
+  // `stream` is the named stream (e.g. "agent", "agent:diff"), `text` is the raw write
+});
+```
+
+This lets an extension mirror or inspect rendered output without intercepting stdout. Used by e.g. a compositor-mirror extension that buffers recent agent output and exposes a `compositor_read` tool.
+
 ## Relationship to other systems
 
 | System | Role | Compositor interaction |

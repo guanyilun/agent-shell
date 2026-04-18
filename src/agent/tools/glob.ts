@@ -7,9 +7,11 @@ export function createGlobTool(getCwd: () => string): ToolDefinition {
   return {
     name: "glob",
     description:
-      "Find files by name pattern. Returns paths sorted by modification time (newest first). " +
+      "Use this when you know a FILENAME or PATH SHAPE (e.g. `**/*.ts`, `src/**/*.md`, `package.json`). " +
+      "Returns matching file paths sorted by modification time (newest first). " +
+      "This does NOT search file contents — use `grep` for that. " +
       "ALWAYS use this instead of find/ls via bash. " +
-      "Use glob to locate files, then read_file or grep to inspect contents.",
+      "Typical flow: `glob` to locate files, then `read_file` or `grep` to inspect contents.",
     input_schema: {
       type: "object",
       properties: {

@@ -101,8 +101,6 @@ cp examples/extensions/overlay-agent.ts ~/.agent-sh/extensions/
 agent-sh -e ./examples/extensions/overlay-agent.ts
 ```
 
-The agent can read the terminal screen and send keystrokes via the built-in `terminal_read` and `terminal_keys` tools, enabling it to operate inside interactive programs.
-
 While the agent is working, press **Ctrl+\\** or **Esc** to hide the overlay and continue using your program — the agent keeps running in the background and control returns automatically when it finishes. If the overlay is still visible when the agent finishes, it shows a follow-up prompt for multi-turn conversation.
 
 Requires `@xterm/headless` for the dimmed background compositing:

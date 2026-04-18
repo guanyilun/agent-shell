@@ -268,6 +268,54 @@ export default function activate(ctx: ExtensionContext): void {
   define("peer:context-search", (query: string) => contextManager.search(query));
   server.expose("peer:context-search");
 
+  // ── Inter-peer messaging ───────────────────────────────────
+
+  interface InboxEntry { from: string; text: string; at: number; }
+  const inbox: InboxEntry[] = [];
+  const INBOX_MAX = 100;
+
+  const pending: InboxEntry[] = [];
+
+  define("peer:message", (from: string, text: string) => {
+    if (typeof from !== "string" || typeof text !== "string") {
+      throw new Error("peer:message requires (from: string, text: string)");
+    }
+    const entry: InboxEntry = { from, text, at: Date.now() };
+    inbox.push(entry);
+    if (inbox.length > INBOX_MAX) inbox.splice(0, inbox.length - INBOX_MAX);
+    pending.push(entry);
+    bus.emit("peer:message-received", entry);
+    bus.emit("ui:info", { message: `[peer ${from}] ${text}` });
+    setTimeout(drainPending, 100);
+    return { ok: true };
+  });
+  server.expose("peer:message");
+
+  // Drain pending peer messages by injecting a synthetic user turn.
+  // Only one submission per processing cycle — wait for agent:processing-done
+  // before releasing the next batch.
+  let busy = false;
+
+  function drainPending(): void {
+    if (busy || pending.length === 0) return;
+    const batch = pending.splice(0, pending.length);
+    const lines = batch.map((e) => `[from peer ${e.from}] ${e.text}`);
+    const query = [
+      "You received message(s) from other peer(s) in the mesh:",
+      "",
+      ...lines,
+      "",
+      "Decide whether to reply (via `peer_send`), act on the request, or note and continue.",
+    ].join("\n");
+    busy = true;
+    bus.emit("agent:submit", { query });
+  }
+
+  bus.on("agent:processing-done", () => {
+    busy = false;
+    setTimeout(drainPending, 100);
+  });
+
   // ── Handler registry API (for other extensions) ────────────
 
   define("peer:discover", () => server.discover());
@@ -412,6 +460,71 @@ export default function activate(ctx: ExtensionContext): void {
     }),
   });
 
+  registerTool({
+    name: "peer_send",
+    description: "Send a text message to another running agent-sh peer. The peer will see it in their UI and on their next turn.",
+    input_schema: {
+      type: "object",
+      properties: {
+        peer_id: { type: "string", description: "The instance ID of the peer (from the peers tool)." },
+        text: { type: "string", description: "Message body." },
+      },
+      required: ["peer_id", "text"],
+    },
+    showOutput: false,
+    getDisplayInfo: () => ({ kind: "write" as const }),
+    formatCall: (args) => `peer ${args.peer_id}: "${String(args.text).slice(0, 40)}"`,
+
+    async execute(args) {
+      try {
+        await server.call(args.peer_id as string, "peer:message", ctx.instanceId, args.text as string);
+        return { content: `Sent to peer ${args.peer_id}.`, exitCode: 0, isError: false };
+      } catch (e) {
+        return {
+          content: `Failed to send: ${e instanceof Error ? e.message : String(e)}`,
+          exitCode: 1,
+          isError: true,
+        };
+      }
+    },
+
+    formatResult: (_args, result) => ({
+      summary: result.isError ? "failed" : "sent",
+    }),
+  });
+
+  registerTool({
+    name: "peer_inbox",
+    description: "Read recent messages received from other peers via peer_send.",
+    input_schema: {
+      type: "object",
+      properties: {
+        count: { type: "number", description: "Number of recent messages to return (default: 20)." },
+      },
+      required: [],
+    },
+    showOutput: false,
+    getDisplayInfo: () => ({ kind: "read" as const }),
+    formatCall: () => "reading inbox",
+
+    async execute(args) {
+      const n = (args.count as number) || 20;
+      const recent = inbox.slice(-n);
+      if (recent.length === 0) {
+        return { content: "(inbox empty)", exitCode: 0, isError: false };
+      }
+      const lines = recent.map((e) => {
+        const ago = Math.round((Date.now() - e.at) / 1000);
+        return `[${ago}s ago] ${e.from}: ${e.text}`;
+      });
+      return { content: lines.join("\n"), exitCode: 0, isError: false };
+    },
+
+    formatResult: (_args, result) => ({
+      summary: result.content === "(inbox empty)" ? "empty" : `${result.content.split("\n").length} msg`,
+    }),
+  });
+
   // ── Slash command ──────────────────────────────────────────
 
   registerCommand("peers", "List running agent-sh peer instances", () => {
@@ -435,6 +548,8 @@ export default function activate(ctx: ExtensionContext): void {
     "- `peer_terminal` to see what's on another terminal's screen",
     "- `peer_history` to see what commands they ran recently",
     "- `peer_search` to search their shell context by keyword",
+    "- `peer_send` to deliver a text message to another peer (appears in their UI)",
+    "- `peer_inbox` to read messages other peers have sent you",
     "When the user references 'the other terminal' or 'my other shell', use these tools.",
   ].join("\n"));
 

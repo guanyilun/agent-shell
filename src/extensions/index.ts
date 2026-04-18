@@ -19,7 +19,6 @@ export const BUILTIN_EXTENSIONS: Array<{
   { name: "file-autocomplete", load: () => import("./file-autocomplete.js").then(m => m.default) },
   { name: "shell-recall",     load: () => import("./shell-recall.js").then(m => m.default) },
   { name: "command-suggest",   load: () => import("./command-suggest.js").then(m => m.default) },
-  { name: "terminal-buffer",   load: () => import("./terminal-buffer.js").then(m => m.default) },
 ];
 
 /**

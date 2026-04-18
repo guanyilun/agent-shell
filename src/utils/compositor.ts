@@ -27,6 +27,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import type { EventBus } from "../event-bus.js";
+
 /**
  * A surface accepts rendered output.  Stdout is a surface.
  * A floating panel's content area is a surface.  A test buffer is a surface.
@@ -77,6 +79,11 @@ export class StdoutSurface implements RenderSurface {
 export class DefaultCompositor implements Compositor {
   private defaults = new Map<string, RenderSurface>();
   private overrides = new Map<string, RenderSurface[]>();
+  private readonly bus?: EventBus;
+
+  constructor(bus?: EventBus) {
+    this.bus = bus;
+  }
 
   surface(stream: string): RenderSurface {
     const stack = this.overrides.get(stream);
@@ -91,12 +98,13 @@ export class DefaultCompositor implements Compositor {
   }
 
   redirect(stream: string, target: RenderSurface): () => void {
+    const wrapped = this.wrap(stream, target);
     let stack = this.overrides.get(stream);
     if (!stack) {
       stack = [];
       this.overrides.set(stream, stack);
     }
-    stack.push(target);
+    stack.push(wrapped);
 
     let restored = false;
     return () => {
@@ -104,12 +112,29 @@ export class DefaultCompositor implements Compositor {
       restored = true;
       const s = this.overrides.get(stream);
       if (!s) return;
-      const idx = s.indexOf(target);
+      const idx = s.indexOf(wrapped);
       if (idx !== -1) s.splice(idx, 1);
     };
   }
 
   setDefault(stream: string, target: RenderSurface): void {
-    this.defaults.set(stream, target);
+    this.defaults.set(stream, this.wrap(stream, target));
+  }
+
+  /** Wrap a surface so writes emit `compositor:write` before delegating. */
+  private wrap(stream: string, target: RenderSurface): RenderSurface {
+    const bus = this.bus;
+    if (!bus) return target;
+    return {
+      write: (text: string) => {
+        try { bus.emit("compositor:write", { stream, text }); } catch {}
+        target.write(text);
+      },
+      writeLine: (line: string) => {
+        try { bus.emit("compositor:write", { stream, text: line + "\n" }); } catch {}
+        target.writeLine(line);
+      },
+      get columns() { return target.columns; },
+    };
   }
 }

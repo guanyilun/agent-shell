@@ -127,7 +127,7 @@ export function createCore(config: AgentShellConfig): AgentShellCore {
   });
 
   // ── Compositor ──────────────────────────────────────────────
-  const compositor = new DefaultCompositor();
+  const compositor = new DefaultCompositor(bus);
   const stdoutSurface = new StdoutSurface();
   compositor.setDefault("agent", stdoutSurface);
   compositor.setDefault("query", stdoutSurface);

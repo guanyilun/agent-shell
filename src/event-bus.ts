@@ -172,6 +172,9 @@ export interface ShellEvents {
   "ui:error": { message: string };
   "ui:suggestion": { text: string };
 
+  // Compositor surface writes (emitted by DefaultCompositor when bus provided)
+  "compositor:write": { stream: string; text: string };
+
   // Generic keypress forwarding (control chars not handled by input-handler)
   "input:keypress": { key: string };
 

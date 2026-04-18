@@ -5,6 +5,8 @@ export function createGrepTool(getCwd: () => string): ToolDefinition {
   return {
     name: "grep",
     description:
+      "Use this when you know something INSIDE the file (text, identifier, regex). " +
+      "To find files by filename alone, use `glob` instead. " +
       "Search file contents using ripgrep. ALWAYS use this instead of running grep/rg via bash. " +
       "Supports three output modes: " +
       "'files_with_matches' (default, returns file paths only — use this to find which files contain a pattern), " +
@@ -137,8 +139,17 @@ export function createGrepTool(getCwd: () => string): ToolDefinition {
       await done;
 
       if (session.exitCode === 1 && !session.output.trim()) {
+        // If the pattern looks like a filename (e.g. "SKILL.md", "package.json"),
+        // the agent probably meant to find files by name, not search inside them.
+        // Surface a redirect hint instead of a silent zero.
+        const looksLikeFilename =
+          /^[A-Za-z0-9_.\-*/]+\.[A-Za-z0-9]{1,6}$/.test(pattern) &&
+          !/[\\()\[\]|^$+{}]/.test(pattern);
+        const hint = looksLikeFilename
+          ? ` Hint: "${pattern}" looks like a filename. grep searches file *contents* — to find files by name, use the \`glob\` tool instead.`
+          : "";
         return {
-          content: "No matches found.",
+          content: `No matches found.${hint}`,
           exitCode: 0,
           isError: false,
         };

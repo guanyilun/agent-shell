@@ -184,8 +184,8 @@ Extensions can add tools that cross the shell↔agent boundary via `shell:exec-r
 | `ls` | List directory contents (with timestamps and sizes) | No | No |
 | `list_skills` | List available skills (name, description, path) | No | No |
 | `shell_recall` | Browse or search truncated shell context (extension: shell-recall) | No | No |
-| `terminal_read` | Read the current terminal screen (extension: terminal-buffer) | No | No |
-| `terminal_keys` | Send keystrokes to the user's live PTY (extension: terminal-buffer) | No | No |
+| `terminal_read` | Read the current terminal screen (example extension: `terminal-buffer`) | No | No |
+| `terminal_keys` | Send keystrokes to the user's live PTY (example extension: `terminal-buffer`) | No | No |
 
 **Common pattern**: all file-based tools resolve relative paths from the current working directory (`contextManager.getCwd()`).
 

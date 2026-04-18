@@ -10,11 +10,11 @@ Most AI terminal tools get this backwards: the LLM drives the experience and the
 agent-sh flips this. It's your shell first — full PTY, your rc config, your aliases, everything just works. But type `>` at the start of a line, and you're talking to an agent that has full context of what you've been doing.
 
 ```
-~ $ ls -la                          # real shell command
-~ $ cd ../tests && npm test          # real cd, env, aliases — all just work
-~ $ vim file.ts                      # opens vim in the same PTY
-~ $ > explain the last error          # agent investigates using its own tools
-~ $ > deploy to staging              # agent runs it in your live shell
+~ $ ls -la                       # real shell command
+~ $ cd ../tests && npm test      # real cd, env, aliases — all just work
+~ $ vim file.ts                  # opens vim in the same PTY
+~ $ > explain the last error     # agent investigates using its own tools
+~ $ > draft a commit message     # agent reads your diff and shell history
 ```
 
 ## Quick Start
@@ -47,10 +47,6 @@ Requires Node.js 18+.
 **Extensible by design.** The entire system is built on a typed event bus. Extensions can add custom input modes, content transforms (render LaTeX as images, Mermaid as diagrams), themes, slash commands, or replace the agent backend entirely. The built-in TUI renderer is itself just an extension.
 
 **Embeddable as a library.** The core is a headless kernel — `import { createCore } from "agent-sh"` to build WebSocket servers, REST APIs, Electron apps, or test harnesses. No terminal required.
-
-## Configuration
-
-Configure via `~/.agent-sh/settings.json`. See the [Usage Guide](docs/usage.md#configuration) for the full settings reference.
 
 ## Documentation
 
