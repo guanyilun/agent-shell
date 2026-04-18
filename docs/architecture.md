@@ -24,7 +24,6 @@ index.ts — interactive terminal frontend:
   │     file-autocomplete — @ file path completion
   │     shell-recall      — shell_recall terminal interception
   │     command-suggest   — fix suggestions on failed commands (fast-path LLM)
-  │     terminal-buffer   — terminal_read + terminal_keys tools
   │
   ├── Shared utilities:
   │     palette           — semantic color system (accent, success, warning, error, muted)
@@ -156,8 +155,7 @@ agent-sh/
 │       ├── agent-backend.ts  # LLM provider resolution + AgentLoop registration
 │       ├── tui-renderer.ts, slash-commands.ts
 │       ├── file-autocomplete.ts, shell-recall.ts
-│       ├── command-suggest.ts
-│       └── terminal-buffer.ts  # terminal_read + terminal_keys tools
+│       └── command-suggest.ts
 │
 ├── examples/                 # Example extensions and agent integrations
 │   └── extensions/

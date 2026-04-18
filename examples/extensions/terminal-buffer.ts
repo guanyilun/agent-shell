@@ -8,9 +8,13 @@
  * Together these let the agent operate inside interactive programs
  * (vim, htop, less, etc.) by reading the screen and typing keys.
  *
- * Requires: npm install @xterm/headless@5.5.0 @xterm/addon-serialize@0.13.0
+ * Requires xterm in the extension directory:
+ *   npm install @xterm/headless@5.5.0 @xterm/addon-serialize@0.13.0
+ *
+ * Core already loads xterm lazily (for floating-panel compositing), so
+ * installing these deps anywhere on the NODE_PATH is enough.
  */
-import type { ExtensionContext } from "../types.js";
+import type { ExtensionContext } from "agent-sh/types";
 
 /** Interpret C-style escape sequences (e.g. \r → CR, \x1b → ESC). */
 function interpretEscapes(str: string): string {

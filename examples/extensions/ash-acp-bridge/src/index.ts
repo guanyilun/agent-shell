@@ -411,7 +411,6 @@ async function handleSessionNew(id: number | string, params: Record<string, unkn
     const headlessDisabled = [
       "tui-renderer",
       "file-autocomplete",
-      "terminal-buffer",
       "overlay-agent",
       ...(settings.disabledBuiltins ?? []),
     ];
