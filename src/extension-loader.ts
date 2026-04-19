@@ -10,12 +10,30 @@ const TS_EXTS = [".ts", ".tsx", ".mts"];
 const SCRIPT_EXTS = [".js", ".mjs", ".ts", ".tsx", ".mts"];
 
 let tsRegistered = false;
+let tsxUnregister: (() => Promise<void>) | null = null;
 
-async function ensureTsSupport(): Promise<void> {
-  if (tsRegistered) return;
+/**
+ * Register tsx's ESM loader for .ts file support.
+ *
+ * Called before importing .ts extensions. The tsx loader uses Node's
+ * module.register() which creates a background thread with a MessageChannel.
+ * On reload, the old loader may become stale (the MessageChannel port can be
+ * GC'd or the loader thread can stop responding), so we unregister the old
+ * handle and re-register on each reload.
+ *
+ * Initial load: registers fresh.
+ * Reload: unregisters old handle, registers new one.
+ * Non-reload calls within the same load: no-op (tsRegistered guard).
+ */
+async function ensureTsSupport(force = false): Promise<void> {
+  if (tsRegistered && !force) return;
   try {
+    // Unregister previous loader if reloading
+    if (tsxUnregister) {
+      try { await tsxUnregister(); } catch { /* ignore stale handle */ }
+    }
     const { register } = await import("tsx/esm/api");
-    register();
+    tsxUnregister = register();
     tsRegistered = true;
   } catch {
     // tsx not available — TS extensions will fail with a clear error
@@ -198,7 +216,7 @@ async function loadSpecifiers(
       let importPath = await resolveSpecifier(specifier);
 
       if (TS_EXTS.some((ext) => importPath.endsWith(ext))) {
-        await ensureTsSupport();
+        await ensureTsSupport(bustCache);
       }
       // Append timestamp query to bust Node's module cache on reload
       if (bustCache) {
