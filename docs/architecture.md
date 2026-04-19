@@ -60,7 +60,7 @@ The shell and the agent are **separate worlds** by default. The PTY runs your re
 
 The connection between them is **context**: each query includes shell context (recent commands, output, cwd). The agent sees what you've been doing but can't touch your shell state.
 
-Extensions can cross this boundary using `shell:exec-request`. The core event bus makes this easy to wire up — an extension just registers a tool that emits the event and returns the result. We don't include a PTY tool as built-in because the right behavior depends on user preference (confirmation prompts? output capture? restricted commands?). See the `user_shell` example in `examples/extensions/` for a ready-made implementation.
+Extensions can cross this boundary using `shell:exec-request`. The core event bus makes this easy to wire up — an extension just registers a tool that emits the event and returns the result. We don't include a PTY tool as built-in because the right behavior depends on user preference (confirmation prompts? output capture? restricted commands?). See `examples/extensions/user-shell.ts` for a ready-made implementation.
 
 The pattern works like this:
 

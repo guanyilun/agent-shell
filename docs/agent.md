@@ -176,7 +176,7 @@ The agent registers core tools on startup, with additional tools contributed by 
 
 The primary tool for investigation and code execution. **`bash`** runs in an **isolated subprocess** (`/bin/bash -c`). The agent uses this for reading files, running tests, checking state, and executing commands. A `cd` here doesn't affect your shell. Output is captured and returned to the LLM.
 
-Extensions can add tools that cross the shell↔agent boundary via `shell:exec-request` — for example, running commands with lasting effects in the live PTY (`cd`, `export`, `source`). We don't include such a tool as built-in because the right behavior depends on user preference. See `examples/extensions/user_shell` for a ready-made implementation to start from.
+Extensions can add tools that cross the shell↔agent boundary via `shell:exec-request` — for example, running commands with lasting effects in the live PTY (`cd`, `export`, `source`). We don't include such a tool as built-in because the right behavior depends on user preference. See `examples/extensions/user-shell.ts` for a ready-made implementation to start from.
 
 ### All tools
 

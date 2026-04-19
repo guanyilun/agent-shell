@@ -306,7 +306,7 @@ cd ~/.agent-sh/extensions/claude-code-bridge && npm install
 **How it works:**
 
 1. **Registers as backend** via `agent:register-backend`
-2. **Creates a `user_shell` MCP tool** using the SDK's `tool()` + `createSdkMcpServer()`, wired to `bus.emitPipeAsync("shell:exec-request", ...)`. This gives Claude Code access to the live PTY.
+2. **Exposes two MCP tools** via `tool()` + `createSdkMcpServer()`: `terminal_read` (reads the current terminal screen from `ctx.terminalBuffer`, including cursor position and alt-screen state) and `terminal_keys` (writes keystrokes to the PTY via the `shell:pty-write` event). This lets Claude Code *observe and interact with* the user's live terminal — Claude Code uses its own built-in `Bash` tool for running isolated commands, so no `user_shell` is needed here.
 3. **On each `agent:submit`**, calls the SDK's `query()` with the user's prompt, a system prompt preset, and the MCP server attached
 4. **Iterates the SDK's async iterator** — maps `stream_event` (text/thinking deltas) and `assistant` messages (tool use blocks) to agent-sh events (`agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-started`)
 
@@ -335,7 +335,9 @@ cd ~/.agent-sh/extensions/pi-bridge && npm install
 Both bridges follow the same 5-step structure:
 
 1. **Register as backend** — emit `agent:register-backend` with `name`, `start()`, `kill()`
-2. **Create a `user_shell` tool** in the target SDK's format — wire it to `bus.emitPipeAsync("shell:exec-request", ...)` so the external agent can run commands in the live PTY
+2. **Give the external agent access to the user's PTY** — in the target SDK's tool format. Which tools you expose depends on what the external agent already has:
+   - If it has no shell tool of its own: register a `user_shell` tool that runs commands via `bus.emitPipeAsync("shell:exec-request", ...)` — this is what `pi-bridge` does.
+   - If it brings its own bash/exec tool (as Claude Code does): skip `user_shell` and instead register `terminal_read` + `terminal_keys` so the agent can observe and drive the live terminal — this is what `claude-code-bridge` does.
 3. **Listen for `agent:submit`** — forward the query to the external agent
 4. **Map the agent's events** to agent-sh bus events (response chunks, tool starts/completions, thinking, errors)
 5. **Handle cancellation and reset** — wire `agent:cancel-request` and `agent:reset-session`
