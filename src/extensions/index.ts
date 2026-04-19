@@ -17,7 +17,6 @@ export const BUILTIN_EXTENSIONS: Array<{
   { name: "tui-renderer",     load: () => import("./tui-renderer.js").then(m => m.default) },
   { name: "slash-commands",    load: () => import("./slash-commands.js").then(m => m.default) },
   { name: "file-autocomplete", load: () => import("./file-autocomplete.js").then(m => m.default) },
-  { name: "shell-recall",     load: () => import("./shell-recall.js").then(m => m.default) },
   { name: "command-suggest",   load: () => import("./command-suggest.js").then(m => m.default) },
 ];
 

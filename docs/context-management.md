@@ -77,18 +77,21 @@ Shell context passes through three stages:
 2. **Per-exchange truncation** — long outputs get head+tail (configurable thresholds)
 3. **Budget enforcement** — oldest outputs stripped if over token budget
 
-The agent can recover full content via `shell_recall`.
+Long outputs are spilled to a tempfile at capture time (`<tmpdir>/agent-sh-<pid>/<id>.out`). The in-memory exchange keeps head + tail + path; the stub reads `[... N lines truncated — full output at /path/42.out; use read_file to expand ...]`.
 
-## Recall Tools
+## Recall
 
-### shell_recall
+### Shell output (read_file on spill path)
 
-Recovers truncated shell context:
-- `shell_recall` — browse recent exchanges
-- `shell_recall --search "query"` — regex search
-- `shell_recall --expand 41` — full content of exchange #41
+Long shell outputs aren't kept verbatim in LLM context. Instead:
 
-### conversation_recall
+- On capture, if output exceeds `shellTruncateThreshold` lines, the full text is written to `<tmpdir>/agent-sh-<pid>/<id>.out`.
+- The in-context representation shows `shellHeadLines` from the top and `shellTailLines` from the bottom, with a marker pointing at the spill path.
+- The agent recovers full content with the existing `read_file` tool on that path — no dedicated recall tool needed. `read_file`'s offset/limit handle pagination for very large outputs.
+
+The session dir is removed on process exit (including SIGINT/SIGTERM/SIGHUP). Stale dirs from dead processes are swept lazily the next time a session starts.
+
+### conversation_recall (agent tool)
 
 Recovers evicted conversation turns:
 - `conversation_recall {"action": "browse"}` — list in-context nuclear entries + recent history file entries
@@ -118,7 +121,6 @@ All settings in `~/.agent-sh/settings.json`:
 | `shellHeadLines` | 10 | Lines kept from start of truncated output |
 | `shellTailLines` | 10 | Lines kept from end |
 | `shellContextRatio` | 0.35 | Fraction of content budget for shell context |
-| `recallExpandMaxLines` | 500 | Max lines shell_recall expand returns without line ranges |
 | `autoCompactThreshold` | 0.5 | Fraction of context window at which auto-compact triggers |
 | `historyMaxBytes` | 104857600 | Max size of `~/.agent-sh/history` before rotation |
 | `historyStartupEntries` | 100 | Prior history entries loaded as a preamble on startup |

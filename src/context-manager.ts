@@ -2,6 +2,7 @@ import type { EventBus } from "./event-bus.js";
 import type { Exchange } from "./types.js";
 import type { HandlerRegistry } from "./utils/handler-registry.js";
 import { getSettings } from "./settings.js";
+import { spillOutput } from "./utils/shell-output-spill.js";
 
 export class ContextManager {
   private exchanges: Exchange[] = [];
@@ -24,15 +25,33 @@ export class ContextManager {
     // ── Subscribe to shell events ──
     bus.on("shell:command-done", (e) => {
       const lines = e.output.split("\n");
+      const s = getSettings();
+      // Spill long outputs to a tempfile so the agent can `read_file` them
+      // on demand instead of carrying the full text in LLM context.
+      let output = e.output;
+      let spillPath: string | undefined;
+      if (lines.length > s.shellTruncateThreshold) {
+        // Reserve the id we're about to assign so the tempfile name matches.
+        const id = this.nextId;
+        try {
+          spillPath = spillOutput(id, e.output);
+          output = buildSpillStub(lines, s.shellHeadLines, s.shellTailLines, spillPath);
+        } catch {
+          // If spill fails (e.g. disk full), fall back to keeping output in memory.
+          output = e.output;
+          spillPath = undefined;
+        }
+      }
       this.addExchange({
         type: "shell_command",
         command: e.command,
-        output: e.output,
+        output,
         cwd: e.cwd,
         exitCode: e.exitCode,
         outputLines: lines.length,
         outputBytes: e.output.length,
         source: this.agentShellActive ? "agent" : "user",
+        spillPath,
       });
     });
 
@@ -126,44 +145,6 @@ export class ContextManager {
   }
 
   /**
-   * Return content for specific exchange IDs.
-   * Optional start/end restrict to a line range (1-indexed).
-   */
-  expand(ids: number[], start?: number, end?: number): string {
-    const results: string[] = [];
-    for (const id of ids) {
-      const ex = this.exchanges.find((e) => e.id === id);
-      if (!ex) {
-        results.push(`#${id}: not found`);
-        continue;
-      }
-      const text = this.formatExchangeFull(ex);
-      const lines = text.split("\n");
-      const total = lines.length;
-
-      if (start != null || end != null) {
-        // Line range requested
-        const s = Math.max(0, (start ?? 1) - 1);
-        const e = end ?? total;
-        results.push(
-          lines.slice(s, e).join("\n") +
-          `\n[showing lines ${s + 1}-${Math.min(e, total)} of ${total}]`,
-        );
-      } else if (total > getSettings().recallExpandMaxLines) {
-        // Too large — tell the agent to narrow down
-        results.push(
-          `#${ex.id}: output is ${total} lines, too large to expand fully. ` +
-          `Use start/end params to select a line range (e.g. start=1, end=50), ` +
-          `or use search with a regex to find specific content.`,
-        );
-      } else {
-        results.push(text);
-      }
-    }
-    return results.join("\n\n");
-  }
-
-  /**
    * Return shell events with id > afterId, formatted as an incremental
    * delta suitable for injection into conversation history. Skips
    * agent-source commands (already visible in tool results). Returns
@@ -180,19 +161,8 @@ export class ContextManager {
 
     const lastSeq = this.exchanges[this.exchanges.length - 1]!.id;
 
-    // Apply per-type truncation so giant outputs don't blow up the turn.
-    const truncated: Exchange[] = fresh.map((ex) => {
-      if (ex.type === "shell_command") {
-        const s = getSettings();
-        return {
-          ...ex,
-          output: truncateOutput(ex.output, s.shellTruncateThreshold, s.shellHeadLines, s.shellTailLines, ex.id),
-        };
-      }
-      return { ...ex };
-    });
-
-    const body = truncated.map((ex) => this.formatExchangeTruncated(ex)).join("\n");
+    // Outputs already carry head+tail+spillPath stubs from capture time.
+    const body = fresh.map((ex) => this.formatExchangeTruncated(ex)).join("\n");
     return {
       text: `<shell-events>\n${body}</shell-events>`,
       lastSeq,
@@ -212,47 +182,6 @@ export class ContextManager {
     if (recent.length === 0) return "No exchanges yet.";
 
     return recent.map((ex) => this.exchangeOneLiner(ex)).join("\n");
-  }
-
-  /**
-   * Parse and handle shell_recall commands.
-   */
-  handleRecallCommand(command: string): string {
-    const args = command.replace(/^_*shell_recall\s*/, "").trim();
-
-    if (!args || args === "--help") {
-      return [
-        "Usage:",
-        "  shell_recall                    Browse recent exchanges",
-        "  shell_recall --search <query>   Search all exchanges",
-        "  shell_recall --expand <id,...>   Show full content of exchanges",
-        "",
-        "Examples:",
-        '  shell_recall --search "test fail"',
-        "  shell_recall --expand 41",
-        "  shell_recall --expand 41,42,43",
-      ].join("\n");
-    }
-
-    const searchMatch = args.match(/^--search\s+(?:"([^"]+)"|(\S+))/);
-    if (searchMatch) {
-      return this.search(searchMatch[1] ?? searchMatch[2] ?? "");
-    }
-
-    const expandMatch = args.match(
-      /^--expand\s+([\d,\s]+)/,
-    );
-    if (expandMatch) {
-      const ids = expandMatch[1]!
-        .split(/[,\s]+/)
-        .map(Number)
-        .filter((n) => !isNaN(n));
-      if (ids.length === 0) return "No valid IDs provided.";
-      return this.expand(ids);
-    }
-
-    // Default: browse
-    return this.getRecentSummary();
   }
 
   /**
@@ -278,35 +207,22 @@ export class ContextManager {
     exchanges: Exchange[],
     budget: number,
   ): Exchange[] {
-    // Deep clone so we don't mutate the source
+    // Long outputs were already spilled to tempfiles at capture time, so
+    // per-exchange output is small. This pass only enforces the byte budget
+    // for the whole context window by stripping output from the oldest
+    // exchanges first; the full text remains on disk for read_file.
     const result: Exchange[] = exchanges.map((e) => ({ ...e }));
-
-    // Pass 1: per-type truncation
-    for (const ex of result) {
-      if (ex.type === "shell_command") {
-        const s = getSettings();
-        ex.output = truncateOutput(
-          ex.output,
-          s.shellTruncateThreshold,
-          s.shellHeadLines,
-          s.shellTailLines,
-          ex.id,
-        );
-      }
-      // agent_query has no output to truncate
-    }
-
-    // Pass 2: budget enforcement — strip output from oldest if over budget
     let totalSize = result.reduce((sum, ex) => sum + this.exchangeSize(ex), 0);
     for (let i = 0; i < result.length - 1 && totalSize > budget; i++) {
       const ex = result[i]!;
       const before = this.exchangeSize(ex);
       if (ex.type === "shell_command") {
-        ex.output = `[output omitted, use shell_recall tool to expand id ${ex.id}]`;
+        ex.output = ex.spillPath
+          ? `[output omitted — full output at ${ex.spillPath}; use read_file to expand]`
+          : `[output omitted]`;
       }
       totalSize -= before - this.exchangeSize(ex);
     }
-
     return result;
   }
 
@@ -323,7 +239,7 @@ export class ContextManager {
       out += `IMPORTANT tool usage rules:\n`;
       out += `- Your internal tools (bash, read, write, ls, etc.) run in an isolated subprocess. The user CANNOT see their output.\n`;
       out += `- Only use internal tools when YOU need to reason about content silently (e.g. reading a file to answer a question about it).\n`;
-      out += `- You can browse or search shell history with shell_recall.\n`;
+      out += `- Long shell outputs are spilled to tempfiles. The context shows head+tail with a "[full output at /path/...out]" marker — use the read_file tool on that path to see the full captured output.\n`;
       out += `\n`;
       this.firstPrompt = false;
     }
@@ -415,20 +331,16 @@ export class ContextManager {
 
 // ── Utility functions ─────────────────────────────────────────
 
-function truncateOutput(
-  text: string,
-  threshold: number,
+function buildSpillStub(
+  lines: string[],
   headLines: number,
   tailLines: number,
-  id: number,
+  spillPath: string,
 ): string {
-  const lines = text.split("\n");
-  if (lines.length <= threshold) return text;
-
   const omitted = lines.length - headLines - tailLines;
   return [
     ...lines.slice(0, headLines),
-    `[... ${omitted} lines truncated, use shell_recall tool with expand and id ${id} to see full output ...]`,
+    `[... ${omitted} lines truncated — full output at ${spillPath}; use read_file to expand ...]`,
     ...lines.slice(-tailLines),
   ].join("\n");
 }

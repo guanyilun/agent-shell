@@ -199,7 +199,6 @@ When cycling across providers (e.g. from OpenAI to Ollama), the API key and base
 | `contextBudget` | `32768` | Context budget in bytes (~8K tokens) |
 | `shellTruncateThreshold` | `20` | Shell output lines before truncation |
 | `shellHeadLines` / `shellTailLines` | `10` / `10` | Lines kept from start/end of truncated output |
-| `recallExpandMaxLines` | `500` | Max lines for recall expand |
 | `maxCommandOutputLines` | `3` | Max tool output lines shown inline in TUI |
 | `readOutputMaxLines` | `10` | Max read tool output lines shown inline (0 = hidden) |
 | `diffMaxLines` | `Infinity` | Max diff lines rendered in the TUI. Defaults to no limit |

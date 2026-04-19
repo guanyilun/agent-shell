@@ -22,7 +22,6 @@ index.ts — interactive terminal frontend:
   │     tui-renderer      — markdown rendering, inline diffs, thinking display, spinner
   │     slash-commands    — /help, /model, /thinking, /compact, /context
   │     file-autocomplete — @ file path completion
-  │     shell-recall      — shell_recall terminal interception
   │     command-suggest   — fix suggestions on failed commands (fast-path LLM)
   │
   ├── Shared utilities:
@@ -154,7 +153,7 @@ agent-sh/
 │       ├── index.ts          # Declarative manifest + loader
 │       ├── agent-backend.ts  # LLM provider resolution + AgentLoop registration
 │       ├── tui-renderer.ts, slash-commands.ts
-│       ├── file-autocomplete.ts, shell-recall.ts
+│       ├── file-autocomplete.ts
 │       └── command-suggest.ts
 │
 ├── examples/                 # Example extensions and agent integrations

@@ -28,7 +28,7 @@ Every query includes two streams of context that share a unified token budget:
 - **Shell context** = user terminal history (commands + outputs), assembled fresh for every LLM call. It's what lets the agent understand "fix this" after you ran a failing command.
 - **Conversation state** = the OpenAI chat messages array (`user`/`assistant`/`tool` messages). This is the LLM's memory of what it already said and did.
 
-The two streams don't overlap — agent tool outputs live only in the conversation, while shell context tracks only user-initiated activity. The `shell_recall` tool recovers evicted shell content; `conversation_recall` browses/searches/expands evicted turns from the in-session archive and the persistent history file at `~/.agent-sh/history`. Every message is nucleated into a one-line summary and appended to that file eagerly, so context flows across restarts like a shell history. The `conversation:compact` handler is advisable — extensions may install richer strategies without changing the recall surface.
+The two streams don't overlap — agent tool outputs live only in the conversation, while shell context tracks only user-initiated activity. Long shell outputs are spilled to tempfiles (`<tmpdir>/agent-sh-<pid>/<id>.out`) and recovered via plain `read_file`; `conversation_recall` browses/searches/expands evicted turns from the in-session archive and the persistent history file at `~/.agent-sh/history`. Every message is nucleated into a one-line summary and appended to that file eagerly, so context flows across restarts like a shell history. The `conversation:compact` handler is advisable — extensions may install richer strategies without changing the recall surface.
 
 See [Context Management](context-management.md) for the full design: token budgeting, truncation pipeline, compaction hook, and configuration.
 
@@ -183,15 +183,12 @@ Extensions can add tools that cross the shell↔agent boundary via `shell:exec-r
 | `glob` | Find files by name pattern | No | No |
 | `ls` | List directory contents (with timestamps and sizes) | No | No |
 | `list_skills` | List available skills (name, description, path) | No | No |
-| `shell_recall` | Browse or search truncated shell context (extension: shell-recall) | No | No |
-| `terminal_read` | Read the current terminal screen (example extension: `terminal-buffer`) | No | No |
-| `terminal_keys` | Send keystrokes to the user's live PTY (example extension: `terminal-buffer`) | No | No |
 
 **Common pattern**: all file-based tools resolve relative paths from the current working directory (`contextManager.getCwd()`).
 
-### Interactive program tools
+### Interactive program tools (example extension)
 
-The `terminal_read` and `terminal_keys` tools let the agent operate inside full-screen interactive programs (vim, htop, less, ssh, etc.). They are backed by a headless xterm.js terminal buffer that mirrors the real terminal.
+`terminal_read` and `terminal_keys` are **not built-in** — they ship as the `terminal-buffer` example extension (`examples/extensions/terminal-buffer.ts`). Load it to let the agent operate inside full-screen interactive programs (vim, htop, less, ssh, etc.). The extension is backed by a headless xterm.js terminal buffer that mirrors the real terminal.
 
 **`terminal_read`** returns:
 - Clean text (ANSI stripped) of the current screen
@@ -206,7 +203,7 @@ The `terminal_read` and `terminal_keys` tools let the agent operate inside full-
 
 After sending keys, `terminal_keys` waits for the terminal to settle (default 150ms, configurable via `settle_ms`) and returns the screen state.
 
-These tools require `@xterm/headless` and `@xterm/addon-serialize` to be installed. Without them, the tools are silently unavailable.
+The extension requires `@xterm/headless` and `@xterm/addon-serialize` to be installed in your project (they are not dependencies of `agent-sh` itself). Without them, the tools are silently unavailable.
 
 ### Tool-specific enhancements
 

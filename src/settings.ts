@@ -60,8 +60,6 @@ export interface Settings {
   shellHeadLines?: number;
   /** Lines kept from end of truncated shell output. */
   shellTailLines?: number;
-  /** Max lines for recall expand before requiring line ranges. */
-  recallExpandMaxLines?: number;
   /** Fraction of content budget allocated to shell context (0-1, default 0.35). */
   shellContextRatio?: number;
 
@@ -133,7 +131,6 @@ const DEFAULTS: Required<Settings> = {
   shellTruncateThreshold: 20,
   shellHeadLines: 10,
   shellTailLines: 10,
-  recallExpandMaxLines: 500,
   shellContextRatio: 0.35,
   historyMaxBytes: 104857600, // 100MB — history is only accessed via search/expand, never loaded wholesale
   historyStartupEntries: 100,
