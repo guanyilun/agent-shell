@@ -135,8 +135,11 @@ export default function activate(ctx: ExtensionContext): void {
   /** Shorthand — get the current agent surface. */
   function out(): RenderSurface { return compositor.surface("agent"); }
 
-  /** Capped width for borders, tool lines, and content — keeps everything aligned. */
-  function cappedW(): number { return Math.min(MAX_CONTENT_WIDTH + 2, out().columns); }
+  /** Capped width for borders, tool lines, and content — keeps everything aligned.
+   *  MarkdownRenderer.writeLine prepends a 2-char indent ("  ") to every line,
+   *  so available width for actual content is columns - 2.  Subtract an additional
+   *  1 to prevent terminal auto-wrap when a line lands exactly at the right edge. */
+  function cappedW(): number { return Math.min(MAX_CONTENT_WIDTH + 2, out().columns) - 2 - 1; }
 
   // Gate: other extensions (e.g. overlay) can advise this to suppress
   // TUI rendering of agent output while they own the display.
