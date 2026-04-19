@@ -5,7 +5,7 @@
  * never writes to stdout. Supports multiple border styles and
  * optional title/footer sections with dividers.
  */
-import { visibleLen } from "./ansi.js";
+import { visibleLen, truncateToWidth } from "./ansi.js";
 import { palette as p } from "./palette.js";
 
 // ── Types ────────────────────────────────────────────────────────
@@ -107,6 +107,12 @@ export function renderBoxFrame(content: string[], opts: BoxFrameOptions): string
 // ── Helpers ──────────────────────────────────────────────────────
 
 function boxLine(text: string, innerW: number, v: string, bc: string): string {
-  const pad = Math.max(0, innerW - visibleLen(text));
+  const textWidth = visibleLen(text);
+  if (textWidth > innerW) {
+    // Content is too wide — truncate to fit exactly
+    const truncated = truncateToWidth(text, innerW);
+    return `${bc}${v}${p.reset} ${truncated} ${bc}${v}${p.reset}`;
+  }
+  const pad = innerW - textWidth;
   return `${bc}${v}${p.reset} ${text}${" ".repeat(pad)} ${bc}${v}${p.reset}`;
 }
