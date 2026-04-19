@@ -75,9 +75,23 @@ Shell context passes through three stages:
 
 1. **Windowing** — last N exchanges (default 20, configurable via `contextWindowSize`)
 2. **Per-exchange truncation** — long outputs get head+tail (configurable thresholds)
-3. **Budget enforcement** — oldest outputs stripped if over token budget
+3. **Budget enforcement** — oldest outputs stripped if the windowed total exceeds the byte budget
 
 Long outputs are spilled to a tempfile at capture time (`<tmpdir>/agent-sh-<pid>/<id>.out`). The in-memory exchange keeps head + tail + path; the stub reads `[... N lines truncated — full output at /path/42.out; use read_file to expand ...]`.
+
+### Budget enforcement vs. compaction
+
+These are related but distinct mechanisms:
+
+| | Budget enforcement (shell) | Compaction (conversation) |
+|---|---|---|
+| **Stream** | Shell context (`<shell_context>` block) | Conversation messages array |
+| **When** | Every call to `getContext()` (every turn) | On threshold crossing, `/compact`, or overflow retry |
+| **State change** | None — operates on a shallow clone; original exchanges untouched | Mutates the messages array; evicted turns collapse to one-liners |
+| **Recovery** | Full text still on disk (spill file) + in memory | Full text in in-memory archive + history file |
+| **Tool to expand** | `read_file` on the spill path | `conversation_recall` |
+
+In short: budget enforcement is transient per-turn trimming of *presentation*. Compaction is persistent state transformation of the conversation. They can fire in the same turn without interacting.
 
 ## Recall
 
