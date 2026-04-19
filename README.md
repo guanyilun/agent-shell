@@ -44,7 +44,7 @@ Requires Node.js 18+.
 
 **Context that just works.** Every query includes your cwd, recent commands, and their output. Run a failing test, type `> fix this`, and agent-sh knows exactly what happened. Context management works like shell history — continuous, persistent across restarts, no sessions to manage. See [Context Management](docs/context-management.md).
 
-**Any LLM, any backend.** agent-sh works with any OpenAI-compatible API out of the box. Define multiple providers in settings and cycle between models at runtime with Shift+Tab. Or swap in a completely different agent — [Claude Code](examples/extensions/claude-code-bridge/) and [pi](examples/extensions/pi-bridge/) run as drop-in backend extensions.
+**Any LLM, any backend.** agent-sh works with any OpenAI-compatible API out of the box. Define multiple providers in settings and switch models at runtime with `/model <name>`. Or swap in a completely different agent — [Claude Code](examples/extensions/claude-code-bridge/) and [pi](examples/extensions/pi-bridge/) run as drop-in backend extensions.
 
 **Extensible by design.** The entire system is built on a typed event bus. Extensions can add custom input modes, content transforms (render LaTeX as images, Mermaid as diagrams), themes, slash commands, or replace the agent backend entirely. The built-in TUI renderer is itself just an extension.
 
@@ -52,14 +52,16 @@ Requires Node.js 18+.
 
 ## Documentation
 
-- [Usage Guide](docs/usage.md) — providers, models, configuration
-- [Internal Agent](docs/agent.md) — tools, context, streaming
-- [Context Management](docs/context-management.md) — three-tier history, token budget
-- [Architecture](docs/architecture.md) — design philosophy, component overview
-- [Extensions](docs/extensions.md) — event bus, content transforms, custom backends, theming
-- [TUI Composition](docs/tui-composition.md) — compositor, render surfaces, stream routing
-- [Library Usage](docs/library.md) — embedding agent-sh in your own apps
-- [Troubleshooting](docs/troubleshooting.md) — common errors and debug mode
+Start with **Usage** to get running, then **Architecture** for the mental model.
+
+1. [Usage Guide](docs/usage.md) — install, run, configure providers and models
+2. [Architecture](docs/architecture.md) — pure kernel + extensions, the shell ↔ agent boundary
+3. [The Built-in Agent: ash](docs/agent.md) — query flow, tools, system prompt, model switching
+4. [Context Management](docs/context-management.md) — shell-output spill, three-tier conversation compaction, recall APIs
+5. [Extensions](docs/extensions.md) — event bus, content transforms, custom agent backends, theming
+6. [TUI Composition](docs/tui-composition.md) — compositor, render surfaces, stream routing
+7. [Library Usage](docs/library.md) — embedding agent-sh in your own apps
+8. [Troubleshooting](docs/troubleshooting.md) — common errors and debug mode
 
 ## Development
 
