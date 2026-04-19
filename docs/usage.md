@@ -216,9 +216,16 @@ Switching mid-conversation preserves your conversation state — only the LLM en
 | `historySize` | `500` | Max agent query history entries (persisted across sessions) |
 | `shellTruncateThreshold` | `20` | Shell output lines before spill-to-tempfile |
 | `shellHeadLines` / `shellTailLines` | `10` / `10` | Lines kept from start/end when output is spilled |
+| `autoCompactThreshold` | `0.5` | Fraction of the model's context window at which conversation auto-compacts |
+| `historyMaxBytes` | `104857600` | Max size of `~/.agent-sh/history` before front-truncation (100MB) |
+| `historyStartupEntries` | `100` | Prior history entries injected as `[Prior session history]` preamble on launch |
 | `maxCommandOutputLines` | `3` | Max tool output lines shown inline in TUI |
 | `readOutputMaxLines` | `10` | Max read tool output lines shown inline (0 = hidden) |
 | `diffMaxLines` | `Infinity` | Max diff lines rendered in the TUI. Defaults to no limit |
+| `skillPaths` | `[]` | Extra directories to scan for skills (supports `~` expansion) |
+| `diagnose` | `false` | Enable the `diagnose` tool — lets the agent evaluate JS expressions against its own runtime state (introspection; agent already has bash, so this is convenience, not new capability) |
+| `startupBanner` | `true` | Show the startup banner (backend / model / extensions / skills) on launch |
+| `promptIndicator` | `true` | Show a subtle agent-sh indicator in the shell prompt |
 | `toolMode` | `"api"` | How tools are presented to the LLM. `"api"` sends all tool schemas. `"deferred"` bundles extension tools behind a `use_extension(name, args)` meta-tool (saves prompt tokens, loses schema fidelity). `"deferred-lookup"` keeps extension schemas dormant until the model calls `load_tool(names[])` — loaded tools then become first-class on the next turn with full schemas. `"inline"` describes tools as text. |
 | `disabledExtensions` | `[]` | Names of user extensions in `~/.agent-sh/extensions/` to skip when auto-discovering. Match by basename without extension for files (`"peer-mesh"` matches `peer-mesh.ts`) or by directory name for dir-style extensions (`"superash"` matches `superash/index.ts`). Avoids having to rename files to `.disabled`. |
 | `disabledBuiltins` | `[]` | Names of built-in extensions to disable. |
