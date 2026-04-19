@@ -100,7 +100,7 @@ export function visibleLen(str: string): number {
  */
 export function truncateToWidth(str: string, maxWidth: number): string {
   const clean = str.replace(/\x1b\[[^m]*m/g, "");
-  if (maxWidth < 2) return clean.slice(0, maxWidth > 0 ? 1 : 0);
+  if (maxWidth <= 0) return "";
   // First check if the entire string fits
   let fullWidth = 0;
   for (const char of clean) {
@@ -108,6 +108,8 @@ export function truncateToWidth(str: string, maxWidth: number): string {
   }
   if (fullWidth <= maxWidth) return clean;
   // String doesn't fit — truncate with "…"
+  // At maxWidth=1 the ellipsis alone fills the budget.
+  if (maxWidth === 1) return "…";
   // Reserve 1 column for "…", so target content width is maxWidth - 1
   const target = maxWidth - 1;
   let width = 0;
@@ -118,8 +120,9 @@ export function truncateToWidth(str: string, maxWidth: number): string {
     width += cw;
     i += char.length;
   }
-  // If we consumed nothing (first char is wider than target), take at least 1 char
-  if (i === 0) i = (clean.codePointAt(0) ?? 0) > 0xffff ? 2 : 1;
+  // If nothing fit (first char is wider than target), just show the ellipsis
+  // rather than emit a character that would overflow the budget.
+  if (i === 0) return "…";
   return clean.slice(0, i) + "…";
 }
 
