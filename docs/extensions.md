@@ -48,22 +48,26 @@ TypeScript and JavaScript are both supported (`.ts`, `.tsx`, `.mts`, `.js`, `.mj
 | Property | Type | Description |
 |---|---|---|
 | `bus` | `EventBus` | Subscribe to events, emit events, register pipe handlers |
-| `contextManager` | `ContextManager` | Access exchange history, cwd, search, expand |
+| `contextManager` | `ContextManager` | Shell exchange history — `getCwd()`, `search(query)`, `getRecentSummary(n)`, `getEventsSince(afterId)`, `lastSeq()` |
 | `instanceId` | `string` | Stable per-instance identifier (4-char hex) |
 | `quit` | `() => void` | Exit agent-sh |
 | `setPalette` | `(overrides) => void` | Override color palette slots for theming |
 | `createBlockTransform` | `(opts) => void` | Register an inline delimiter transform (e.g. `$$...$$`) |
 | `createFencedBlockTransform` | `(opts) => void` | Register a fenced block transform (e.g. ` ```lang...``` `) |
 | `getExtensionSettings` | `(namespace, defaults) => T` | Read extension settings from `~/.agent-sh/settings.json` |
+| `getStoragePath` | `(namespace) => string` | Get (and lazily create) a per-extension storage directory under `~/.agent-sh/<namespace>/` |
 | `registerTool` | `(tool: ToolDefinition) => void` | Register a tool with the active agent backend. See [Internal Agent: Tool interface](agent.md#tool-interface) |
 | `unregisterTool` | `(name: string) => void` | Remove a previously registered tool |
 | `getTools` | `() => ToolDefinition[]` | Get all registered tools |
 | `registerCommand` | `(name, description, handler) => void` | Register a slash command (e.g. `/mycommand`) |
 | `registerInstruction` | `(name, text) => void` | Inject a named instruction block into the system prompt |
 | `removeInstruction` | `(name) => void` | Remove a named instruction block |
+| `registerSkill` | `(name, description, filePath) => void` | Register a skill — on-demand reference material the agent can invoke |
+| `removeSkill` | `(name) => void` | Remove a registered skill |
 | `define` | `(name, fn) => void` | Register a named handler |
-| `advise` | `(name, wrapper) => void` | Wrap a named handler (receives `next` + args) |
+| `advise` | `(name, wrapper) => () => void` | Wrap a named handler (receives `next` + args). Returns an `unadvise()` function. |
 | `call` | `(name, ...args) => any` | Call a named handler |
+| `list` | `() => string[]` | Names of all registered handlers (for diagnostic/introspection use) |
 | `terminalBuffer` | `TerminalBuffer \| null` | Shared headless xterm.js buffer mirroring PTY output (lazy singleton, null if `@xterm/headless` not installed) |
 | `compositor` | `Compositor` | Routes named render streams to surfaces. See [TUI Composition](tui-composition.md) |
 | `createRemoteSession` | `(opts: RemoteSessionOptions) => RemoteSession` | Create a remote session that routes agent output to a surface. See [Remote Sessions](#remote-sessions) |
@@ -112,7 +116,11 @@ bus.on("shell:command-done", ({ command, output, exitCode }) => {
 Each listener receives the payload, **returns a modified version**, and that becomes the input for the next listener. The emitter gets back the final result. Use this when you need extensions to intercept or transform data.
 
 ```typescript
-// Emitter sends a payload through the chain and reads the result
+// Emitter sends a payload through the chain and reads the result.
+// `agent:terminal-intercept` is emitted by the `bash` tool before
+// execution — extensions can short-circuit specific commands with
+// virtual output and skip the subprocess. No built-in extension uses
+// this today; it's a general hook for custom virtual commands.
 const result = bus.emitPipe("agent:terminal-intercept", {
   command, cwd, intercepted: false, output: "",
 });
@@ -376,7 +384,11 @@ These are registered by the `agent-backend` built-in extension (AgentLoop) and l
 | `system-prompt:build` | `() → string` | Assemble the cached system prompt. Advise to append identity blocks, memory files, learned lessons, etc. Rebuilt on cwd change, not every query. |
 | `dynamic-context:build` | `() → string` | Build the per-iteration user-role injection. Rebuilt before every LLM call. Default: `<shell>` + `<environment>` XML-tagged sections. Advisors add more tagged sections. |
 | `conversation:prepare` | `(messages[]) → messages[]` | Transform the full message array before it's sent to the LLM. Default: pass through. |
-| `conversation:compact` | `({target, keepRecent, force}) → void` | Compaction strategy. Default: two-tier pin. Advise for richer strategies (topic pinning, LLM summarization). |
+| `conversation:compact` | `({target, keepRecent, force}) → { before, after, evictedCount }` | Compaction strategy. Default: pins the first turn + the last `keepRecent` turns and evicts the middle by priority × recency. Advise for richer strategies (topic pinning, LLM summarization). |
+| `conversation:get-messages` | `() → messages[]` | Read the current in-memory messages array. Used by compaction advisors to compute a replacement. |
+| `conversation:replace-messages` | `(messages[]) → void` | Install a replacement messages array. The corresponding mutate-side of the compaction pattern. |
+| `conversation:estimate-tokens` | `() → number` | Local chars/4 estimate of the conversation size. |
+| `conversation:estimate-prompt-tokens` | `() → number` | API-grounded estimate (last `prompt_tokens` + local delta since). Used by the auto-compact trigger. |
 | `conversation:inject-note` | `(text) → void` | Inject a `role:"user"` note mid-loop — how extensions deliver async results (subagent output, peer messages) into the next iteration. |
 | `conversation:nucleate-user` / `-agent` / `-tool` | `(msg) → NuclearEntry` | Turn a message into its one-line summary. Advise to extract extra metadata (e.g. `[why: ...]` annotations). |
 | `conversation:format-prior-history` | `(entries) → string` | Render prior-session history into a preamble. Advise for session-grouped output. |
@@ -648,7 +660,7 @@ session.close();                       // restore everything
 | `suppressBorders` | `boolean` | `true` | Suppress response top/bottom borders |
 | `suppressQueryBox` | `boolean` | `false` | Suppress the user query box (use when the session has its own input) |
 | `suppressUsage` | `boolean` | `true` | Suppress token usage stats line |
-| `interactive` | `boolean` | `false` | Add `interactive-session: true` to dynamic context (tells agent to use terminal_read/terminal_keys) |
+| `interactive` | `boolean` | `false` | Add `interactive-session: true` to dynamic context. Signals to the agent that it is operating inside an interactive surface (e.g. an overlay or side pane) rather than the main shell. Extensions that provide PTY-inspection tools (like the `terminal-buffer` example) watch this flag. |
 
 ### What createRemoteSession handles
 
