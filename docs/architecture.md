@@ -20,7 +20,7 @@ index.ts — interactive terminal frontend:
   ├── Built-in extensions (loaded via declarative manifest, individually disableable):
   │     agent-backend     — LLM provider resolution, LlmClient, AgentLoop ("ash" backend)
   │     tui-renderer      — markdown rendering, inline diffs, thinking display, spinner
-  │     slash-commands    — /help, /model, /thinking, /compact, /context
+  │     slash-commands    — /help, /model, /backend, /thinking, /compact, /context, /reload
   │     file-autocomplete — @ file path completion
   │     command-suggest   — fix suggestions on failed commands (fast-path LLM)
   │
@@ -48,11 +48,11 @@ Built-in extensions are loaded from a declarative manifest and can be individual
 2. Built-in extensions load (including the agent backend, which registers via `agent:register-backend`), then user extensions
 3. `activateBackend()` wires the chosen backend to bus events
 4. All keyboard input goes directly to the PTY — zero latency, full terminal compatibility
-4. When you type `>` at the start of a line, agent-sh intercepts and enters agent input mode
-5. On Enter, the query is emitted as `agent:submit` and the agent decides which tools to use
-6. The backend handles the query — streaming LLM responses, executing tools, emitting events. Read-only tools run in parallel; permission-requiring tools run sequentially.
-7. The TUI renderer extension renders streamed content inline (markdown, diffs, tool calls with tree-style grouping)
-8. When the backend finishes (`agent:processing-done`), normal shell operation resumes
+5. When you type `>` at the start of a line, agent-sh intercepts and enters agent input mode
+6. On Enter, the query is emitted as `agent:submit` and the active backend decides which tools to use
+7. The backend handles the query — streaming LLM responses, executing tools, emitting events. Read-only tools run in parallel; permission-requiring tools run sequentially.
+8. The TUI renderer extension renders streamed content inline (markdown, diffs, tool calls with tree-style grouping)
+9. When the backend finishes (`agent:processing-done`), normal shell operation resumes
 
 ## Shell ↔ Agent Boundary
 
@@ -77,9 +77,9 @@ agent calls user_shell({ command: "cd src" })
 
 The agent backend is a bus-driven component that registers via `agent:register-backend`. The core's multi-backend coordinator manages which backend is active — it has no knowledge of any specific backend's internals.
 
-### Internal Agent (AgentLoop)
+### Built-in backend: ash
 
-The default backend, loaded as a built-in extension (`src/extensions/agent-backend.ts`). It resolves LLM providers from settings, creates an `LlmClient`, builds the mode list for model cycling, and creates an `AgentLoop` that uses the `openai` SDK to call any OpenAI-compatible API. See [Internal Agent](agent.md) for the full guide.
+The default backend is **ash**, loaded as a built-in extension (`src/extensions/agent-backend.ts`). It resolves LLM providers from settings, creates an `LlmClient`, builds the mode list for runtime model switching, and creates an `AgentLoop` that uses the `openai` SDK to call any OpenAI-compatible API. See [The Built-in Agent: ash](agent.md) for the full guide.
 
 The agent-backend extension also exposes the `LlmClient` via the handler registry (`llm:get-client`) so other extensions (like `command-suggest`) can make fast-path LLM calls.
 
@@ -122,11 +122,11 @@ agent-sh/
 │   │
 │   ├── agent/                # Agent subsystem (used by agent-backend extension)
 │   │   ├── types.ts          # AgentBackend, ToolDefinition, ToolResult
-│   │   ├── agent-loop.ts     # Internal agent (OpenAI-compat API, bus-driven)
-│   │   ├── token-budget.ts   # Unified token budget (splits context window between streams)
+│   │   ├── agent-loop.ts     # ash backend (OpenAI-compat API, bus-driven)
+│   │   ├── token-budget.ts   # Shared constants (RESPONSE_RESERVE, DEFAULT_CONTEXT_WINDOW)
 │   │   ├── tool-registry.ts  # Map-based tool registry
-│   │   ├── tool-protocol.ts  # Tool calling protocol abstraction
-│   │   ├── conversation-state.ts  # Messages + eager nucleation + two-tier pin compaction + recall
+│   │   ├── tool-protocol.ts  # Tool calling protocol abstraction (api/deferred/inline)
+│   │   ├── conversation-state.ts  # Messages + eager nucleation + three-tier priority compaction + recall
 │   │   ├── nuclear-form.ts   # One-line-summary primitives (nucleate, serialize, priority)
 │   │   ├── history-file.ts   # Persistent JSONL at ~/.agent-sh/history (append-only, concurrent-safe)
 │   │   ├── system-prompt.ts  # System prompt builder
@@ -143,6 +143,8 @@ agent-sh/
 │   │   ├── terminal-buffer.ts  # Headless xterm.js mirror of the terminal
 │   │   ├── floating-panel.ts   # Composited floating overlay with handler-based rendering
 │   │   ├── compositor.ts       # Routes named render streams to surfaces
+│   │   ├── shell-output-spill.ts # Session-tempfile spill for long shell outputs
+│   │   ├── package-version.ts  # PACKAGE_VERSION constant read from package.json
 │   │   ├── palette.ts, ansi.ts, diff.ts, diff-renderer.ts
 │   │   ├── box-frame.ts, tool-display.ts, output-writer.ts
 │   │   ├── stream-transform.ts, markdown.ts, file-watcher.ts
@@ -161,6 +163,7 @@ agent-sh/
 │       ├── overlay-agent.ts     # Ctrl+\ floating overlay agent
 │       ├── interactive-prompts.ts # Permission prompts (opt-in safety)
 │       ├── peer-mesh.ts         # Cross-instance communication
+│       ├── terminal-buffer.ts   # Headless xterm.js terminal mirror extension
 │       ├── tmux-pane.ts         # Tmux side pane output/interactive modes
 │       ├── web-access.ts        # Web search and content extraction
 │       ├── user-shell.ts        # Run commands in the live PTY

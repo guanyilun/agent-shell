@@ -78,10 +78,18 @@ Unlike shell context — which is a per-query delta and stays small — the conv
 
 ### Tier 1 — eager nucleation
 
-As soon as any message is added to the conversation, it's *nucleated*: a one-line summary is computed immediately and appended to `~/.agent-sh/history` (JSONL, append-only, concurrency-safe across multiple running instances).
+As soon as any message is added to the conversation, it's *nucleated*: a one-line summary is computed immediately (via the advisable `conversation:nucleate-{user,agent,tool}` handlers) and appended to `~/.agent-sh/history` through the `history:append` handler.
 
-- Read-only tool results are skipped for disk writes — the agent can re-run the tool if it needs them again.
-- The file is front-truncated when it exceeds `historyMaxBytes` (default 100MB).
+#### The history file on disk
+
+`~/.agent-sh/history` is a JSONL log — one serialized `NuclearEntry` per line, with fields like `seq`, `iid` (instance id), `role`, `sum` (one-line summary), and optional `body` (full content, roughly 4000 chars max). Each running agent-sh instance gets a random two-byte instance id that tags its entries for provenance.
+
+- **Concurrency-safe.** Each line is short enough that POSIX `O_APPEND` writes are atomic, so multiple agent-sh instances can share one file without a lock. Only truncation (which rewrites the whole file) takes a lock — `~/.agent-sh/history.lock` via `O_EXCL`, with a 10-second stale-lock timeout to recover from crashes.
+- **Read-only tool results are filtered at write time.** Entries tagged read-only (`read_file`, `grep`, `glob`, `ls`) never touch disk — the agent can re-run those tools if needed. The reader applies the same filter defensively.
+- **Front-truncation.** After each append, the file is checked against `historyMaxBytes` (default 100MB). If it's 150%+ over the limit, the oldest lines are dropped and the remainder rewritten atomically via a temp-file + `rename`. The 150% overshoot prevents frequent rewrites.
+- **Reverse-chunked reads.** Search, `readRecent`, and `findBySeq` stream the file backward in 1MB chunks, stitching lines across chunk boundaries at the byte level so UTF-8 codepoints never split. Search caps at a 20MB scan budget to bound cost on large files.
+
+The `history:*` handlers (`append`, `search`, `find-by-seq`, `read-recent`) are all advisable, so extensions can swap the backend (e.g. SQLite, remote store) without changing nucleation.
 
 ### Tier 2 — active context
 
@@ -134,7 +142,7 @@ There's no dedicated shell-recall tool: the spill file is just a normal file. Th
 
 Registered by the built-in agent:
 
-- `conversation_recall {"action": "browse"}` — list in-context nuclear entries + recent history-file entries
+- `conversation_recall {"action": "browse"}` — list in-context nuclear entries + the 25 most recent history-file entries
 - `conversation_recall {"action": "search", "query": "..."}` — regex search across the in-session archive and the history file (both one-line summaries and full bodies)
 - `conversation_recall {"action": "expand", "turn_id": 42}` — full content of a specific turn
 

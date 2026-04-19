@@ -1,6 +1,10 @@
-# Internal Agent
+# The Built-in Agent: ash
 
-The internal agent (AgentLoop) is loaded as a built-in extension (`agent-backend`) when an LLM provider is configured. It resolves providers from settings and CLI flags, creates an `LlmClient`, and calls any OpenAI-compatible API directly. It manages conversation state and executes tools in a loop until the LLM is done.
+agent-sh is designed to be backend-agnostic. The agent that drives a query — assembling context, calling an LLM, executing tools in a loop — is a replaceable component. Any extension can register a backend via `agent:register-backend` and become the default via the `defaultBackend` setting or the `/backend` slash command. Bridge backends like `claude-code` and `pi` plug external CLI agents into the same shell and TUI surface.
+
+This document describes **ash**, the built-in backend that ships with agent-sh. It is loaded as a built-in extension (`agent-backend`) when an LLM provider is configured. ash resolves providers from settings and CLI flags, creates an `LlmClient`, and calls any OpenAI-compatible API directly. It manages conversation state and executes tools in a loop until the LLM is done.
+
+If you're looking to write your own backend instead of reading how ash works internally, see [Extensions: Custom Agent Backends](extensions.md#custom-agent-backends).
 
 ## The Query Flow
 
@@ -23,14 +27,17 @@ The key insight: **the agent is a loop, not a single call**. The LLM calls tools
 
 ## Context Assembly
 
-Every query includes two streams of context that share a unified token budget:
+Every query draws on two distinct streams of context:
 
-- **Shell context** = user terminal history (commands + outputs), assembled fresh for every LLM call. It's what lets the agent understand "fix this" after you ran a failing command.
-- **Conversation state** = the OpenAI chat messages array (`user`/`assistant`/`tool` messages). This is the LLM's memory of what it already said and did.
+- **Shell context** — the user's terminal activity (commands + outputs). This is what lets ash understand "fix this" after you ran a failing command. New shell activity since the last turn is injected as a `<shell-events>` delta prepended to your query.
+- **Conversation state** — the OpenAI chat messages array (`user`/`assistant`/`tool` messages). This is the LLM's memory of what it already said and did within this session.
 
-The two streams don't overlap — agent tool outputs live only in the conversation, while shell context tracks only user-initiated activity. Long shell outputs are spilled to tempfiles (`<tmpdir>/agent-sh-<pid>/<id>.out`) and recovered via plain `read_file`; `conversation_recall` browses/searches/expands evicted turns from the in-session archive and the persistent history file at `~/.agent-sh/history`. Every message is nucleated into a one-line summary and appended to that file eagerly, so context flows across restarts like a shell history. The `conversation:compact` handler is advisable — extensions may install richer strategies without changing the recall surface.
+The two streams don't overlap: agent tool outputs live only in the conversation, and shell context tracks only user-initiated activity. When either stream grows large, ash has escape hatches rather than silent truncation:
 
-See [Context Management](context-management.md) for the full design: token budgeting, truncation pipeline, compaction hook, and configuration.
+- **Long shell outputs** are spilled to tempfiles (`<tmpdir>/agent-sh-<pid>/<id>.out`) at capture time. The LLM sees a head+tail stub with the path and recovers the full output via plain `read_file`.
+- **Older conversation turns** are nucleated into one-line summaries and appended to `~/.agent-sh/history` — a persistent, cross-session archive. The `conversation_recall` tool browses, searches, and expands entries from both the in-session archive and the history file.
+
+Compaction is pluggable: the `conversation:compact` handler is advisable, so extensions can install richer strategies without changing the recall surface. See [Context Management](context-management.md) for the full design.
 
 ## System Prompt
 
@@ -183,6 +190,7 @@ Extensions can add tools that cross the shell↔agent boundary via `shell:exec-r
 | `glob` | Find files by name pattern | No | No |
 | `ls` | List directory contents (with timestamps and sizes) | No | No |
 | `list_skills` | List available skills (name, description, path) | No | No |
+| `conversation_recall` | Browse/search/expand evicted turns from the in-session archive and `~/.agent-sh/history` | No | No |
 
 **Common pattern**: all file-based tools resolve relative paths from the current working directory (`contextManager.getCwd()`).
 
@@ -317,24 +325,21 @@ LLM requests tool call → { role: "assistant", tool_calls: [...] }
 Tool returns result    → { role: "tool", tool_call_id: "...", content: "..." }
 ```
 
-This array grows with every turn. To prevent context overflow, the agent auto-compacts when the estimated token count exceeds ~60K tokens.
+This array grows with every turn. To prevent context overflow, ash auto-compacts when estimated prompt tokens cross `autoCompactThreshold` (default 0.5) of the model's usable context window.
 
 ### Auto-compaction
 
-When the conversation gets too long:
+Before each LLM call, ash estimates the total prompt tokens. If it's over the threshold, it invokes the `conversation:compact` handler to free space, then proceeds. If the API still returns a context-overflow error, ash compacts more aggressively and retries once; if compaction frees nothing, it aborts rather than looping.
 
-1. Estimate tokens (~4 chars per token, conservative)
-2. If over threshold, keep the **first message** (original task) + the **last N turns** + a bridge message: `"[Earlier conversation turns omitted for context space]"`
-3. Retry the LLM call with the compacted conversation
-4. If it still overflows, compact more aggressively (fewer turns) and retry once
+The default compaction strategy evicts older turns into the nuclear archive and leaves a bridge note; `conversation_recall` can bring them back on demand. See [Context Management](context-management.md#conversation-compaction) for the three-tier design and how to swap the strategy.
 
-This is separate from the `/compact` slash command, which the user can trigger manually.
+The user can also trigger compaction manually with `/compact`.
 
 **Note**: reasoning/thinking tokens from the LLM stream are emitted as `agent:thinking-chunk` events for display but are **not stored in conversation state**. They're ephemeral — the LLM doesn't see its own reasoning on the next turn.
 
-## Provider Profiles & Model Cycling
+## Provider Profiles & Model Switching
 
-The agent supports multiple models and providers, switchable at runtime.
+ash supports multiple models and providers, switchable at runtime.
 
 ### Modes
 
@@ -348,10 +353,11 @@ interface AgentMode {
     apiKey: string;
     baseURL?: string;
   };
+  contextWindow?: number;   // per-model override for the auto-compact threshold
 }
 ```
 
-When all modes share the same provider, cycling just changes the model name. When modes span providers (e.g. OpenAI + Anthropic via OpenRouter), cycling also reconfigures the LLM client with different credentials and base URL.
+When all modes share the same provider, switching just changes the model name. When modes span providers (e.g. OpenAI + Anthropic via OpenRouter), switching also reconfigures the LLM client with different credentials and base URL.
 
 ### Switching
 
@@ -359,6 +365,8 @@ When all modes share the same provider, cycling just changes the model name. Whe
 - **`/model <name>`** — switch to a specific model (may cross providers; credentials and base URL are reconfigured automatically)
 
 The current model is shown in the TUI prompt. Switching mid-conversation preserves the conversation state — only the LLM endpoint changes.
+
+To swap the backend itself (e.g. to `claude-code` or `pi`), use `/backend <name>` or set `defaultBackend` in settings.
 
 ## Extension Tools
 
