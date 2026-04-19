@@ -1,4 +1,4 @@
-import { visibleLen, truncateToWidth, padEndToWidth } from "./ansi.js";
+import { visibleLen, truncateToWidth, padEndToWidth, charWidth } from "./ansi.js";
 import { palette as p } from "./palette.js";
 
 export const MAX_CONTENT_WIDTH = 90;
@@ -36,22 +36,36 @@ export function wrapLine(text: string, maxWidth: number): string[] {
     for (const word of words) {
       if (word.length === 0) continue;
 
-      if (currentWidth + word.length <= maxWidth) {
+      const wordWidth = visibleLen(word);
+      if (currentWidth + wordWidth <= maxWidth) {
         currentLine += word;
-        currentWidth += word.length;
+        currentWidth += wordWidth;
       } else if (currentWidth === 0) {
-        // Single word longer than maxWidth — hard break
+        // Single word longer than maxWidth — hard break by visible width
         let remaining = word;
         while (remaining.length > 0) {
-          const chunk = remaining.slice(0, maxWidth - currentWidth || maxWidth);
-          remaining = remaining.slice(chunk.length);
+          // Find the largest prefix that fits
+          let fitLen = 0;
+          let fitWidth = 0;
+          for (const ch of remaining) {
+            const cw = charWidth(ch.codePointAt(0) ?? 0);
+            if (fitWidth + cw > maxWidth) break;
+            fitWidth += cw;
+            fitLen += ch.length;
+          }
+          if (fitLen === 0) {
+            // Even one char doesn't fit — force take one char to avoid infinite loop
+            fitLen = remaining[0]?.length ?? 1;
+          }
+          const chunk = remaining.slice(0, fitLen);
+          remaining = remaining.slice(fitLen);
           currentLine += chunk;
           if (remaining.length > 0) {
             result.push(currentLine + p.reset);
             currentLine = activeStyles;
             currentWidth = 0;
           } else {
-            currentWidth += chunk.length;
+            currentWidth += fitWidth;
           }
         }
       } else {
@@ -62,7 +76,7 @@ export function wrapLine(text: string, maxWidth: number): string[] {
         // Skip leading spaces on new line
         const trimmed = word.replace(/^ +/, "");
         currentLine += trimmed;
-        currentWidth = trimmed.length;
+        currentWidth = visibleLen(trimmed);
       }
     }
   }
