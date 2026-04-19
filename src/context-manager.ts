@@ -8,19 +8,10 @@ export class ContextManager {
   private exchanges: Exchange[] = [];
   private nextId = 1;
   private currentCwd: string;
-  private sessionStart: number;
-  private firstPrompt = true;
   private agentShellActive = false; // true while user_shell command is executing
-  private handlers: HandlerRegistry | null = null;
 
-  constructor(bus: EventBus, handlers?: HandlerRegistry) {
-    if (handlers) {
-      this.handlers = handlers;
-      // Extensions can advise this to inject extra context (e.g. terminal buffer)
-      handlers.define("context:build-extra", () => "");
-    }
+  constructor(bus: EventBus, _handlers?: HandlerRegistry) {
     this.currentCwd = process.cwd();
-    this.sessionStart = Date.now();
 
     // ── Subscribe to shell events ──
     bus.on("shell:command-done", (e) => {
@@ -75,17 +66,6 @@ export class ContextManager {
 
   getCwd(): string {
     return this.currentCwd;
-  }
-
-  /**
-   * Build the <shell_context> block for the agent prompt.
-   * Pipeline: window → truncate → format
-   */
-  getContext(budget?: number): string {
-    budget ??= getSettings().contextBudget;
-    let exchanges = this.applyWindow(this.exchanges);
-    exchanges = this.applyTruncation(exchanges, budget);
-    return this.formatContext(exchanges);
   }
 
   /**
@@ -189,74 +169,7 @@ export class ContextManager {
    */
   clear(): void {
     this.exchanges = [];
-    this.firstPrompt = true;
     // Don't reset nextId — IDs should be globally unique within a session
-  }
-
-  // ── Pipeline stages ───────────────────────────────────────────
-
-  private applyWindow(
-    exchanges: Exchange[],
-    windowSize?: number,
-  ): Exchange[] {
-    windowSize ??= getSettings().contextWindowSize;
-    return exchanges.slice(-windowSize);
-  }
-
-  private applyTruncation(
-    exchanges: Exchange[],
-    budget: number,
-  ): Exchange[] {
-    // Long outputs were already spilled to tempfiles at capture time, so
-    // per-exchange output is small. This pass only enforces the byte budget
-    // for the whole context window by stripping output from the oldest
-    // exchanges first; the full text remains on disk for read_file.
-    const result: Exchange[] = exchanges.map((e) => ({ ...e }));
-    let totalSize = result.reduce((sum, ex) => sum + this.exchangeSize(ex), 0);
-    for (let i = 0; i < result.length - 1 && totalSize > budget; i++) {
-      const ex = result[i]!;
-      const before = this.exchangeSize(ex);
-      if (ex.type === "shell_command") {
-        ex.output = ex.spillPath
-          ? `[output omitted — full output at ${ex.spillPath}; use read_file to expand]`
-          : `[output omitted]`;
-      }
-      totalSize -= before - this.exchangeSize(ex);
-    }
-    return result;
-  }
-
-  private formatContext(exchanges: Exchange[]): string {
-    const elapsed = Math.round((Date.now() - this.sessionStart) / 60000);
-    const totalCount = this.exchanges.length;
-
-    let out = "<shell_context>\n";
-
-    if (this.firstPrompt) {
-      out += `You are an AI assistant living inside agent-sh, a shell-first terminal.\n`;
-      out += `The user interacts with a real shell (PTY) and sends you queries inline. You are there to help them with their tasks.\n`;
-      out += `\n`;
-      out += `IMPORTANT tool usage rules:\n`;
-      out += `- Your internal tools (bash, read, write, ls, etc.) run in an isolated subprocess. The user CANNOT see their output.\n`;
-      out += `- Only use internal tools when YOU need to reason about content silently (e.g. reading a file to answer a question about it).\n`;
-      out += `- Long shell outputs are spilled to tempfiles. The context shows head+tail with a "[full output at /path/...out]" marker — use the read_file tool on that path to see the full captured output.\n`;
-      out += `\n`;
-      this.firstPrompt = false;
-    }
-
-    out += `cwd: ${this.currentCwd}\n`;
-    out += `session: ${totalCount} exchanges, ${elapsed}m elapsed\n`;
-
-    for (const ex of exchanges) {
-      out += "\n" + this.formatExchangeTruncated(ex);
-    }
-
-    // Allow extensions to inject extra context (e.g. terminal buffer snapshot)
-    const extra = this.handlers?.call("context:build-extra") as string | undefined;
-    if (extra) out += "\n" + extra + "\n";
-
-    out += "\n</shell_context>\n";
-    return out;
   }
 
   // ── Internal helpers ──────────────────────────────────────────

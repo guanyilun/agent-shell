@@ -30,7 +30,7 @@ import { nucleate, formatNuclearLine, isReadOnly, type NuclearEntry } from "./nu
 import { STATIC_SYSTEM_PROMPT, buildDynamicContext, buildStaticByCwd, formatSkillsBlock, loadGlobalAgentsMd } from "./system-prompt.js";
 import type { Compositor } from "../utils/compositor.js";
 import { createToolUI } from "../utils/tool-interactive.js";
-import { TokenBudget, RESPONSE_RESERVE, DEFAULT_CONTEXT_WINDOW } from "./token-budget.js";
+import { RESPONSE_RESERVE, DEFAULT_CONTEXT_WINDOW } from "./token-budget.js";
 import { getSettings, updateSettings } from "../settings.js";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { createToolProtocol, type ToolProtocol, type PendingToolCall as ProtocolPendingToolCall, type ToolResult as ProtocolToolResult } from "./tool-protocol.js";
@@ -81,7 +81,6 @@ export class AgentLoop implements AgentBackend {
   private historyFile: HistoryFile;
   private conversation: ConversationState;
   private fileReadCache: FileReadCache = new Map();
-  private tokenBudget: TokenBudget;
   private modes: AgentMode[];
   private currentModeIndex = 0;
   private boundListeners: Array<{ event: string; fn: (...args: any[]) => void }> = [];
@@ -154,9 +153,6 @@ export class AgentLoop implements AgentBackend {
       : [{ model: config.llmClient.model }];
     this.currentModeIndex = config.initialModeIndex ?? 0;
 
-    // Unified token budget — adapts to current model's context window
-    this.tokenBudget = new TokenBudget(this.currentMode.contextWindow);
-
     // Tool protocol — controls how tools are presented to the LLM
     this.toolProtocol = createToolProtocol(getSettings().toolMode ?? "api");
 
@@ -166,9 +162,6 @@ export class AgentLoop implements AgentBackend {
     // Register any protocol-provided tools (e.g. load_tool for deferred-lookup).
     const protocolTools = this.toolProtocol.getProtocolTools?.() ?? [];
     for (const t of protocolTools) this.registerTool(t);
-
-    // Update token budget with tool count
-    this.tokenBudget.update(undefined, this.toolRegistry.all().length);
 
     // Register handlers — extensions can advise these
     this.registerHandlers();
@@ -216,7 +209,6 @@ export class AgentLoop implements AgentBackend {
       } else {
         this.llmClient.model = m.model;
       }
-      this.tokenBudget.update(m.contextWindow, this.toolRegistry.all().length);
       this.bus.emit("config:changed", {});
     });
     const getToolsPipe = () => ({ tools: this.getTools() });
@@ -254,7 +246,6 @@ export class AgentLoop implements AgentBackend {
       } else {
         this.llmClient.model = m.model;
       }
-      this.tokenBudget.update(m.contextWindow, this.toolRegistry.all().length);
       const label = m.provider ? `${m.provider}: ${m.model}` : m.model;
       this.bus.emit("agent:info", { name: "ash", version: "0.4", model: m.model, provider: m.provider, contextWindow: m.contextWindow });
 
@@ -527,7 +518,6 @@ export class AgentLoop implements AgentBackend {
       this.llmClient.model = newMode.model;
     }
 
-    this.tokenBudget.update(newMode.contextWindow, this.toolRegistry.all().length);
     const label = newMode.provider
       ? `${newMode.provider}: ${newMode.model}`
       : newMode.model;

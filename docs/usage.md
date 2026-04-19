@@ -195,10 +195,8 @@ When cycling across providers (e.g. from OpenAI to Ollama), the API key and base
 | `defaultBackend` | `"ash"` | Which agent backend to activate. Set to an extension backend name (e.g. `"claude-code"`, `"pi"`) to use it by default |
 | `extensions` | `[]` | Extensions to load (npm packages or file paths) |
 | `historySize` | `500` | Max agent query history entries (persisted across sessions) |
-| `contextWindowSize` | `20` | Recent exchanges included in agent context |
-| `contextBudget` | `32768` | Context budget in bytes (~8K tokens) |
-| `shellTruncateThreshold` | `20` | Shell output lines before truncation |
-| `shellHeadLines` / `shellTailLines` | `10` / `10` | Lines kept from start/end of truncated output |
+| `shellTruncateThreshold` | `20` | Shell output lines before spill-to-tempfile |
+| `shellHeadLines` / `shellTailLines` | `10` / `10` | Lines kept from start/end when output is spilled |
 | `maxCommandOutputLines` | `3` | Max tool output lines shown inline in TUI |
 | `readOutputMaxLines` | `10` | Max read tool output lines shown inline (0 = hidden) |
 | `diffMaxLines` | `Infinity` | Max diff lines rendered in the TUI. Defaults to no limit |

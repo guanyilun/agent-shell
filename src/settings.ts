@@ -49,19 +49,13 @@ export interface Settings {
   /** Preferred agent backend (extension name, e.g. "pi", "claude-code"). */
   defaultBackend?: string;
 
-  // ── Context & truncation ──────────────────────────────────
-  /** Recent exchanges included in agent context window. */
-  contextWindowSize?: number;
-  /** Context budget in bytes (~4 chars per token). */
-  contextBudget?: number;
-  /** Shell output lines before truncation kicks in. */
+  // ── Shell output spill ────────────────────────────────────
+  /** Shell output lines before spill-to-tempfile kicks in. */
   shellTruncateThreshold?: number;
-  /** Lines kept from start of truncated shell output. */
+  /** Lines kept from start of spilled shell output. */
   shellHeadLines?: number;
-  /** Lines kept from end of truncated shell output. */
+  /** Lines kept from end of spilled shell output. */
   shellTailLines?: number;
-  /** Fraction of content budget allocated to shell context (0-1, default 0.35). */
-  shellContextRatio?: number;
 
   // ── History ──────────────────────────────────────────────
   /** Max history file size in bytes (default: 102400 = 100KB). */
@@ -126,12 +120,9 @@ const DEFAULTS: Required<Settings> = {
   defaultProvider: undefined as unknown as string,
   defaultBackend: "ash",
   toolMode: "api" as "api" | "deferred" | "deferred-lookup" | "inline",
-  contextWindowSize: 20,
-  contextBudget: 32768,
   shellTruncateThreshold: 20,
   shellHeadLines: 10,
   shellTailLines: 10,
-  shellContextRatio: 0.35,
   historyMaxBytes: 104857600, // 100MB — history is only accessed via search/expand, never loaded wholesale
   historyStartupEntries: 100,
   autoCompactThreshold: 0.5,
