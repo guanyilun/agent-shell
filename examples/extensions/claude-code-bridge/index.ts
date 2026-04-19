@@ -2,8 +2,14 @@
  * Claude Code bridge — runs Claude Code Agent SDK in-process as agent-sh's backend.
  *
  * Uses the official @anthropic-ai/claude-agent-sdk to spawn a Claude Code
- * session with custom MCP tools for PTY access. Claude Code
- * handles its own model selection, tool execution, and permissions.
+ * session. Claude Code handles its own model selection, tool execution, and
+ * permissions — the bridge is a pure protocol translator between the SDK's
+ * event stream and agent-sh's bus events.
+ *
+ * PTY-access tools (`terminal_read`, `terminal_keys`, `user_shell`) are
+ * intentionally NOT bundled here. If you want Claude Code to observe or
+ * drive the user's live terminal, load a companion extension that
+ * registers those tools as MCP tools the SDK can consume.
  *
  * Setup (from repo root):
  *   npm run build && npm link                    # register local agent-sh globally
@@ -15,102 +21,15 @@
  *
  * Requires: Claude Code CLI installed and authenticated (claude login).
  */
-import {
-  query,
-  tool,
-  createSdkMcpServer,
-  type Query,
-} from "@anthropic-ai/claude-agent-sdk";
-import { z } from "zod";
+import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ExtensionContext } from "agent-sh/types";
-import type { EventBus } from "agent-sh/event-bus";
 import { computeDiff, type DiffResult } from "agent-sh/utils/diff";
-
-// ── Helpers ──────────────────────────────────────────────────────
-function interpretEscapes(str: string): string {
-  return str.replace(/\\(x[0-9a-fA-F]{2}|r|n|t|\\|0)/g, (_, seq: string) => {
-    if (seq === "r") return "\r";
-    if (seq === "n") return "\n";
-    if (seq === "t") return "\t";
-    if (seq === "\\") return "\\";
-    if (seq === "0") return "\0";
-    if (seq.startsWith("x")) return String.fromCharCode(parseInt(seq.slice(1), 16));
-    return seq;
-  });
-}
-
-function settle(ms = 100): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// ── terminal_read MCP tool ────────────────────────────────────────
-function createTerminalReadTool(ctx: ExtensionContext) {
-  return tool(
-    "terminal_read",
-    "Read the current terminal screen contents. Returns clean text (ANSI stripped) " +
-    "with cursor position and whether an alternate-screen program (vim, htop, less) is active. " +
-    "Use this to see what the user sees before sending keystrokes with terminal_keys.",
-    {},
-    async () => {
-      const tb = ctx.terminalBuffer;
-      if (!tb) return { content: [{ type: "text" as const, text: "terminal buffer not available" }] };
-      const { text, altScreen, cursorX, cursorY } = tb.readScreen();
-      const info = [
-        altScreen ? "mode: alternate screen" : "mode: normal",
-        `cursor: row=${cursorY} col=${cursorX}`,
-      ].join(", ");
-      return { content: [{ type: "text" as const, text: `[${info}]\n\n${text}` }] };
-    },
-  );
-}
-
-// ── terminal_keys MCP tool ───────────────────────────────────────
-function createTerminalKeysTool(bus: EventBus, ctx: ExtensionContext) {
-  return tool(
-    "terminal_keys",
-    "Send keystrokes to the user's live terminal. The keys are written directly to the PTY " +
-    "as if the user typed them. Use escape sequences for special keys:\n" +
-    "  - Escape: \\x1b  - Enter: \\r  - Tab: \\t\n" +
-    "  - Ctrl+C: \\x03  - Arrow keys: \\x1b[A/B/C/D  - Backspace: \\x7f\n" +
-    "Example: to quit vim without saving, send keys=\"\\x1b:q!\\r\".\n" +
-    "Always call terminal_read after sending keys to verify the result.",
-    {
-      keys: z.string().describe("Keystrokes to send (use \\x1b for Escape, \\r for Enter, etc.)"),
-      settle_ms: z.number().optional().describe("Wait time in ms after sending keys (default: 150)"),
-    },
-    async (args) => {
-      const keys = interpretEscapes(args.keys);
-      const settleMs = args.settle_ms ?? 150;
-      bus.emit("shell:stdout-show", {});
-      process.stdout.write("\n");
-      bus.emit("shell:pty-write", { data: keys });
-      await settle(settleMs);
-
-      const tb = ctx.terminalBuffer;
-      if (!tb) return { content: [{ type: "text" as const, text: "Keys sent." }] };
-      const { text, altScreen, cursorX, cursorY } = tb.readScreen();
-      const info = [
-        altScreen ? "mode: alternate screen" : "mode: normal",
-        `cursor: row=${cursorY} col=${cursorX}`,
-      ].join(", ");
-      return { content: [{ type: "text" as const, text: `Keys sent. Screen after:\n[${info}]\n\n${text}` }] };
-    },
-  );
-}
 
 // ── Extension entry point ─────────────────────────────────────────
 export default function activate(ctx: ExtensionContext): void {
   const { bus } = ctx;
-
-  const termReadTool = createTerminalReadTool(ctx);
-  const termKeysTool = createTerminalKeysTool(bus, ctx);
-  const shellServer = createSdkMcpServer({
-    name: "agent-sh",
-    version: "1.0.0",
-    tools: [termReadTool, termKeysTool],
-  });
 
   let activeQuery: Query | null = null;
   const listeners: Array<{ event: string; fn: Function }> = [];
@@ -119,11 +38,11 @@ export default function activate(ctx: ExtensionContext): void {
 
   /** Map Claude Code tool names to agent-sh display kinds. */
   function toolKind(name: string): string {
-    if (name === "Read" || name.includes("terminal_read")) return "read";
+    if (name === "Read") return "read";
     if (name === "Edit") return "edit";
     if (name === "Write") return "write";
     if (name === "Glob" || name === "Grep") return "search";
-    if (name === "Bash" || name.includes("terminal_keys")) return "execute";
+    if (name === "Bash") return "execute";
     return "execute";
   }
 
@@ -150,7 +69,6 @@ export default function activate(ctx: ExtensionContext): void {
     if (name === "Bash") return `$ ${str(input.command)}`;
     if (name === "Read" || name === "Edit" || name === "Write") return str(input.file_path ?? input.path);
     if (name === "Grep" || name === "Glob") return `${str(input.pattern)} ${str(input.path)}`.trim();
-    if (name.includes("terminal_keys")) return str(input.keys);
     return name;
   }
 
@@ -180,15 +98,9 @@ export default function activate(ctx: ExtensionContext): void {
               preset: "claude_code",
               append:
                 "You are running inside agent-sh, a terminal wrapper.\n" +
-                "Use your standard tools (Read, Edit, Write, Bash, Glob, Grep) for investigation.\n" +
-                "Use mcp__agent-sh__terminal_read and mcp__agent-sh__terminal_keys to observe and interact with the user's live terminal.",
+                "Use your standard tools (Read, Edit, Write, Bash, Glob, Grep) for investigation.",
             },
-            mcpServers: { "agent-sh": shellServer },
-            allowedTools: [
-              "mcp__agent-sh__terminal_read",
-              "mcp__agent-sh__terminal_keys",
-              "Read", "Edit", "Write", "Bash", "Glob", "Grep",
-            ],
+            allowedTools: ["Read", "Edit", "Write", "Bash", "Glob", "Grep"],
             permissionMode: "acceptEdits",
             includePartialMessages: true,
           },

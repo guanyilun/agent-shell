@@ -291,7 +291,9 @@ Built-in extensions load first (via a declarative manifest), then user extension
 
 ### Real-world bridges
 
-The echo-backend shows the protocol. The `examples/extensions/` directory has two production bridges that wire real agent SDKs into agent-sh. They follow the same pattern — the difference is just which SDK they translate.
+The echo-backend shows the protocol. The `examples/extensions/` directory has two production bridges that wire real agent SDKs into agent-sh. Both are **pure protocol translators** — they map the external SDK's event stream to agent-sh's bus events, and that's it. Neither bundles any tools of its own; each external agent uses its own built-in tools as-is.
+
+PTY-access tools (`terminal_read`, `terminal_keys`, `user_shell`) are deliberately *not* part of a bridge's job. They're opt-in capabilities that live in their own extensions, registered per backend in that backend's tool format. Keeping this separation means bridges stay narrow and composable.
 
 #### Claude Code Bridge (`claude-code-bridge/`)
 
@@ -306,9 +308,9 @@ cd ~/.agent-sh/extensions/claude-code-bridge && npm install
 **How it works:**
 
 1. **Registers as backend** via `agent:register-backend`
-2. **Exposes two MCP tools** via `tool()` + `createSdkMcpServer()`: `terminal_read` (reads the current terminal screen from `ctx.terminalBuffer`, including cursor position and alt-screen state) and `terminal_keys` (writes keystrokes to the PTY via the `shell:pty-write` event). This lets Claude Code *observe and interact with* the user's live terminal — Claude Code uses its own built-in `Bash` tool for running isolated commands, so no `user_shell` is needed here.
-3. **On each `agent:submit`**, calls the SDK's `query()` with the user's prompt, a system prompt preset, and the MCP server attached
-4. **Iterates the SDK's async iterator** — maps `stream_event` (text/thinking deltas) and `assistant` messages (tool use blocks) to agent-sh events (`agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-started`)
+2. **On each `agent:submit`**, calls the SDK's `query()` with the user's prompt and a system-prompt preset. Claude Code's own tools (`Read`, `Edit`, `Write`, `Bash`, `Glob`, `Grep`) handle everything.
+3. **Iterates the SDK's async iterator** — maps `stream_event` (text/thinking deltas) and `assistant` messages (tool use blocks) to agent-sh events (`agent:response-chunk`, `agent:thinking-chunk`, `agent:tool-started`)
+4. **Snapshots files before Edit/Write** so it can compute a diff when the tool result comes back, for the TUI's inline diff rendering
 
 #### Pi Bridge (`pi-bridge/`)
 
@@ -323,26 +325,32 @@ cd ~/.agent-sh/extensions/pi-bridge && npm install
 **How it works:**
 
 1. **Registers as backend** with an async `start()` — pi needs to boot (load config from `~/.pi/`, create services, initialize tools)
-2. **Creates a `user_shell` tool** using pi's `ToolDefinition` interface (TypeBox schema). Includes `promptGuidelines` — pi's way of injecting per-tool instructions into the system prompt.
-3. **Subscribes to pi's event stream** (`session.subscribe`) — maps pi events to agent-sh events:
+2. **Subscribes to pi's event stream** (`session.subscribe`) — maps pi events to agent-sh events:
    - `message_update` → `agent:response-chunk` or `agent:thinking-chunk`
    - `tool_execution_start/update/end` → `agent:tool-started`, `agent:tool-output-chunk`, `agent:tool-completed`
    - `agent_end` → `agent:response-done` + `agent:processing-done`
-4. **Session management** — `agent:reset-session` creates a new pi session via `runtime.newSession()`
+3. **Session management** — `agent:reset-session` creates a new pi session via `runtime.newSession()`
+
+#### Adding PTY access to a bridge
+
+Neither bridge bundles PTY tools. If you want the external agent to observe or mutate the user's live terminal, write a companion extension that registers tools in the target SDK's tool format:
+
+- **`terminal_read`** — reads `ctx.terminalBuffer.readScreen()` and returns the text + cursor + alt-screen state
+- **`terminal_keys`** — emits `shell:pty-write` to send keystrokes to the PTY
+- **`user_shell`** — emits `shell:exec-request` and awaits the result, for `cd`/`export`/`source`-level state mutation
+
+For pi, this is a standalone extension that registers with pi's `customTools` (via `ctx.call` or a pi-specific hook). For Claude Code, the SDK accepts MCP servers in `query()` options — so the companion extension builds the MCP server and either forks the bridge or coordinates with it via a handler to attach the server.
 
 #### Writing your own bridge
 
-Both bridges follow the same 5-step structure:
+Both bridges follow the same 4-step structure:
 
 1. **Register as backend** — emit `agent:register-backend` with `name`, `start()`, `kill()`
-2. **Give the external agent access to the user's PTY** — in the target SDK's tool format. Which tools you expose depends on what the external agent already has:
-   - If it has no shell tool of its own: register a `user_shell` tool that runs commands via `bus.emitPipeAsync("shell:exec-request", ...)` — this is what `pi-bridge` does.
-   - If it brings its own bash/exec tool (as Claude Code does): skip `user_shell` and instead register `terminal_read` + `terminal_keys` so the agent can observe and drive the live terminal — this is what `claude-code-bridge` does.
-3. **Listen for `agent:submit`** — forward the query to the external agent
-4. **Map the agent's events** to agent-sh bus events (response chunks, tool starts/completions, thinking, errors)
-5. **Handle cancellation and reset** — wire `agent:cancel-request` and `agent:reset-session`
+2. **Listen for `agent:submit`** — forward the query to the external agent
+3. **Map the agent's events** to agent-sh bus events (response chunks, tool starts/completions, thinking, errors)
+4. **Handle cancellation and reset** — wire `agent:cancel-request` and `agent:reset-session`
 
-The difference between the two bridges is just SDK shape: Claude Code uses an async iterator you `for await` over; pi uses a subscription callback. The translation layer is the same.
+The difference between the two bridges is just SDK shape: Claude Code uses an async iterator you `for await` over; pi uses a subscription callback. The translation layer is the same. Keep PTY tools out — they belong in companion extensions.
 
 ## Named Handlers (Advice System)
 
